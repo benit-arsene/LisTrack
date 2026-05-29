@@ -209,6 +209,11 @@ app.post("/api/screen-time", async (req, res) => {
       recovered: payload.recovered === true,
     };
 
+    // Reject localhost — never store dashboard self-tracking data
+    if (entry.domain === "localhost" || entry.domain === "127.0.0.1" || entry.domain === "") {
+      return res.status(200).json({ status: "ignored", reason: "localhost" });
+    }
+
     // Store the entry (via the DB helper)
     await insertScreenTimeLog(entry);
 

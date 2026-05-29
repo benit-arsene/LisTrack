@@ -192,8 +192,6 @@
     /** Extract a clean display name from a domain (capitalize first segment). */
     function getDisplayName(domain) {
       const parts = domain.split('.');
-      // Handle subdomains: take the second-to-last part (e.g., "github" from "github.com")
-      // or the first part if it's a simple domain
       if (parts.length >= 2) {
         const name = parts[parts.length - 2];
         return name.charAt(0).toUpperCase() + name.slice(1);
@@ -201,61 +199,180 @@
       return domain.charAt(0).toUpperCase() + domain.slice(1);
     }
 
-    // ─── Dashboard Fetching ─────────────────────────────────────────────────
+    // ─── State ──────────────────────────────────────────────────────────────
 
     const API_BASE = 'http://localhost:3000/api';
+    let isFirstLoad = true;
 
-    async function fetchDashboard() {
+    // ─── Fetch & Render ─────────────────────────────────────────────────────
+
+    async function fetchDashboard({ silent = false } = {}) {
       const loadingState = document.getElementById('loadingState');
-      const errorState = document.getElementById('errorState');
+      const errorState   = document.getElementById('errorState');
       const dashboardContent = document.getElementById('dashboardContent');
-      const refreshIcon = document.getElementById('refreshIcon');
+      const refreshIcon  = document.getElementById('refreshIcon');
 
-      // Show loading, hide others
-      loadingState.classList.remove('hidden');
-      errorState.classList.add('hidden');
-      dashboardContent.classList.add('hidden');
-
-      // Spinner animation on refresh button
-      refreshIcon.classList.add('loading-spinner');
+      if (!silent) {
+        // Full loading screen only on first load or manual refresh
+        loadingState.classList.remove('hidden');
+        errorState.classList.add('hidden');
+        dashboardContent.classList.add('hidden');
+        refreshIcon.classList.add('loading-spinner');
+      }
 
       try {
         const response = await fetch(API_BASE + '/dashboard');
-        if (!response.ok) {
-          throw new Error(`Server returned ${response.status}`);
-        }
+        if (!response.ok) throw new Error(`Server returned ${response.status}`);
         const data = await response.json();
-        renderDashboard(data);
+
+        if (silent) {
+          // Silently patch only changed values — no flicker, no hiding
+          silentUpdate(data);
+        } else {
+          renderDashboard(data);
+          loadingState.classList.add('hidden');
+          dashboardContent.classList.remove('hidden');
+          isFirstLoad = false;
+        }
+
         updateLastUpdated();
-        loadingState.classList.add('hidden');
-        dashboardContent.classList.remove('hidden');
       } catch (err) {
-        loadingState.classList.add('hidden');
-        errorState.classList.remove('hidden');
-        document.getElementById('errorMessage').textContent =
-          err.message === 'Failed to fetch'
-            ? 'Could not connect to the server. Make sure the server is running on port 3000.'
-            : err.message;
+        if (!silent) {
+          loadingState.classList.add('hidden');
+          errorState.classList.remove('hidden');
+          document.getElementById('errorMessage').textContent =
+            err.message === 'Failed to fetch'
+              ? 'Could not connect to the server. Make sure the server is running on port 3000.'
+              : err.message;
+        }
+        // On silent failures, just do nothing — keep showing last known data
       } finally {
-        refreshIcon.classList.remove('loading-spinner');
+        if (!silent) {
+          refreshIcon.classList.remove('loading-spinner');
+        }
       }
     }
 
-    // ─── Rendering ──────────────────────────────────────────────────────────
+    // ─── Silent In-Place Update ─────────────────────────────────────────────
 
-    function renderDashboard(data) {
+    /**
+     * Update metrics and domain list in-place without touching visibility.
+     * Numbers swap instantly; bars animate to new widths via CSS transition.
+     */
+    function silentUpdate(data) {
       // ── Summary Metrics ──
       document.getElementById('totalDomains').textContent = data.totalDomains;
       document.getElementById('totalMinutes').textContent = formatTime(data.totalMinutes);
-      document.getElementById('topDomain').textContent = data.topDomain || '—';
+      document.getElementById('topDomain').textContent   = data.topDomain || '—';
       document.getElementById('domainCount').textContent =
         `${data.totalDomains} domain${data.totalDomains !== 1 ? 's' : ''}`;
 
-      // ── Domain List ──
       const domainList = document.getElementById('domainList');
       const emptyState = document.getElementById('emptyState');
 
-      // Clear previous list
+      if (!data.domains || data.domains.length === 0) {
+        emptyState.classList.remove('hidden');
+        domainList.classList.add('hidden');
+        return;
+      }
+
+      emptyState.classList.add('hidden');
+      domainList.classList.remove('hidden');
+
+      const maxMinutes = data.domains[0].totalMinutes;
+
+      // Build a map of existing rows by domain so we can patch them
+      const existingRows = {};
+      domainList.querySelectorAll('[data-domain]').forEach(row => {
+        existingRows[row.getAttribute('data-domain')] = row;
+      });
+
+      const incomingDomains = data.domains.map(d => d.domain);
+
+      // Remove rows for domains that no longer exist
+      Object.keys(existingRows).forEach(domain => {
+        if (!incomingDomains.includes(domain)) {
+          existingRows[domain].remove();
+        }
+      });
+
+      data.domains.forEach((item, index) => {
+        const percentage  = maxMinutes > 0 ? (item.totalMinutes / maxMinutes) * 100 : 0;
+        const displayName = getDisplayName(item.domain);
+        const gradientClass = getGradientClass(index);
+
+        if (existingRows[item.domain]) {
+          // ── Patch existing row in-place ──
+          const row = existingRows[item.domain];
+
+          // Update rank number
+          const rankEl = row.querySelector('[data-rank]');
+          if (rankEl) rankEl.textContent = index + 1;
+
+          // Update time label
+          const timeEl = row.querySelector('[data-time]');
+          if (timeEl) timeEl.textContent = formatTime(item.totalMinutes);
+
+          // Animate bar to new width smoothly via CSS transition
+          const bar = row.querySelector('.progress-bar');
+          if (bar) bar.style.width = percentage + '%';
+
+          // Move to correct sorted position without re-rendering
+          domainList.appendChild(row);
+        } else {
+          // ── New domain — create and insert ──
+          const row = document.createElement('div');
+          row.className = 'rank-item px-6 py-4 flex items-center gap-4 cursor-default';
+          row.setAttribute('data-domain', item.domain);
+
+          row.innerHTML = `
+            <span class="flex-shrink-0 w-6 text-sm font-semibold text-gray-300 text-right" data-rank>${index + 1}</span>
+            <img
+              src="${getFaviconUrl(item.domain)}"
+              alt="${item.domain}"
+              class="flex-shrink-0 w-8 h-8 rounded-lg bg-gray-50"
+              onerror="this.style.display='none'; this.nextElementSibling.style.display='flex'"
+            />
+            <div class="flex-shrink-0 w-8 h-8 rounded-lg bg-gray-100 items-center justify-center text-xs font-semibold text-gray-400" style="display:none">${displayName.charAt(0)}</div>
+            <div class="flex-1 min-w-0">
+              <div class="flex items-center justify-between mb-1">
+                <span class="text-sm font-medium text-gray-900 truncate">${displayName}</span>
+                <span class="text-sm font-semibold text-gray-700 ml-2" data-time>${formatTime(item.totalMinutes)}</span>
+              </div>
+              <div class="relative w-full h-2 bg-gray-100 rounded-full overflow-hidden">
+                <div
+                  class="progress-bar absolute inset-y-0 left-0 rounded-full ${gradientClass}"
+                  style="width: 0%"
+                ></div>
+              </div>
+            </div>
+          `;
+
+          domainList.appendChild(row);
+
+          // Animate bar in after paint
+          requestAnimationFrame(() => {
+            requestAnimationFrame(() => {
+              const bar = row.querySelector('.progress-bar');
+              if (bar) bar.style.width = percentage + '%';
+            });
+          });
+        }
+      });
+    }
+
+    // ─── Full Render (first load / manual refresh) ───────────────────────────
+
+    function renderDashboard(data) {
+      document.getElementById('totalDomains').textContent = data.totalDomains;
+      document.getElementById('totalMinutes').textContent = formatTime(data.totalMinutes);
+      document.getElementById('topDomain').textContent   = data.topDomain || '—';
+      document.getElementById('domainCount').textContent =
+        `${data.totalDomains} domain${data.totalDomains !== 1 ? 's' : ''}`;
+
+      const domainList = document.getElementById('domainList');
+      const emptyState = document.getElementById('emptyState');
+
       domainList.innerHTML = '';
 
       if (!data.domains || data.domains.length === 0) {
@@ -270,16 +387,17 @@
       const maxMinutes = data.domains[0].totalMinutes;
 
       data.domains.forEach((item, index) => {
-        const percentage = maxMinutes > 0 ? (item.totalMinutes / maxMinutes) * 100 : 0;
+        const percentage  = maxMinutes > 0 ? (item.totalMinutes / maxMinutes) * 100 : 0;
         const displayName = getDisplayName(item.domain);
         const gradientClass = getGradientClass(index);
 
         const row = document.createElement('div');
         row.className = 'rank-item px-6 py-4 flex items-center gap-4 cursor-default';
+        row.setAttribute('data-domain', item.domain);
         row.style.animationDelay = `${index * 0.03}s`;
 
         row.innerHTML = `
-          <span class="flex-shrink-0 w-6 text-sm font-semibold text-gray-300 text-right">${index + 1}</span>
+          <span class="flex-shrink-0 w-6 text-sm font-semibold text-gray-300 text-right" data-rank>${index + 1}</span>
           <img
             src="${getFaviconUrl(item.domain)}"
             alt="${item.domain}"
@@ -290,7 +408,7 @@
           <div class="flex-1 min-w-0">
             <div class="flex items-center justify-between mb-1">
               <span class="text-sm font-medium text-gray-900 truncate">${displayName}</span>
-              <span class="text-sm font-semibold text-gray-700 ml-2">${formatTime(item.totalMinutes)}</span>
+              <span class="text-sm font-semibold text-gray-700 ml-2" data-time>${formatTime(item.totalMinutes)}</span>
             </div>
             <div class="relative w-full h-2 bg-gray-100 rounded-full overflow-hidden">
               <div
@@ -305,11 +423,10 @@
         domainList.appendChild(row);
       });
 
-      // Animate progress bars after a small delay (ensures DOM is ready)
       requestAnimationFrame(() => {
         requestAnimationFrame(() => {
           document.querySelectorAll('.progress-bar').forEach((bar) => {
-            const target = parseFloat(bar.getAttribute('data-target'));
+            const target = parseFloat(bar.getAttribute('data-target') || '0');
             bar.style.width = target + '%';
           });
         });
@@ -322,10 +439,13 @@
       document.getElementById('lastUpdated').textContent = `Updated ${timeStr}`;
     }
 
-    // ─── Auto-refresh every 15 seconds ──────────────────────────────────────
+    // ─── Init & Auto-refresh ─────────────────────────────────────────────────
     document.addEventListener('DOMContentLoaded', () => {
-      fetchDashboard();
-      setInterval(fetchDashboard, 15_000);
+      // First load — show full loading screen
+      fetchDashboard({ silent: false });
+
+      // Every 15s — silently update in the background, zero flicker
+      setInterval(() => fetchDashboard({ silent: true }), 15_000);
     });
   </script>
 

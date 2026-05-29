@@ -298,8 +298,11 @@
     }, 30_000);
   }
 
-  // ─── Kick off only if sendBeacon is available ────────────────────────────
-  if (typeof navigator.sendBeacon !== "undefined") {
+  // ─── Kick off only if sendBeacon is available & not on localhost ─────────
+  const _hostname = window.location.hostname;
+  const _isLocalhost = _hostname === "localhost" || _hostname === "127.0.0.1" || _hostname === "";
+
+  if (typeof navigator.sendBeacon !== "undefined" && !_isLocalhost) {
     if (document.readyState === "loading") {
       document.addEventListener("DOMContentLoaded", init);
     } else {
