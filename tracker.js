@@ -129,6 +129,19 @@
       timestamp: new Date().toISOString(),
     };
 
+    // If running in extension context, send via background worker to bypass mixed-content blocking
+    if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.sendMessage) {
+      try {
+        chrome.runtime.sendMessage(payload);
+        if (!isFinal) {
+          state.activeTimeMs = 0;
+        }
+        return;
+      } catch (err) {
+        // Fall back if extension context is invalidated
+      }
+    }
+
     const blob = new Blob([JSON.stringify(payload)], {
       type: "application/json",
     });
@@ -196,10 +209,17 @@
           timestamp: new Date(data.timestamp).toISOString(),
           recovered: true,
         };
-        const blob = new Blob([JSON.stringify(payload)], {
-          type: "application/json",
-        });
-        navigator.sendBeacon(CONFIG.API_URL, blob);
+
+        if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.sendMessage) {
+          try {
+            chrome.runtime.sendMessage(payload);
+          } catch (err) {}
+        } else {
+          const blob = new Blob([JSON.stringify(payload)], {
+            type: "application/json",
+          });
+          navigator.sendBeacon(CONFIG.API_URL, blob);
+        }
       }
       localStorage.removeItem(CONFIG.STORAGE_KEY);
     } catch (_) {
@@ -254,11 +274,21 @@
             durationSeconds: durationSeconds,
             timestamp: new Date().toISOString(),
           };
-          const blob = new Blob([JSON.stringify(payload)], {
-            type: "application/json",
-          });
-          navigator.sendBeacon(CONFIG.API_URL, blob);
-          state.activeTimeMs = 0;
+
+          if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.sendMessage) {
+            try {
+              chrome.runtime.sendMessage(payload);
+              state.activeTimeMs = 0;
+            } catch (err) {
+              // Fall back if extension context is invalidated
+            }
+          } else {
+            const blob = new Blob([JSON.stringify(payload)], {
+              type: "application/json",
+            });
+            navigator.sendBeacon(CONFIG.API_URL, blob);
+            state.activeTimeMs = 0;
+          }
         }
       }
       // Re-resume timer after sending

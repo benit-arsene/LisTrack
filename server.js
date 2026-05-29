@@ -32,6 +32,14 @@ app.use(express.json({ type: "application/json" }));
 // Parse text/plain bodies (navigator.sendBeacon often sends text/plain)
 app.use(express.text({ type: "text/plain" }));
 
+// Serve static files from the project root (dashboard.html, tracker.js, etc.)
+app.use(express.static(__dirname));
+
+// Redirect root path to dashboard.html
+app.get("/", (req, res) => {
+  res.redirect("/dashboard.html");
+});
+
 // ─── SQLite Database Setup ──────────────────────────────────────────────────
 
 const DB_PATH = path.join(__dirname, "data.db");
