@@ -124,24 +124,46 @@ async function getAllScreenTimeLogs() {
 
 /**
  * Aggregate screen-time logs grouped by domain, summing total active minutes.
+ * Only includes entries from today (resets at midnight) so the dashboard shows
+ * daily screen time instead of an ever-growing cumulative total.
  *
+ * @param {string} [date] - Optional date string in YYYY-MM-DD format. Defaults to today.
  * @returns {Promise<Array<{ domain: string, totalMinutes: number }>>}
  *          Sorted descending by totalMinutes.
  */
-async function getAggregatedByDomain() {
+async function getAggregatedByDomain(date) {
+  // Default to today's UTC date so the query is always parameterized
+  const dateValue = date || new Date().toISOString().slice(0, 10);
+
   const rows = db.prepare(`
     SELECT
       domain,
       ROUND(SUM(durationSeconds) / 60.0, 2) AS totalMinutes
     FROM screen_time
+    WHERE date(timestamp) = ?
     GROUP BY domain
     ORDER BY totalMinutes DESC
-  `).all();
+  `).all(dateValue);
 
   return rows.map((row) => ({
     domain: row.domain,
     totalMinutes: row.totalMinutes,
   }));
+}
+
+/**
+ * Return all distinct dates that have screen-time data, sorted ascending.
+ *
+ * @returns {Promise<string[]>} Array of date strings in YYYY-MM-DD format.
+ */
+async function getAvailableDates() {
+  const rows = db.prepare(`
+    SELECT DISTINCT date(timestamp) AS d
+    FROM screen_time
+    ORDER BY d DESC
+  `).all();
+
+  return rows.map((row) => row.d);
 }
 
 // ─── Routes ─────────────────────────────────────────────────────────────────
@@ -238,30 +260,53 @@ app.post("/api/screen-time", async (req, res) => {
 /**
  * GET /api/dashboard
  *
- * Returns aggregated screen-time data grouped by domain, sorted from
- * most-visited to least-visited, along with summary metrics.
+ * Returns aggregated screen-time data grouped by domain for a given date,
+ * sorted from most-visited to least-visited, along with summary metrics.
+ *
+ * Query params:
+ *   date — Optional. YYYY-MM-DD format. Defaults to today (UTC).
  *
  * Response:
  * {
+ *   date: string,            // The date being viewed (YYYY-MM-DD)
  *   totalDomains: number,
  *   totalMinutes: number,
  *   topDomain: string | null,
- *   domains: [ { domain, totalMinutes } ]
+ *   domains: [ { domain, totalMinutes } ],
+ *   availableDates: string[] // All dates that have data
  * }
  */
 app.get("/api/dashboard", async (req, res) => {
   try {
-    const domains = await getAggregatedByDomain();
+    const requestedDate = req.query.date || null;
+
+    // Validate date format if provided
+    if (requestedDate && !/^\d{4}-\d{2}-\d{2}$/.test(requestedDate)) {
+      return res.status(400).json({
+        status: "error",
+        message: "Invalid date format. Use YYYY-MM-DD.",
+      });
+    }
+
+    const [domains, availableDates] = await Promise.all([
+      getAggregatedByDomain(requestedDate),
+      getAvailableDates(),
+    ]);
 
     const totalMinutes = domains.reduce((sum, d) => sum + d.totalMinutes, 0);
     const totalDomains = domains.length;
     const topDomain = domains.length > 0 ? domains[0].domain : null;
 
+    // Determine the effective date being viewed
+    const effectiveDate = requestedDate || new Date().toISOString().slice(0, 10);
+
     return res.json({
+      date: effectiveDate,
       totalDomains,
       totalMinutes: Math.round(totalMinutes * 100) / 100,
       topDomain,
       domains,
+      availableDates,
     });
   } catch (err) {
     console.error("[dashboard] Error aggregating data:", err);
