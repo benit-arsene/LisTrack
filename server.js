@@ -152,7 +152,7 @@ async function getAggregatedByDomain(date) {
 }
 
 /**
- * Return all distinct dates that have screen-time data, sorted ascending.
+ * Return all distinct dates that have screen-time data, sorted descending.
  *
  * @returns {Promise<string[]>} Array of date strings in YYYY-MM-DD format.
  */
@@ -164,6 +164,92 @@ async function getAvailableDates() {
   `).all();
 
   return rows.map((row) => row.d);
+}
+
+/**
+ * Calculate the start and end date of a period (week or month) containing
+ * the given reference date.
+ *
+ * @param {string} dateStr - Reference date in YYYY-MM-DD format.
+ * @param {'week'|'month'} period - The period type.
+ * @returns {{ start: string, end: string }} ISO date strings.
+ */
+function getPeriodRange(dateStr, period) {
+  const d = new Date(dateStr + 'T00:00:00Z');
+
+  if (period === 'week') {
+    // Monday-first weeks: Monday=1, Sunday=0 → treat Sunday as 7
+    const day = d.getUTCDay();
+    const diff = day === 0 ? -6 : 1 - day;
+    const start = new Date(d);
+    start.setUTCDate(d.getUTCDate() + diff);
+    const end = new Date(start);
+    end.setUTCDate(start.getUTCDate() + 6);
+    return {
+      start: start.toISOString().slice(0, 10),
+      end: end.toISOString().slice(0, 10),
+    };
+  }
+
+  if (period === 'month') {
+    const start = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1));
+    const end = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0));
+    return {
+      start: start.toISOString().slice(0, 10),
+      end: end.toISOString().slice(0, 10),
+    };
+  }
+
+  // Fallback — single date
+  return { start: dateStr, end: dateStr };
+}
+
+/**
+ * Aggregate screen-time logs grouped by domain for a date range.
+ *
+ * @param {string} startDate - Start date YYYY-MM-DD (inclusive).
+ * @param {string} endDate   - End date YYYY-MM-DD (inclusive).
+ * @returns {Promise<Array<{ domain: string, totalMinutes: number }>>}
+ */
+async function getAggregatedByDomainForPeriod(startDate, endDate) {
+  const rows = db.prepare(`
+    SELECT
+      domain,
+      ROUND(SUM(durationSeconds) / 60.0, 2) AS totalMinutes
+    FROM screen_time
+    WHERE date(timestamp) >= ? AND date(timestamp) <= ?
+    GROUP BY domain
+    ORDER BY totalMinutes DESC
+  `).all(startDate, endDate);
+
+  return rows.map((row) => ({
+    domain: row.domain,
+    totalMinutes: row.totalMinutes,
+  }));
+}
+
+/**
+ * Return total minutes per day for a date range — used for the daily breakdown chart.
+ *
+ * @param {string} startDate - Start date YYYY-MM-DD (inclusive).
+ * @param {string} endDate   - End date YYYY-MM-DD (inclusive).
+ * @returns {Promise<Array<{ date: string, totalMinutes: number }>>}
+ */
+async function getDailyBreakdownForPeriod(startDate, endDate) {
+  const rows = db.prepare(`
+    SELECT
+      date(timestamp) AS d,
+      ROUND(SUM(durationSeconds) / 60.0, 2) AS totalMinutes
+    FROM screen_time
+    WHERE date(timestamp) >= ? AND date(timestamp) <= ?
+    GROUP BY date(timestamp)
+    ORDER BY d ASC
+  `).all(startDate, endDate);
+
+  return rows.map((row) => ({
+    date: row.d,
+    totalMinutes: row.totalMinutes,
+  }));
 }
 
 // ─── Routes ─────────────────────────────────────────────────────────────────
@@ -310,6 +396,80 @@ app.get("/api/dashboard", async (req, res) => {
     });
   } catch (err) {
     console.error("[dashboard] Error aggregating data:", err);
+    return res.status(500).json({
+      status: "error",
+      message: "Internal server error",
+    });
+  }
+});
+
+/**
+ * GET /api/summary
+ *
+ * Returns aggregated screen-time data grouped by domain for a week or month
+ * period, along with a daily breakdown for that period.
+ *
+ * Query params:
+ *   period — 'week' or 'month'. Defaults to 'week'.
+ *   date   — Reference date YYYY-MM-DD. Defaults to today (UTC).
+ *
+ * Response:
+ * {
+ *   period: string,
+ *   startDate: string,       // Period start (inclusive)
+ *   endDate: string,         // Period end (inclusive)
+ *   totalDomains: number,
+ *   totalMinutes: number,
+ *   topDomain: string | null,
+ *   domains: [ { domain, totalMinutes } ],
+ *   dailyBreakdown: [ { date, totalMinutes } ],
+ *   availableDates: string[]
+ * }
+ */
+app.get("/api/summary", async (req, res) => {
+  try {
+    const period = req.query.period || "week";
+    const referenceDate = req.query.date || new Date().toISOString().slice(0, 10);
+
+    if (!["week", "month"].includes(period)) {
+      return res.status(400).json({
+        status: "error",
+        message: "Invalid period. Use 'week' or 'month'.",
+      });
+    }
+
+    if (referenceDate && !/^\d{4}-\d{2}-\d{2}$/.test(referenceDate)) {
+      return res.status(400).json({
+        status: "error",
+        message: "Invalid date format. Use YYYY-MM-DD.",
+      });
+    }
+
+    const { start, end } = getPeriodRange(referenceDate, period);
+
+    const [domains, dailyBreakdown, availableDates] = await Promise.all([
+      getAggregatedByDomainForPeriod(start, end),
+      getDailyBreakdownForPeriod(start, end),
+      getAvailableDates(),
+    ]);
+
+    const totalMinutes = domains.reduce((sum, d) => sum + d.totalMinutes, 0);
+    const totalDomains = domains.length;
+    const topDomain = domains.length > 0 ? domains[0].domain : null;
+
+    return res.json({
+      period,
+      startDate: start,
+      endDate: end,
+      totalDomains,
+      totalMinutes: Math.round(totalMinutes * 100) / 100,
+      topDomain,
+      domains,
+      dailyBreakdown,
+      availableDates,
+    });
+  } catch (err) {
+    console.error("[summary] Error aggregating data:", err);
     return res.status(500).json({
       status: "error",
       message: "Internal server error",
