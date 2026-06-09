@@ -10,11 +10,26 @@
 
   // ─── Configuration ───────────────────────────────────────────────────────
   const CONFIG = {
-    API_URL: "http://localhost:3000/api/screen-time",
+    // Use relative path so the snippet posts to the same origin when testing locally.
+    API_URL: '/api/screen-time',
     IDLE_THRESHOLD_MS: 60_000,
     CHECKPOINT_INTERVAL_MS: 5_000,
     STORAGE_KEY: "web_screen_time_tracker",
   };
+
+  // Domains to exclude from tracking. Uses suffix matching so "render.com"
+  // catches "dashboard.render.com", "api.render.com", etc.
+  const IGNORED_DOMAIN_PATTERNS = ["localhost", "listrack.onrender.com", "render.com"];
+
+  function shouldTrackDomain(domain) {
+    return (
+      typeof domain === "string" &&
+      domain.length > 0 &&
+      !IGNORED_DOMAIN_PATTERNS.some((pattern) =>
+        domain === pattern || domain.endsWith("." + pattern)
+      )
+    );
+  }
 
   // ─── State ───────────────────────────────────────────────────────────────
   const state = {
@@ -79,11 +94,20 @@
   function sendScreenTime(isFinal) {
     pauseTimer();
 
-    const durationSeconds = Math.round(state.activeTimeMs / 1000);
-    if (durationSeconds <= 0) return; 
+    // Send the exact time tracked as a decimal (e.g. 1.4 for 1400ms).
+    // The server stores it as a REAL value so precision is preserved.
+    // This guarantees NO time is ever lost — even a 400ms visit is recorded.
+    const durationSeconds = state.activeTimeMs / 1000;
+    if (durationSeconds <= 0) return;
+
+    const domain = window.location.hostname;
+    if (!shouldTrackDomain(domain)) {
+      state.activeTimeMs = 0;
+      return;
+    }
 
     const payload = {
-      domain: window.location.hostname,
+      domain,
       path: window.location.pathname,
       durationSeconds: durationSeconds,
       timestamp: new Date().toISOString(),
@@ -112,7 +136,7 @@
       } catch (_) {}
     }
 
-    // Reset local tracker cache for standard mid-session intervals
+    // Reset accumulated time — the exact amount was already sent
     state.activeTimeMs = 0;
   }
 
@@ -120,11 +144,17 @@
     checkIdle();
     if (state.activeTimeMs <= 0) return;
 
+    const domain = window.location.hostname;
+    if (!shouldTrackDomain(domain)) {
+      state.activeTimeMs = 0;
+      return;
+    }
+
     try {
       const data = {
         activeTimeMs: state.activeTimeMs,
         lastActivity: state.lastActivity,
-        domain: window.location.hostname,
+        domain,
         path: window.location.pathname,
         timestamp: Date.now(),
       };
@@ -138,11 +168,15 @@
       if (!raw) return;
       const data = JSON.parse(raw);
       
-      if (data.domain === window.location.hostname && Date.now() - data.timestamp < 3_600_000) {
+      if (
+        data.domain === window.location.hostname &&
+        Date.now() - data.timestamp < 3_600_000 &&
+        shouldTrackDomain(data.domain)
+      ) {
         const payload = {
           domain: data.domain,
           path: data.path,
-          durationSeconds: Math.round(data.activeTimeMs / 1000),
+          durationSeconds: data.activeTimeMs / 1000,
           timestamp: new Date(data.timestamp).toISOString(),
           recovered: true,
         };
@@ -189,15 +223,15 @@
 
     state.checkpointInterval = setInterval(onCheckpoint, CONFIG.CHECKPOINT_INTERVAL_MS);
 
-    // Handles rolling 30-second intervals cleanly
+    // Handles rolling intervals — every 10s, send accumulated time if ≥5s
     setInterval(function () {
-      if (state.activeTimeMs >= 30_000) {
+      if (state.activeTimeMs >= 5_000) {
         sendScreenTime(false);
       }
       if (state.isTabVisible) {
         resumeTimer();
       }
-    }, 30_000);
+    }, 10_000);
   }
 
   // FIX: Enabled running on localhost so you can actually test your extension locally!

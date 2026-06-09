@@ -58,7 +58,7 @@ try {
       id              INTEGER PRIMARY KEY AUTOINCREMENT,
       domain          TEXT    NOT NULL,
       path            TEXT    NOT NULL DEFAULT '/',
-      durationSeconds INTEGER NOT NULL,
+      durationSeconds REAL    NOT NULL,
       timestamp       TEXT    NOT NULL,
       recovered       INTEGER NOT NULL DEFAULT 0,
       ingested_at     TEXT    NOT NULL DEFAULT (datetime('now'))
@@ -312,7 +312,7 @@ app.post("/api/screen-time", async (req, res) => {
     const entry = {
       domain: String(payload.domain).toLowerCase().replace(/^www\./, ""),
       path: String(payload.path || "/"),
-      durationSeconds: Math.round(payload.durationSeconds),
+      durationSeconds: payload.durationSeconds,
       timestamp: payload.timestamp || new Date().toISOString(),
       recovered: payload.recovered === true,
     };

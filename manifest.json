@@ -2,10 +2,10 @@
   "manifest_version": 3,
   "name": "LisTrack - Personal Screen Time Tracker",
   "version": "1.0.0",
-  "description": "Automatically track active screen-time on websites you visit and send it to your local dashboard.",
+  "description": "Automatically track active screen-time on websites you visit and send it to your remote dashboard.",
   "permissions": [],
   "host_permissions": [
-    "http://localhost:3000/*"
+    "https://listrack.onrender.com/*"
   ],
   "background": {
     "service_worker": "background.js"
