@@ -68,6 +68,21 @@ try {
   // Index on domain for faster aggregation queries
   db.exec(`CREATE INDEX IF NOT EXISTS idx_screen_time_domain ON screen_time(domain)`);
 
+  // Create the daily_goals table if it doesn't exist
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS daily_goals (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      domain      TEXT    NOT NULL,
+      max_minutes REAL    NOT NULL,
+      enabled     INTEGER NOT NULL DEFAULT 1,
+      created_at  TEXT    NOT NULL DEFAULT (datetime('now')),
+      updated_at  TEXT    NOT NULL DEFAULT (datetime('now'))
+    )
+  `);
+
+  // Index on domain for faster lookups
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_daily_goals_domain ON daily_goals(domain)`);
+
   console.log(`[db] SQLite database initialized at ${DB_PATH}`);
 } catch (err) {
   console.error("[db] Failed to initialize SQLite database:", err);
@@ -477,6 +492,120 @@ app.get("/api/summary", async (req, res) => {
   }
 });
 
+// ─── Goals Routes ───────────────────────────────────────────────────────────
+
+/**
+ * GET /api/goals
+ *
+ * Returns all daily goals.
+ */
+app.get("/api/goals", async (req, res) => {
+  try {
+    const goals = await getGoals();
+    return res.json({ goals });
+  } catch (err) {
+    console.error("[goals] Error fetching goals:", err);
+    return res.status(500).json({ status: "error", message: "Internal server error" });
+  }
+});
+
+/**
+ * POST /api/goals
+ *
+ * Create a new daily goal.
+ * Body: { domain: string, max_minutes: number }
+ */
+app.post("/api/goals", async (req, res) => {
+  try {
+    const { domain, max_minutes } = req.body;
+
+    if (!domain || !max_minutes) {
+      return res.status(400).json({
+        status: "error",
+        message: "Missing required fields: domain, max_minutes",
+      });
+    }
+
+    if (typeof max_minutes !== "number" || max_minutes <= 0) {
+      return res.status(400).json({
+        status: "error",
+        message: "max_minutes must be a positive number",
+      });
+    }
+
+    const result = await createGoal(domain, max_minutes);
+    return res.status(201).json({ status: "ok", id: result.id });
+  } catch (err) {
+    console.error("[goals] Error creating goal:", err);
+    return res.status(500).json({ status: "error", message: "Internal server error" });
+  }
+});
+
+/**
+ * PUT /api/goals/:id
+ *
+ * Update an existing daily goal.
+ * Body: { domain?: string, max_minutes?: number, enabled?: boolean }
+ */
+app.put("/api/goals/:id", async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) {
+      return res.status(400).json({ status: "error", message: "Invalid goal ID" });
+    }
+
+    const result = await updateGoal(id, req.body);
+    if (!result.updated) {
+      return res.status(404).json({ status: "error", message: "Goal not found" });
+    }
+
+    return res.json({ status: "ok" });
+  } catch (err) {
+    console.error("[goals] Error updating goal:", err);
+    return res.status(500).json({ status: "error", message: "Internal server error" });
+  }
+});
+
+/**
+ * DELETE /api/goals/:id
+ *
+ * Delete a daily goal.
+ */
+app.delete("/api/goals/:id", async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) {
+      return res.status(400).json({ status: "error", message: "Invalid goal ID" });
+    }
+
+    const result = await deleteGoal(id);
+    if (!result.deleted) {
+      return res.status(404).json({ status: "error", message: "Goal not found" });
+    }
+
+    return res.json({ status: "ok" });
+  } catch (err) {
+    console.error("[goals] Error deleting goal:", err);
+    return res.status(500).json({ status: "error", message: "Internal server error" });
+  }
+});
+
+/**
+ * GET /api/goals/status
+ *
+ * Returns today's usage compared against all enabled goals.
+ * Used by the background service worker and dashboard.
+ */
+app.get("/api/goals/status", async (req, res) => {
+  try {
+    const statuses = await getGoalStatus();
+    return res.json({ goals: statuses });
+  } catch (err) {
+    console.error("[goals] Error getting goal status:", err);
+    return res.status(500).json({ status: "error", message: "Internal server error" });
+  }
+});
+
 /**
  * GET /api/logs
  *
@@ -491,6 +620,129 @@ app.get("/api/logs", async (req, res) => {
     return res.status(500).json({ status: "error", message: "Internal server error" });
   }
 });
+
+// ─── Daily Goals Helper Functions ───────────────────────────────────────────
+
+/**
+ * Get all daily goals.
+ */
+async function getGoals() {
+  const rows = db.prepare(`
+    SELECT id, domain, max_minutes, enabled, created_at, updated_at
+    FROM daily_goals
+    ORDER BY created_at DESC
+  `).all();
+
+  return rows.map((row) => ({
+    ...row,
+    enabled: row.enabled === 1,
+  }));
+}
+
+/**
+ * Create a new daily goal.
+ */
+async function createGoal(domain, maxMinutes) {
+  const stmt = db.prepare(`
+    INSERT INTO daily_goals (domain, max_minutes)
+    VALUES (@domain, @max_minutes)
+  `);
+
+  const result = stmt.run({
+    domain: domain.toLowerCase().replace(/^www\./, ""),
+    max_minutes: maxMinutes,
+  });
+
+  return { id: result.lastInsertRowid };
+}
+
+/**
+ * Update an existing daily goal.
+ */
+async function updateGoal(id, fields) {
+  const sets = [];
+  const params = { id };
+
+  if (fields.domain !== undefined) {
+    sets.push("domain = @domain");
+    params.domain = fields.domain.toLowerCase().replace(/^www\./, "");
+  }
+  if (fields.max_minutes !== undefined) {
+    sets.push("max_minutes = @max_minutes");
+    params.max_minutes = fields.max_minutes;
+  }
+  if (fields.enabled !== undefined) {
+    sets.push("enabled = @enabled");
+    params.enabled = fields.enabled ? 1 : 0;
+  }
+
+  if (sets.length === 0) return { updated: false };
+
+  sets.push("updated_at = datetime('now')");
+
+  const stmt = db.prepare(`
+    UPDATE daily_goals
+    SET ${sets.join(", ")}
+    WHERE id = @id
+  `);
+
+  const result = stmt.run(params);
+  return { updated: result.changes > 0 };
+}
+
+/**
+ * Delete a daily goal.
+ */
+async function deleteGoal(id) {
+  const stmt = db.prepare(`DELETE FROM daily_goals WHERE id = ?`);
+  const result = stmt.run(id);
+  return { deleted: result.changes > 0 };
+}
+
+/**
+ * Get today's usage minutes for a specific domain (used by the status endpoint).
+ */
+async function getTodayMinutesForDomain(domain) {
+  const today = new Date().toISOString().slice(0, 10);
+  const row = db.prepare(`
+    SELECT ROUND(SUM(durationSeconds) / 60.0, 2) AS totalMinutes
+    FROM screen_time
+    WHERE date(timestamp) = ? AND domain = ?
+  `).get(today, domain);
+
+  return row ? row.totalMinutes || 0 : 0;
+}
+
+/**
+ * Get goal status — compare today's usage against all enabled goals.
+ * Returns each goal with its current usage, limit, and percentage.
+ */
+async function getGoalStatus() {
+  const goals = await getGoals();
+  const enabledGoals = goals.filter((g) => g.enabled);
+
+  const statuses = await Promise.all(
+    enabledGoals.map(async (goal) => {
+      const todayMinutes = await getTodayMinutesForDomain(goal.domain);
+      const percentage = goal.max_minutes > 0
+        ? Math.min(Math.round((todayMinutes / goal.max_minutes) * 100), 999)
+        : 0;
+
+      return {
+        id: goal.id,
+        domain: goal.domain,
+        maxMinutes: goal.max_minutes,
+        todayMinutes,
+        percentage,
+        remainingMinutes: Math.max(0, goal.max_minutes - todayMinutes),
+        exceeded: todayMinutes >= goal.max_minutes,
+        approaching: percentage >= 80 && percentage < 100,
+      };
+    })
+  );
+
+  return statuses;
+}
 
 // ─── Graceful Shutdown ──────────────────────────────────────────────────────
 

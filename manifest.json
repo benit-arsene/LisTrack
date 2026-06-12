@@ -3,9 +3,14 @@
   "name": "LisTrack - Personal Screen Time Tracker",
   "version": "1.0.0",
   "description": "Automatically track active screen-time on websites you visit and send it to your remote dashboard.",
-  "permissions": [],
+  "permissions": [
+    "notifications",
+    "alarms",
+    "storage"
+  ],
   "host_permissions": [
-    "https://listrack.onrender.com/*"
+    "https://listrack.onrender.com/*",
+    "http://localhost:3000/*"
   ],
   "background": {
     "service_worker": "background.js"
