@@ -10,8 +10,8 @@
 
   // ─── Configuration ───────────────────────────────────────────────────────
   const CONFIG = {
-    // Use relative path so the snippet posts to the same origin when testing locally.
-    API_URL: '/api/screen-time',
+    // Send tracking data to the deployed backend.
+    API_URL: "https://listrack-2.onrender.com/api/screen-time",
     IDLE_THRESHOLD_MS: 60_000,
     CHECKPOINT_INTERVAL_MS: 5_000,
     STORAGE_KEY: "web_screen_time_tracker",
@@ -19,14 +19,19 @@
 
   // Domains to exclude from tracking. Uses suffix matching so "render.com"
   // catches "dashboard.render.com", "api.render.com", etc.
-  const IGNORED_DOMAIN_PATTERNS = ["localhost", "listrack.onrender.com", "render.com"];
+  const IGNORED_DOMAIN_PATTERNS = [
+    "localhost",
+    "listrack.onrender.com",
+    "listrack-2.onrender.com",
+    "render.com",
+  ];
 
   function shouldTrackDomain(domain) {
     return (
       typeof domain === "string" &&
       domain.length > 0 &&
-      !IGNORED_DOMAIN_PATTERNS.some((pattern) =>
-        domain === pattern || domain.endsWith("." + pattern)
+      !IGNORED_DOMAIN_PATTERNS.some(
+        (pattern) => domain === pattern || domain.endsWith("." + pattern),
       )
     );
   }
@@ -113,7 +118,11 @@
       timestamp: new Date().toISOString(),
     };
 
-    if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.sendMessage) {
+    if (
+      typeof chrome !== "undefined" &&
+      chrome.runtime &&
+      chrome.runtime.sendMessage
+    ) {
       try {
         chrome.runtime.sendMessage(payload);
         state.activeTimeMs = 0;
@@ -121,7 +130,9 @@
       } catch (err) {}
     }
 
-    const blob = new Blob([JSON.stringify(payload)], { type: "application/json" });
+    const blob = new Blob([JSON.stringify(payload)], {
+      type: "application/json",
+    });
 
     try {
       navigator.sendBeacon(CONFIG.API_URL, blob);
@@ -167,7 +178,7 @@
       const raw = localStorage.getItem(CONFIG.STORAGE_KEY);
       if (!raw) return;
       const data = JSON.parse(raw);
-      
+
       if (
         data.domain === window.location.hostname &&
         Date.now() - data.timestamp < 3_600_000 &&
@@ -181,10 +192,18 @@
           recovered: true,
         };
 
-        if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.sendMessage) {
-          try { chrome.runtime.sendMessage(payload); } catch (err) {}
+        if (
+          typeof chrome !== "undefined" &&
+          chrome.runtime &&
+          chrome.runtime.sendMessage
+        ) {
+          try {
+            chrome.runtime.sendMessage(payload);
+          } catch (err) {}
         } else {
-          const blob = new Blob([JSON.stringify(payload)], { type: "application/json" });
+          const blob = new Blob([JSON.stringify(payload)], {
+            type: "application/json",
+          });
           navigator.sendBeacon(CONFIG.API_URL, blob);
         }
       }
@@ -202,7 +221,15 @@
       resumeTimer();
     }
 
-    const activityEvents = ["mousemove", "mousedown", "keydown", "scroll", "touchstart", "touchmove", "wheel"];
+    const activityEvents = [
+      "mousemove",
+      "mousedown",
+      "keydown",
+      "scroll",
+      "touchstart",
+      "touchmove",
+      "wheel",
+    ];
     activityEvents.forEach((eventType) => {
       window.addEventListener(eventType, handleUserActivity, { passive: true });
     });
@@ -221,7 +248,10 @@
     window.addEventListener("pagehide", onPageUnload);
     window.addEventListener("beforeunload", onPageUnload);
 
-    state.checkpointInterval = setInterval(onCheckpoint, CONFIG.CHECKPOINT_INTERVAL_MS);
+    state.checkpointInterval = setInterval(
+      onCheckpoint,
+      CONFIG.CHECKPOINT_INTERVAL_MS,
+    );
 
     // Handles rolling intervals — every 10s, send accumulated time if ≥5s
     setInterval(function () {
