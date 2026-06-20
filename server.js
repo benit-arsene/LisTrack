@@ -243,7 +243,7 @@ async function getAggregatedByDomain(date) {
 
   return result.rows.map((row) => ({
     domain: row.domain,
-    totalMinutes: row.totalminutes || 0,
+    totalMinutes: parseFloat(row.totalminutes) || 0,
   }));
 }
 
@@ -321,7 +321,7 @@ async function getAggregatedByDomainForPeriod(startDate, endDate) {
 
   return result.rows.map((row) => ({
     domain: row.domain,
-    totalMinutes: row.totalminutes || 0,
+    totalMinutes: parseFloat(row.totalminutes) || 0,
   }));
 }
 
@@ -346,7 +346,7 @@ async function getDailyBreakdownForPeriod(startDate, endDate) {
 
   return result.rows.map((row) => ({
     date: row.d,
-    totalMinutes: row.totalminutes || 0,
+    totalMinutes: parseFloat(row.totalminutes) || 0,
   }));
 }
 
@@ -826,7 +826,7 @@ async function getTodayMinutesForDomain(domain) {
     [today, domain],
   );
 
-  return result.rows[0] ? result.rows[0].totalminutes || 0 : 0;
+  return result.rows[0] ? parseFloat(result.rows[0].totalminutes) || 0 : 0;
 }
 
 /**
