@@ -18,6 +18,35 @@ const BLOCKED_DOMAINS = [
 const GOAL_CHECK_INTERVAL_MINUTES = 5;
 const NOTIFICATION_COOLDOWN_MS = 30 * 60 * 1000; // 30 min before re-notifying
 
+const USER_TOKEN_KEY = "lisTrackUserToken";
+
+// ─── Token Management ───────────────────────────────────────────────────────
+
+/**
+ * Generate a cryptographically-random hex token.
+ */
+function generateToken() {
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes)
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+/**
+ * Get the user token from storage, creating one if it doesn't exist.
+ */
+async function getOrCreateToken() {
+  const result = await chrome.storage.local.get([USER_TOKEN_KEY]);
+  let token = result[USER_TOKEN_KEY];
+  if (!token) {
+    token = generateToken();
+    await chrome.storage.local.set({ [USER_TOKEN_KEY]: token });
+    console.log("[background] Created new user token:", token);
+  }
+  return token;
+}
+
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
 function isBlockedDomain(domain) {
@@ -29,9 +58,9 @@ function isBlockedDomain(domain) {
 /**
  * Fetch goal status from the server.
  */
-async function fetchGoalStatus() {
+async function fetchGoalStatus(userToken) {
   try {
-    const response = await fetch(`${SERVER_URL}/api/goals/status`);
+    const response = await fetch(`${SERVER_URL}/api/goals/status?user=${encodeURIComponent(userToken)}`);
     if (!response.ok) return null;
     return await response.json();
   } catch (err) {
@@ -109,7 +138,8 @@ async function recordNotification(goal, type) {
 async function checkGoals() {
   console.log("[background] Checking goals...");
 
-  const data = await fetchGoalStatus();
+  const userToken = await getOrCreateToken();
+  const data = await fetchGoalStatus(userToken);
   if (!data || !data.goals || data.goals.length === 0) return;
 
   for (const goal of data.goals) {
@@ -165,6 +195,12 @@ chrome.runtime.onInstalled.addListener((details) => {
 // ─── Message Handler ────────────────────────────────────────────────────────
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  // Handle token request from content script
+  if (message === "getUserToken") {
+    getOrCreateToken().then((token) => sendResponse({ token }));
+    return true; // keep channel open for async response
+  }
+
   if (!message || !message.domain) return;
 
   // Block tracking for excluded domains
@@ -175,20 +211,25 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   console.log("[background] Forwarding tracking data for domain:", message.domain);
 
-  fetch(`${SERVER_URL}/api/screen-time`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify(message)
-  })
-  .then(response => {
-    if (!response.ok) {
-      console.warn("[background] Server returned non-OK status:", response.status);
-    }
-  })
-  .catch(err => {
-    console.error("[background] Failed to connect to server:", err);
+  // Attach the user token to the forwarded payload
+  getOrCreateToken().then((userToken) => {
+    const payload = { ...message, userToken };
+
+    fetch(`${SERVER_URL}/api/screen-time`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    })
+      .then((response) => {
+        if (!response.ok) {
+          console.warn("[background] Server returned non-OK status:", response.status);
+        }
+      })
+      .catch((err) => {
+        console.error("[background] Failed to connect to server:", err);
+      });
   });
 
   return true;

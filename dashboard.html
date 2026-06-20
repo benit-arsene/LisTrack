@@ -383,6 +383,7 @@
     let currentDate = null;          // YYYY-MM-DD reference date, null means today
     let currentPeriod = 'day';       // 'day' | 'week' | 'month'
     let availableDates = [];
+    let currentUser = null;
 
     // ─── Period Button Styling ──────────────────────────────────────────────
 
@@ -517,12 +518,16 @@
       }
 
       try {
+        if (!currentUser) {
+          throw new Error('Missing user token');
+        }
+
         let url;
         if (currentPeriod === 'day') {
-          url = API_BASE + '/dashboard';
-          if (currentDate) url += '?date=' + encodeURIComponent(currentDate);
+          url = API_BASE + '/dashboard?user=' + encodeURIComponent(currentUser);
+          if (currentDate) url += '&date=' + encodeURIComponent(currentDate);
         } else {
-          url = API_BASE + '/summary?period=' + currentPeriod;
+          url = API_BASE + '/summary?period=' + currentPeriod + '&user=' + encodeURIComponent(currentUser);
           if (currentDate) url += '&date=' + encodeURIComponent(currentDate);
         }
 
@@ -999,7 +1004,7 @@
       try {
         const [goalsRes, statusRes] = await Promise.all([
           fetch(API_BASE + '/goals'),
-          fetch(API_BASE + '/goals/status'),
+          fetch(API_BASE + '/goals/status?user=' + encodeURIComponent(currentUser)),
         ]);
 
         if (!goalsRes.ok || !statusRes.ok) throw new Error('Failed to fetch goals');
@@ -1200,7 +1205,32 @@
     }
 
     // ─── Init & Auto-refresh ─────────────────────────────────────────────────
+    /** Show a fatal error message when no user token is present. */
+    function showNoTokenError() {
+      const loadingState = document.getElementById('loadingState');
+      const errorState = document.getElementById('errorState');
+      loadingState.classList.add('hidden');
+      errorState.classList.remove('hidden');
+      document.getElementById('errorMessage').innerHTML = `
+        Missing user identifier. Please open the dashboard <strong>from the LisTrack Chrome extension</strong> to automatically include your token.
+        <br><br>
+        <span style="font-size:0.85rem;color:#6b7280;">Click the LisTrack icon <span style="font-family:monospace;background:#f3f4f6;padding:2px 6px;border-radius:4px;">🧩</span> in your browser toolbar, then press <strong>Open Dashboard</strong>.</span>
+      `;
+      // Hide all dashboard content
+      document.getElementById('dashboardContent').classList.add('hidden');
+    }
+
     document.addEventListener('DOMContentLoaded', () => {
+      // Read the user token from the URL query string
+      const params = new URLSearchParams(window.location.search);
+      const urlUser = params.get('user');
+
+      if (!urlUser || urlUser.trim() === '') {
+        showNoTokenError();
+        return;
+      }
+      currentUser = urlUser.trim();
+
       // Initialize dark mode from localStorage or system preference
       initTheme();
 
@@ -1215,7 +1245,6 @@
       });
 
       // Read URL params (for server-side PDF export via Puppeteer)
-      const params = new URLSearchParams(window.location.search);
       const urlPeriod = params.get('period');
       const urlDate = params.get('date');
       if (urlPeriod && ['day', 'week', 'month'].includes(urlPeriod)) {

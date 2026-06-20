@@ -38,6 +38,7 @@
 
   // ─── State ───────────────────────────────────────────────────────────────
   const state = {
+    userToken: null,
     activeTimeMs: 0,
     sessionStart: null,
     lastActivity: Date.now(),
@@ -116,6 +117,7 @@
       path: window.location.pathname,
       durationSeconds: durationSeconds,
       timestamp: new Date().toISOString(),
+      userToken: state.userToken || '',
     };
 
     if (
@@ -190,6 +192,7 @@
           durationSeconds: data.activeTimeMs / 1000,
           timestamp: new Date(data.timestamp).toISOString(),
           recovered: true,
+          userToken: state.userToken || '',
         };
 
         if (
@@ -213,7 +216,46 @@
 
   // ─── Bind Events & Initialize ────────────────────────────────────────────
 
-  function init() {
+  /**
+   * Fetch the user token from the extension's background script or localStorage.
+   */
+  async function fetchUserToken() {
+    // Try chrome.runtime.sendMessage to background first (works in extension context)
+    if (
+      typeof chrome !== "undefined" &&
+      chrome.runtime &&
+      chrome.runtime.sendMessage
+    ) {
+      try {
+        const response = await new Promise((resolve, reject) => {
+          chrome.runtime.sendMessage("getUserToken", (result) => {
+            if (chrome.runtime.lastError) {
+              reject(chrome.runtime.lastError);
+            } else {
+              resolve(result);
+            }
+          });
+        });
+        if (response && response.token) {
+          state.userToken = response.token;
+          return;
+        }
+      } catch (err) {
+        // Fall through to localStorage fallback
+      }
+    }
+
+    // Fallback: try reading from localStorage (for standalone / non-extension usage)
+    try {
+      const stored = localStorage.getItem("lisTrackUserToken");
+      if (stored) {
+        state.userToken = stored;
+      }
+    } catch (_) {}
+  }
+
+  async function init() {
+    await fetchUserToken();
     recoverCrashData();
 
     if (!document.hidden) {

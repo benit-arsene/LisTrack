@@ -114,6 +114,7 @@ async function initializeDatabase() {
     await client.query(`
       CREATE TABLE IF NOT EXISTS screen_time (
         id              SERIAL PRIMARY KEY,
+        user_id         TEXT NOT NULL DEFAULT '',
         domain          TEXT NOT NULL,
         path            TEXT NOT NULL DEFAULT '/',
         "durationSeconds" DOUBLE PRECISION NOT NULL,
@@ -123,10 +124,22 @@ async function initializeDatabase() {
       )
     `);
 
+    // Add user_id column to existing tables (safe to run on fresh installs too)
+    await client.query(`
+      ALTER TABLE screen_time
+      ADD COLUMN IF NOT EXISTS user_id TEXT NOT NULL DEFAULT ''
+    `);
+
     // Index on domain for faster aggregation queries
     await client.query(`
       CREATE INDEX IF NOT EXISTS idx_screen_time_domain
       ON screen_time(domain)
+    `);
+
+    // Composite index on user + timestamp for multi-user dashboard queries
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_screen_time_user_date
+      ON screen_time(user_id, "timestamp"::date)
     `);
 
     // Create the daily_goals table if it doesn't exist
@@ -182,10 +195,11 @@ initializeDatabase().then(() => {
  */
 async function insertScreenTimeLog(entry) {
   const result = await pool.query(
-    `INSERT INTO screen_time (domain, path, "durationSeconds", "timestamp", recovered)
-     VALUES ($1, $2, $3, $4, $5)
+    `INSERT INTO screen_time (user_id, domain, path, "durationSeconds", "timestamp", recovered)
+     VALUES ($1, $2, $3, $4, $5, $6)
      RETURNING id`,
     [
+      entry.userId || '',
       entry.domain,
       entry.path,
       entry.durationSeconds,
@@ -203,12 +217,14 @@ async function insertScreenTimeLog(entry) {
  *
  * @returns {Promise<Array>} Array of log entries
  */
-async function getAllScreenTimeLogs() {
-  const result = await pool.query(`
-    SELECT id, domain, path, "durationSeconds", "timestamp", recovered, ingested_at
-    FROM screen_time
-    ORDER BY id DESC
-  `);
+async function getAllScreenTimeLogs(userId) {
+  const result = await pool.query(
+    `SELECT id, domain, path, "durationSeconds", "timestamp", recovered, ingested_at
+     FROM screen_time
+     WHERE user_id = $1
+     ORDER BY id DESC`,
+    [userId || ''],
+  );
 
   // recovered is already a boolean from PostgreSQL
   return result.rows.map((row) => ({
@@ -226,7 +242,7 @@ async function getAllScreenTimeLogs() {
  * @returns {Promise<Array<{ domain: string, totalMinutes: number }>>}
  *          Sorted descending by totalMinutes.
  */
-async function getAggregatedByDomain(date) {
+async function getAggregatedByDomain(date, userId) {
   // Default to today's UTC date so the query is always parameterized
   const dateValue = date || new Date().toISOString().slice(0, 10);
 
@@ -235,10 +251,10 @@ async function getAggregatedByDomain(date) {
        domain,
        ROUND((SUM("durationSeconds") / 60.0)::numeric, 2) AS totalMinutes
      FROM screen_time
-     WHERE "timestamp"::date = $1
+     WHERE "timestamp"::date = $1 AND user_id = $2
      GROUP BY domain
      ORDER BY totalMinutes DESC`,
-    [dateValue],
+    [dateValue, userId || ''],
   );
 
   return result.rows.map((row) => ({
@@ -252,12 +268,14 @@ async function getAggregatedByDomain(date) {
  *
  * @returns {Promise<string[]>} Array of date strings in YYYY-MM-DD format.
  */
-async function getAvailableDates() {
-  const result = await pool.query(`
-    SELECT DISTINCT "timestamp"::date AS d
-    FROM screen_time
-    ORDER BY d DESC
-  `);
+async function getAvailableDates(userId) {
+  const result = await pool.query(
+    `SELECT DISTINCT "timestamp"::date AS d
+     FROM screen_time
+     WHERE user_id = $1
+     ORDER BY d DESC`,
+    [userId || ''],
+  );
 
   return result.rows.map((row) => row.d);
 }
@@ -307,16 +325,16 @@ function getPeriodRange(dateStr, period) {
  * @param {string} endDate   - End date YYYY-MM-DD (inclusive).
  * @returns {Promise<Array<{ domain: string, totalMinutes: number }>>}
  */
-async function getAggregatedByDomainForPeriod(startDate, endDate) {
+async function getAggregatedByDomainForPeriod(startDate, endDate, userId) {
   const result = await pool.query(
     `SELECT
        domain,
        ROUND((SUM("durationSeconds") / 60.0)::numeric, 2) AS totalMinutes
      FROM screen_time
-     WHERE "timestamp"::date >= $1 AND "timestamp"::date <= $2
+     WHERE "timestamp"::date >= $1 AND "timestamp"::date <= $2 AND user_id = $3
      GROUP BY domain
      ORDER BY totalMinutes DESC`,
-    [startDate, endDate],
+    [startDate, endDate, userId || ''],
   );
 
   return result.rows.map((row) => ({
@@ -332,16 +350,16 @@ async function getAggregatedByDomainForPeriod(startDate, endDate) {
  * @param {string} endDate   - End date YYYY-MM-DD (inclusive).
  * @returns {Promise<Array<{ date: string, totalMinutes: number }>>}
  */
-async function getDailyBreakdownForPeriod(startDate, endDate) {
+async function getDailyBreakdownForPeriod(startDate, endDate, userId) {
   const result = await pool.query(
     `SELECT
        "timestamp"::date AS d,
        ROUND((SUM("durationSeconds") / 60.0)::numeric, 2) AS totalMinutes
      FROM screen_time
-     WHERE "timestamp"::date >= $1 AND "timestamp"::date <= $2
+     WHERE "timestamp"::date >= $1 AND "timestamp"::date <= $2 AND user_id = $3
      GROUP BY "timestamp"::date
      ORDER BY d ASC`,
-    [startDate, endDate],
+    [startDate, endDate, userId || ''],
   );
 
   return result.rows.map((row) => ({
@@ -381,6 +399,9 @@ app.post("/api/screen-time", async (req, res) => {
       }
     }
 
+    // Extract user token (from body or header)
+    const userToken = payload.userToken || req.headers['x-user-token'] || '';
+
     // Validate required fields
     if (!payload || !payload.domain || !payload.durationSeconds) {
       return res.status(400).json({
@@ -411,6 +432,7 @@ app.post("/api/screen-time", async (req, res) => {
 
     // Clean and normalize the entry
     const entry = {
+      userId: userToken,
       domain: String(payload.domain)
         .toLowerCase()
         .replace(/^www\./, ""),
@@ -481,9 +503,18 @@ app.get("/api/dashboard", async (req, res) => {
       });
     }
 
+    const userId = req.query.user || '';
+
+    if (!userId) {
+      return res.status(400).json({
+        status: "error",
+        message: "Missing required query parameter: user",
+      });
+    }
+
     const [domains, availableDates] = await Promise.all([
-      getAggregatedByDomain(requestedDate),
-      getAvailableDates(),
+      getAggregatedByDomain(requestedDate, userId),
+      getAvailableDates(userId),
     ]);
 
     const totalMinutes = domains.reduce((sum, d) => sum + d.totalMinutes, 0);
@@ -556,10 +587,19 @@ app.get("/api/summary", async (req, res) => {
 
     const { start, end } = getPeriodRange(referenceDate, period);
 
+    const userId = req.query.user || '';
+
+    if (!userId) {
+      return res.status(400).json({
+        status: "error",
+        message: "Missing required query parameter: user",
+      });
+    }
+
     const [domains, dailyBreakdown, availableDates] = await Promise.all([
-      getAggregatedByDomainForPeriod(start, end),
-      getDailyBreakdownForPeriod(start, end),
-      getAvailableDates(),
+      getAggregatedByDomainForPeriod(start, end, userId),
+      getDailyBreakdownForPeriod(start, end, userId),
+      getAvailableDates(userId),
     ]);
 
     const totalMinutes = domains.reduce((sum, d) => sum + d.totalMinutes, 0);
@@ -708,7 +748,8 @@ app.delete("/api/goals/:id", async (req, res) => {
  */
 app.get("/api/goals/status", async (req, res) => {
   try {
-    const statuses = await getGoalStatus();
+    const userId = req.query.user || '';
+    const statuses = await getGoalStatus(userId);
     return res.json({ goals: statuses });
   } catch (err) {
     console.error("[goals] Error getting goal status:", err);
@@ -725,7 +766,8 @@ app.get("/api/goals/status", async (req, res) => {
  */
 app.get("/api/logs", async (req, res) => {
   try {
-    const logs = await getAllScreenTimeLogs();
+    const userId = req.query.user || '';
+    const logs = await getAllScreenTimeLogs(userId);
     return res.json({ total: logs.length, logs });
   } catch (err) {
     console.error("[logs] Error fetching logs:", err);
@@ -816,14 +858,14 @@ async function deleteGoal(id) {
 /**
  * Get today's usage minutes for a specific domain (used by the status endpoint).
  */
-async function getTodayMinutesForDomain(domain) {
+async function getTodayMinutesForDomain(domain, userId) {
   const today = new Date().toISOString().slice(0, 10);
 
   const result = await pool.query(
     `SELECT ROUND((SUM("durationSeconds") / 60.0)::numeric, 2) AS totalMinutes
      FROM screen_time
-     WHERE "timestamp"::date = $1 AND domain = $2`,
-    [today, domain],
+     WHERE "timestamp"::date = $1 AND domain = $2 AND user_id = $3`,
+    [today, domain, userId || ''],
   );
 
   return result.rows[0] ? parseFloat(result.rows[0].totalminutes) || 0 : 0;
@@ -832,14 +874,13 @@ async function getTodayMinutesForDomain(domain) {
 /**
  * Get goal status — compare today's usage against all enabled goals.
  * Returns each goal with its current usage, limit, and percentage.
- */
-async function getGoalStatus() {
+ */async function getGoalStatus(userId) {
   const goals = await getGoals();
   const enabledGoals = goals.filter((g) => g.enabled);
 
   const statuses = await Promise.all(
     enabledGoals.map(async (goal) => {
-      const todayMinutes = await getTodayMinutesForDomain(goal.domain);
+      const todayMinutes = await getTodayMinutesForDomain(goal.domain, userId);
       const percentage =
         goal.max_minutes > 0
           ? Math.min(Math.round((todayMinutes / goal.max_minutes) * 100), 999)
