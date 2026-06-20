@@ -233,7 +233,7 @@ async function getAggregatedByDomain(date) {
   const result = await pool.query(
     `SELECT
        domain,
-       ROUND(SUM("durationSeconds") / 60.0, 2) AS totalMinutes
+       ROUND((SUM("durationSeconds") / 60.0)::numeric, 2) AS totalMinutes
      FROM screen_time
      WHERE "timestamp"::date = $1
      GROUP BY domain
@@ -311,7 +311,7 @@ async function getAggregatedByDomainForPeriod(startDate, endDate) {
   const result = await pool.query(
     `SELECT
        domain,
-       ROUND(SUM("durationSeconds") / 60.0, 2) AS totalMinutes
+       ROUND((SUM("durationSeconds") / 60.0)::numeric, 2) AS totalMinutes
      FROM screen_time
      WHERE "timestamp"::date >= $1 AND "timestamp"::date <= $2
      GROUP BY domain
@@ -336,7 +336,7 @@ async function getDailyBreakdownForPeriod(startDate, endDate) {
   const result = await pool.query(
     `SELECT
        "timestamp"::date AS d,
-       ROUND(SUM("durationSeconds") / 60.0, 2) AS totalMinutes
+       ROUND((SUM("durationSeconds") / 60.0)::numeric, 2) AS totalMinutes
      FROM screen_time
      WHERE "timestamp"::date >= $1 AND "timestamp"::date <= $2
      GROUP BY "timestamp"::date
@@ -820,7 +820,7 @@ async function getTodayMinutesForDomain(domain) {
   const today = new Date().toISOString().slice(0, 10);
 
   const result = await pool.query(
-    `SELECT ROUND(SUM("durationSeconds") / 60.0, 2) AS totalMinutes
+    `SELECT ROUND((SUM("durationSeconds") / 60.0)::numeric, 2) AS totalMinutes
      FROM screen_time
      WHERE "timestamp"::date = $1 AND domain = $2`,
     [today, domain],
