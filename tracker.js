@@ -1,8 +1,8 @@
 /**
  * Web Screen-Time Tracker (Fixed & Optimized)
  * -----------------------------------------
- * Handles idle states, tab visibility, blocks back-to-back unload triggers,
- * and safely clears crash checkpoints on orderly tab closures.
+ * Tracks time continuously while the tab is visible — no idle timeout.
+ * Blocks back-to-back unload triggers and safely clears crash checkpoints.
  */
 
 (function () {
@@ -12,7 +12,6 @@
   const CONFIG = {
     // Send tracking data to the deployed backend.
     API_URL: "https://listrack-2.onrender.com/api/screen-time",
-    IDLE_THRESHOLD_MS: 60_000,
     CHECKPOINT_INTERVAL_MS: 5_000,
     STORAGE_KEY: "web_screen_time_tracker",
   };
@@ -41,9 +40,7 @@
     userToken: null,
     activeTimeMs: 0,
     sessionStart: null,
-    lastActivity: Date.now(),
     isTabVisible: !document.hidden,
-    hasEverInteracted: false,
     checkpointInterval: null,
     _finalSent: false,
   };
@@ -65,20 +62,8 @@
   }
 
   function handleUserActivity() {
-    state.lastActivity = Date.now();
-    state.hasEverInteracted = true;
-
     if (state.sessionStart === null && state.isTabVisible) {
       resumeTimer();
-    }
-  }
-
-  function checkIdle() {
-    if (state.sessionStart !== null && state.isTabVisible) {
-      const elapsed = Date.now() - state.lastActivity;
-      if (elapsed >= CONFIG.IDLE_THRESHOLD_MS) {
-        pauseTimer();
-      }
     }
   }
 
@@ -90,10 +75,7 @@
       pauseTimer();
     } else {
       state.isTabVisible = true;
-      const elapsed = Date.now() - state.lastActivity;
-      if (elapsed < CONFIG.IDLE_THRESHOLD_MS) {
-        resumeTimer();
-      }
+      resumeTimer();
     }
   }
 
@@ -154,7 +136,6 @@
   }
 
   function onCheckpoint() {
-    checkIdle();
     if (state.activeTimeMs <= 0) return;
 
     const domain = window.location.hostname;
@@ -166,7 +147,6 @@
     try {
       const data = {
         activeTimeMs: state.activeTimeMs,
-        lastActivity: state.lastActivity,
         domain,
         path: window.location.pathname,
         timestamp: Date.now(),
@@ -259,7 +239,6 @@
     recoverCrashData();
 
     if (!document.hidden) {
-      state.lastActivity = Date.now();
       resumeTimer();
     }
 

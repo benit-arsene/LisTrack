@@ -13,9 +13,17 @@
     "https://listrack-2.onrender.com/*",
     "http://localhost:3000/*"
   ],
+  "icons": {
+    "128": "icon.png"
+  },
   "action": {
     "default_title": "LisTrack - Open Dashboard",
-    "default_popup": "popup.html"
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icon.png",
+      "48": "icon.png",
+      "128": "icon.png"
+    }
   },
   "background": {
     "service_worker": "background.js"
