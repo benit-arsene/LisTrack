@@ -213,14 +213,6 @@
         </div>
       </div>
 
-      <!-- Daily Breakdown Chart (visible only in week/month view) -->
-      <div id="dailyBreakdownSection" class="hidden bg-white dark:bg-gray-800 rounded-2xl shadow-sm border border-gray-100 dark:border-gray-700 overflow-hidden slide-up mb-8 transition-all duration-300 ease-in-out" style="animation-delay: 0.18s;">
-        <div class="px-6 py-4 border-b border-gray-100 dark:border-gray-700">
-          <h2 class="text-base font-semibold text-gray-900 dark:text-gray-100">Daily Breakdown</h2>
-        </div>
-        <div id="dailyBreakdownList" class="divide-y divide-gray-50 dark:divide-gray-700/50 px-6 py-3"></div>
-      </div>
-
       <!-- Top Apps / Websites Section -->
       <div class="bg-white dark:bg-gray-800 rounded-2xl shadow-sm border border-gray-100 dark:border-gray-700 overflow-hidden slide-up transition-all duration-300 ease-in-out" style="animation-delay: 0.2s;">
         <div class="px-6 py-5 border-b border-gray-100 dark:border-gray-700">
@@ -243,6 +235,14 @@
 
         <!-- Domain list -->
         <div id="domainList" class="divide-y divide-gray-50 dark:divide-gray-700/50"></div>
+      </div>
+
+      <!-- Daily Breakdown Chart (visible only in week/month view) -->
+      <div id="dailyBreakdownSection" class="hidden bg-white dark:bg-gray-800 rounded-2xl shadow-sm border border-gray-100 dark:border-gray-700 overflow-hidden slide-up mb-8 transition-all duration-300 ease-in-out" style="animation-delay: 0.18s;">
+        <div class="px-6 py-4 border-b border-gray-100 dark:border-gray-700">
+          <h2 class="text-base font-semibold text-gray-900 dark:text-gray-100">Daily Breakdown</h2>
+        </div>
+        <div id="dailyBreakdownList" class="divide-y divide-gray-50 dark:divide-gray-700/50 px-6 py-3"></div>
       </div>
 
       <!-- Daily Goals Section -->
@@ -783,9 +783,6 @@
       document.getElementById('topDomain').textContent   = data.topDomain || '—';
       updateDomainCount(data);
 
-      // Daily breakdown
-      renderDailyBreakdown(data);
-
       // Domain list (patch in-place)
       const domainList = document.getElementById('domainList');
       const emptyState = document.getElementById('emptyState');
@@ -794,51 +791,53 @@
       if (!data.domains || data.domains.length === 0) {
         emptyState.classList.remove('hidden');
         domainList.classList.add('hidden');
-        return;
+      } else {
+        emptyState.classList.add('hidden');
+        domainList.classList.remove('hidden');
+
+        // Build existing rows map
+        const existingRows = {};
+        domainList.querySelectorAll('[data-domain]').forEach(row => {
+          existingRows[row.getAttribute('data-domain')] = row;
+        });
+
+        const incomingDomains = data.domains.slice(0, 10).map(d => d.domain);
+
+        // Remove rows no longer in top 10
+        Object.keys(existingRows).forEach(domain => {
+          if (!incomingDomains.includes(domain)) existingRows[domain].remove();
+        });
+
+        data.domains.slice(0, 10).forEach((item, index) => {
+          const pct = maxMinutes > 0 ? (item.totalMinutes / maxMinutes) * 100 : 0;
+
+          if (existingRows[item.domain]) {
+            const row = existingRows[item.domain];
+            const rankEl = row.querySelector('[data-rank]');
+            if (rankEl) rankEl.textContent = index + 1;
+            const timeEl = row.querySelector('[data-time]');
+            if (timeEl) timeEl.textContent = formatTime(item.totalMinutes);
+            const bar = row.querySelector('.progress-bar');
+            if (bar) bar.style.width = pct + '%';
+            // Move to correct position
+            domainList.appendChild(row);
+          } else {
+            const row = createDomainRow(item, index);
+            const bar = row.querySelector('.progress-bar');
+            if (bar) bar.setAttribute('data-target', pct);
+            domainList.appendChild(row);
+            requestAnimationFrame(() => {
+              requestAnimationFrame(() => {
+                const b = row.querySelector('.progress-bar');
+                if (b) b.style.width = pct + '%';
+              });
+            });
+          }
+        });
       }
 
-      emptyState.classList.add('hidden');
-      domainList.classList.remove('hidden');
-
-      // Build existing rows map
-      const existingRows = {};
-      domainList.querySelectorAll('[data-domain]').forEach(row => {
-        existingRows[row.getAttribute('data-domain')] = row;
-      });
-
-      const incomingDomains = data.domains.slice(0, 10).map(d => d.domain);
-
-      // Remove rows no longer in top 10
-      Object.keys(existingRows).forEach(domain => {
-        if (!incomingDomains.includes(domain)) existingRows[domain].remove();
-      });
-
-      data.domains.slice(0, 10).forEach((item, index) => {
-        const pct = maxMinutes > 0 ? (item.totalMinutes / maxMinutes) * 100 : 0;
-
-        if (existingRows[item.domain]) {
-          const row = existingRows[item.domain];
-          const rankEl = row.querySelector('[data-rank]');
-          if (rankEl) rankEl.textContent = index + 1;
-          const timeEl = row.querySelector('[data-time]');
-          if (timeEl) timeEl.textContent = formatTime(item.totalMinutes);
-          const bar = row.querySelector('.progress-bar');
-          if (bar) bar.style.width = pct + '%';
-          // Move to correct position
-          domainList.appendChild(row);
-        } else {
-          const row = createDomainRow(item, index);
-          const bar = row.querySelector('.progress-bar');
-          if (bar) bar.setAttribute('data-target', pct);
-          domainList.appendChild(row);
-          requestAnimationFrame(() => {
-            requestAnimationFrame(() => {
-              const b = row.querySelector('.progress-bar');
-              if (b) b.style.width = pct + '%';
-            });
-          });
-        }
-      });
+      // Daily breakdown (renders independently, even if no domains)
+      renderDailyBreakdown(data);
     }
 
     // ─── Full Render ────────────────────────────────────────────────────────
@@ -896,11 +895,11 @@
       document.getElementById('topDomain').textContent   = data.topDomain || '—';
       updateDomainCount(data);
 
-      // ── Daily Breakdown ──
-      renderDailyBreakdown(data);
-
       // ── Domain List ──
       renderDomainList(data, document.getElementById('domainList'));
+
+      // ── Daily Breakdown ──
+      renderDailyBreakdown(data);
     }
 
     function updateLastUpdated() {
