@@ -282,7 +282,30 @@
     function onPageUnload() {
       if (state._finalSent) return;
       state._finalSent = true;
-      sendScreenTime(true);
+
+      // Pause the timer to capture final accumulated time
+      pauseTimer();
+      const durationSeconds = state.activeTimeMs / 1000;
+      if (durationSeconds > 0) {
+        const domain = window.location.hostname;
+        if (shouldTrackDomain(domain)) {
+          const payload = {
+            domain,
+            path: window.location.pathname,
+            durationSeconds,
+            timestamp: new Date().toISOString(),
+            userToken: state.userToken || '',
+          };
+
+          // Always use sendBeacon for unload — it's the most reliable during page teardown
+          try {
+            const blob = new Blob([JSON.stringify(payload)], { type: "application/json" });
+            navigator.sendBeacon(CONFIG.API_URL, blob);
+          } catch (_) {}
+        }
+      }
+      state.activeTimeMs = 0;
+
       try {
         localStorage.removeItem(CONFIG.STORAGE_KEY);
       } catch (_) {}
@@ -295,15 +318,15 @@
       CONFIG.CHECKPOINT_INTERVAL_MS,
     );
 
-    // Handles rolling intervals — every 10s, send accumulated time if ≥5s
+    // Handles rolling intervals — every 5s, send accumulated time if ≥1s
     setInterval(function () {
-      if (state.activeTimeMs >= 5_000) {
+      if (state.activeTimeMs >= 1_000) {
         sendScreenTime(false);
       }
       if (state.isTabVisible) {
         resumeTimer();
       }
-    }, 10_000);
+    }, 5_000);
   }
 
   // FIX: Enabled running on localhost so you can actually test your extension locally!
