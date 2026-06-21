@@ -136,12 +136,6 @@ async function initializeDatabase() {
       ON screen_time(domain)
     `);
 
-    // Composite index on user + timestamp for multi-user dashboard queries
-    await client.query(`
-      CREATE INDEX IF NOT EXISTS idx_screen_time_user_date
-      ON screen_time(user_id, CAST("timestamp" AS DATE))
-    `);
-
     // Create the daily_goals table if it doesn't exist
     await client.query(`
       CREATE TABLE IF NOT EXISTS daily_goals (
