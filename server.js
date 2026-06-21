@@ -139,7 +139,7 @@ async function initializeDatabase() {
     // Composite index on user + timestamp for multi-user dashboard queries
     await client.query(`
       CREATE INDEX IF NOT EXISTS idx_screen_time_user_date
-      ON screen_time(user_id, "timestamp"::date)
+      ON screen_time(user_id, CAST("timestamp" AS DATE))
     `);
 
     // Create the daily_goals table if it doesn't exist
@@ -249,9 +249,9 @@ async function getAggregatedByDomain(date, userId) {
   const result = await pool.query(
     `SELECT
        domain,
-       ROUND((SUM("durationSeconds") / 60.0)::numeric, 2) AS totalMinutes
+       ROUND(CAST((SUM("durationSeconds") / 60.0) AS numeric), 2) AS totalMinutes
      FROM screen_time
-     WHERE "timestamp"::date = $1 AND user_id = $2
+     WHERE CAST("timestamp" AS DATE) = $1 AND user_id = $2
      GROUP BY domain
      ORDER BY totalMinutes DESC`,
     [dateValue, userId || ''],
@@ -270,7 +270,7 @@ async function getAggregatedByDomain(date, userId) {
  */
 async function getAvailableDates(userId) {
   const result = await pool.query(
-    `SELECT DISTINCT "timestamp"::date AS d
+    `SELECT DISTINCT CAST("timestamp" AS DATE) AS d
      FROM screen_time
      WHERE user_id = $1
      ORDER BY d DESC`,
@@ -329,9 +329,9 @@ async function getAggregatedByDomainForPeriod(startDate, endDate, userId) {
   const result = await pool.query(
     `SELECT
        domain,
-       ROUND((SUM("durationSeconds") / 60.0)::numeric, 2) AS totalMinutes
+       ROUND(CAST((SUM("durationSeconds") / 60.0) AS numeric), 2) AS totalMinutes
      FROM screen_time
-     WHERE "timestamp"::date >= $1 AND "timestamp"::date <= $2 AND user_id = $3
+     WHERE CAST("timestamp" AS DATE) >= $1 AND CAST("timestamp" AS DATE) <= $2 AND user_id = $3
      GROUP BY domain
      ORDER BY totalMinutes DESC`,
     [startDate, endDate, userId || ''],
@@ -353,11 +353,11 @@ async function getAggregatedByDomainForPeriod(startDate, endDate, userId) {
 async function getDailyBreakdownForPeriod(startDate, endDate, userId) {
   const result = await pool.query(
     `SELECT
-       "timestamp"::date AS d,
-       ROUND((SUM("durationSeconds") / 60.0)::numeric, 2) AS totalMinutes
+       CAST("timestamp" AS DATE) AS d,
+       ROUND(CAST((SUM("durationSeconds") / 60.0) AS numeric), 2) AS totalMinutes
      FROM screen_time
-     WHERE "timestamp"::date >= $1 AND "timestamp"::date <= $2 AND user_id = $3
-     GROUP BY "timestamp"::date
+     WHERE CAST("timestamp" AS DATE) >= $1 AND CAST("timestamp" AS DATE) <= $2 AND user_id = $3
+     GROUP BY CAST("timestamp" AS DATE)
      ORDER BY d ASC`,
     [startDate, endDate, userId || ''],
   );
@@ -862,9 +862,9 @@ async function getTodayMinutesForDomain(domain, userId) {
   const today = new Date().toISOString().slice(0, 10);
 
   const result = await pool.query(
-    `SELECT ROUND((SUM("durationSeconds") / 60.0)::numeric, 2) AS totalMinutes
+    `SELECT ROUND(CAST((SUM("durationSeconds") / 60.0) AS numeric), 2) AS totalMinutes
      FROM screen_time
-     WHERE "timestamp"::date = $1 AND domain = $2 AND user_id = $3`,
+     WHERE CAST("timestamp" AS DATE) = $1 AND domain = $2 AND user_id = $3`,
     [today, domain, userId || ''],
   );
 
