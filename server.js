@@ -2,9 +2,11 @@
  * Web Screen-Time Tracker — Backend Server
  * ==========================================
  * Express server that collects screen-time data from the tracking snippet
- * and exposes a dashboard API. Uses sql.js (pure JavaScript SQLite via
- * WebAssembly) for zero-configuration persistent storage — no native
- * compilation required, works on every platform including Render.
+ * and exposes a dashboard API.
+ *
+ * Supports TWO database backends:
+ *   1. PostgreSQL  — when DATABASE_URL env var is set (production / Render)
+ *   2. SQLite      — via sql.js (pure JS/WASM, zero native compilation — local dev)
  *
  * Endpoints:
  *   POST /api/screen-time   — Accept screen-time payloads (JSON or text/plain)
@@ -16,177 +18,230 @@
  *
  * Environment:
  *   PORT            — HTTP server port (default: 3000)
- *   DATABASE_PATH   — Path to SQLite database file (default: ./data/screen-time.db)
+ *   DATABASE_URL    — PostgreSQL connection string (if set, uses PostgreSQL)
+ *   DATABASE_PATH   — SQLite database file path (default: ./data/screen-time.db)
  */
 
 const express = require("express");
 const cors = require("cors");
 const path = require("path");
 const fs = require("fs");
-const initSqlJs = require("sql.js");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+const USE_PG = !!process.env.DATABASE_URL;
 
 // ─── Middleware ──────────────────────────────────────────────────────────────
 
-// Enable CORS for all origins
 app.use(cors());
-
-// Parse JSON bodies
 app.use(express.json({ type: "application/json" }));
-
-// Parse text/plain bodies (navigator.sendBeacon often sends text/plain)
 app.use(express.text({ type: "text/plain" }));
-
-// Serve static files from the project root
 app.use(express.static(__dirname));
 
-// Redirect root path to dashboard.html
 app.get("/", (req, res) => {
   res.redirect("/dashboard.html");
 });
 
-// ─── SQLite Database Setup (sql.js — pure JS, no native compilation) ──────
+// ─── Database Abstraction ───────────────────────────────────────────────────
+// Two drivers: PostgreSQL (production) and SQLite (local dev)
+// Both expose the same async interface: { init, all, get, run, close }
 
 const DATA_DIR = path.resolve(__dirname, "data");
 const DB_PATH = process.env.DATABASE_PATH || path.join(DATA_DIR, "screen-time.db");
+let driver = null;
 
-// ─── sql.js helper wrappers ────────────────────────────────────────────────
-// sql.js is an in-memory SQLite. We persist to disk manually via export().
-// These helpers mimic the better-sqlite3 API we were using before.
+// ─── SQLite Driver (sql.js — pure JS, no native compilation) ────────────────
 
-let db = null;
-
-/** Initialize sql.js, load or create the database, and run DDL. */
-async function initDatabase() {
+async function createSqliteDriver() {
+  const initSqlJs = require("sql.js");
   const SQL = await initSqlJs();
 
-  // Load existing database or create empty one
+  let db;
   if (fs.existsSync(DB_PATH)) {
-    const buffer = fs.readFileSync(DB_PATH);
-    db = new SQL.Database(buffer);
-    console.log(`[db] Loaded existing database from ${DB_PATH}`);
+    db = new SQL.Database(fs.readFileSync(DB_PATH));
+    console.log(`[db] Loaded existing SQLite database from ${DB_PATH}`);
   } else {
-    // Ensure the data directory exists
     if (!fs.existsSync(DATA_DIR)) {
       fs.mkdirSync(DATA_DIR, { recursive: true });
     }
     db = new SQL.Database();
-    console.log(`[db] Created new database at ${DB_PATH}`);
+    console.log(`[db] Created new SQLite database at ${DB_PATH}`);
   }
 
-  // Create tables and indexes
-  db.run(`
-    CREATE TABLE IF NOT EXISTS screen_time (
-      id              INTEGER PRIMARY KEY AUTOINCREMENT,
-      user_id         TEXT NOT NULL DEFAULT '',
-      domain          TEXT NOT NULL,
-      path            TEXT NOT NULL DEFAULT '/',
-      durationSeconds REAL NOT NULL,
-      timestamp       TEXT NOT NULL,
-      recovered       INTEGER NOT NULL DEFAULT 0,
-      ingested_at     TEXT NOT NULL DEFAULT (datetime('now'))
-    )
-  `);
-
-  db.run(`
-    CREATE INDEX IF NOT EXISTS idx_screen_time_domain
-    ON screen_time(domain)
-  `);
-
-  db.run(`
-    CREATE INDEX IF NOT EXISTS idx_screen_time_timestamp
-    ON screen_time(timestamp)
-  `);
-
-  db.run(`
-    CREATE INDEX IF NOT EXISTS idx_screen_time_user
-    ON screen_time(user_id)
-  `);
-
-  db.run(`
-    CREATE TABLE IF NOT EXISTS daily_goals (
-      id          INTEGER PRIMARY KEY AUTOINCREMENT,
-      domain      TEXT NOT NULL,
-      max_minutes REAL NOT NULL,
-      enabled     INTEGER NOT NULL DEFAULT 1,
-      created_at  TEXT NOT NULL DEFAULT (datetime('now')),
-      updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
-    )
-  `);
-
-  db.run(`
-    CREATE INDEX IF NOT EXISTS idx_daily_goals_domain
-    ON daily_goals(domain)
-  `);
-
-  // Persist the newly created schema
-  saveDatabase();
-
-  console.log(`[db] Database ready at ${DB_PATH}`);
-}
-
-/** Persist the in-memory database to disk. */
-function saveDatabase() {
-  const data = db.export();
-  fs.writeFileSync(DB_PATH, Buffer.from(data));
-}
-
-/** Query all rows and return them as an array of objects. */
-function dbAll(sql, params = []) {
-  const stmt = db.prepare(sql);
-  if (params.length > 0) stmt.bind(params);
-  const rows = [];
-  while (stmt.step()) {
-    rows.push(stmt.getAsObject());
+  function save() {
+    fs.writeFileSync(DB_PATH, Buffer.from(db.export()));
   }
-  stmt.free();
-  return rows;
+
+  return {
+    isPostgres: false,
+
+    init: async () => {
+      db.run(sql_schema);
+      save();
+      console.log("[db] SQLite schema ready");
+    },
+
+    all(sql, params = []) {
+      const stmt = db.prepare(sql);
+      if (params.length > 0) stmt.bind(params);
+      const rows = [];
+      while (stmt.step()) rows.push(stmt.getAsObject());
+      stmt.free();
+      return rows;
+    },
+
+    get(sql, params = []) {
+      const rows = this.all(sql, params);
+      return rows.length > 0 ? rows[0] : null;
+    },
+
+    run(sql, params = []) {
+      const stmt = db.prepare(sql);
+      if (params.length > 0) stmt.bind(params);
+      stmt.step();
+      stmt.free();
+      const idRow = db.exec("SELECT last_insert_rowid() AS id");
+      const chRow = db.exec("SELECT changes() AS n");
+      save();
+      return {
+        lastInsertRowid: idRow?.[0]?.values?.[0]?.[0] ?? null,
+        changes: chRow?.[0]?.values?.[0]?.[0] ?? 0,
+      };
+    },
+
+    close() {
+      save();
+      console.log("[db] SQLite saved and closed");
+    },
+  };
 }
 
-/** Query a single row and return it as an object (or null). */
-function dbGet(sql, params = []) {
-  const stmt = db.prepare(sql);
-  if (params.length > 0) stmt.bind(params);
-  let row = null;
-  if (stmt.step()) {
-    row = stmt.getAsObject();
-  }
-  stmt.free();
-  return row;
+// ─── PostgreSQL Driver ──────────────────────────────────────────────────────
+
+async function createPostgresDriver(connectionString) {
+  const { Pool } = require("pg");
+  const pool = new Pool({
+    connectionString,
+    ssl: { rejectUnauthorized: false },
+    max: 10,
+  });
+
+  // Test connection
+  await pool.query("SELECT 1");
+
+  // Convert ? placeholders to $1, $2, $3 ... for PostgreSQL
+  const q = (sql, params = []) => {
+    let idx = 0;
+    const converted = sql.replace(/\?/g, () => `$${++idx}`);
+    return pool.query(converted, params);
+  };
+
+  return {
+    isPostgres: true,
+
+    init: async () => {
+      await pool.query(sql_schema_pg);
+      console.log("[db] PostgreSQL schema ready");
+    },
+
+    async all(sql, params = []) {
+      const result = await q(sql, params);
+      return result.rows;
+    },
+
+    async get(sql, params = []) {
+      const rows = await this.all(sql, params);
+      return rows.length > 0 ? rows[0] : null;
+    },
+
+    async run(sql, params = []) {
+      // For INSERT queries, append RETURNING id so we get the inserted row back
+      const sqlToRun = sql.trim().toUpperCase().startsWith('INSERT')
+        ? sql + ' RETURNING id'
+        : sql;
+      const result = await q(sqlToRun, params);
+      return {
+        lastInsertRowid: result.rows?.[0]?.id ?? null,
+        changes: result.rowCount ?? 0,
+      };
+    },
+
+    async close() {
+      await pool.end();
+      console.log("[db] PostgreSQL pool closed");
+    },
+  };
 }
 
-/** Execute a write statement (INSERT/UPDATE/DELETE) and return result info. */
-function dbRun(sql, params = []) {
-  const stmt = db.prepare(sql);
-  if (params.length > 0) stmt.bind(params);
-  stmt.step();
-  stmt.free();
+// ─── Schema SQL ─────────────────────────────────────────────────────────────
 
-  // Retrieve lastInsertRowid and changes count
-  const idRow = db.exec("SELECT last_insert_rowid() AS id");
-  const changesRow = db.exec("SELECT changes() AS n");
+// Note: Double-quoted identifiers are needed for PostgreSQL case-sensitivity.
+// SQLite accepts them too, so we use a single schema for both DDL.
+const sql_schema = `
+  CREATE TABLE IF NOT EXISTS screen_time (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id         TEXT NOT NULL DEFAULT '',
+    domain          TEXT NOT NULL,
+    path            TEXT NOT NULL DEFAULT '/',
+    "durationSeconds" REAL NOT NULL,
+    timestamp       TEXT NOT NULL,
+    recovered       INTEGER NOT NULL DEFAULT 0,
+    ingested_at     TEXT NOT NULL DEFAULT (datetime('now'))
+  );
 
-  const lastInsertRowid =
-    idRow && idRow.length > 0 ? idRow[0].values[0][0] : null;
-  const changes =
-    changesRow && changesRow.length > 0 ? changesRow[0].values[0][0] : 0;
+  CREATE INDEX IF NOT EXISTS idx_screen_time_domain ON screen_time(domain);
+  CREATE INDEX IF NOT EXISTS idx_screen_time_timestamp ON screen_time(timestamp);
+  CREATE INDEX IF NOT EXISTS idx_screen_time_user ON screen_time(user_id);
 
-  // Persist to disk after every write
-  saveDatabase();
+  CREATE TABLE IF NOT EXISTS daily_goals (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    domain        TEXT NOT NULL,
+    max_minutes   REAL NOT NULL,
+    enabled       INTEGER NOT NULL DEFAULT 1,
+    created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
+  );
 
-  return { lastInsertRowid, changes };
-}
+  CREATE INDEX IF NOT EXISTS idx_daily_goals_domain ON daily_goals(domain);
+`;
+
+// PostgreSQL schema uses SERIAL instead of AUTOINCREMENT and BOOLEAN + NOW()
+const sql_schema_pg = `
+  CREATE TABLE IF NOT EXISTS screen_time (
+    id              SERIAL PRIMARY KEY,
+    user_id         TEXT NOT NULL DEFAULT '',
+    domain          TEXT NOT NULL,
+    path            TEXT NOT NULL DEFAULT '/',
+    "durationSeconds" DOUBLE PRECISION NOT NULL,
+    timestamp       TIMESTAMP NOT NULL,
+    recovered       BOOLEAN NOT NULL DEFAULT FALSE,
+    ingested_at     TIMESTAMP NOT NULL DEFAULT NOW()
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_screen_time_domain ON screen_time(domain);
+  CREATE INDEX IF NOT EXISTS idx_screen_time_timestamp ON screen_time(timestamp);
+  CREATE INDEX IF NOT EXISTS idx_screen_time_user ON screen_time(user_id);
+
+  CREATE TABLE IF NOT EXISTS daily_goals (
+    id            SERIAL PRIMARY KEY,
+    domain        TEXT NOT NULL,
+    max_minutes   DOUBLE PRECISION NOT NULL,
+    enabled       BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at    TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at    TIMESTAMP NOT NULL DEFAULT NOW()
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_daily_goals_domain ON daily_goals(domain);
+`;
 
 // ─── Database Helper Functions ──────────────────────────────────────────────
 
 /**
  * Insert a screen-time log entry into storage.
  */
-function insertScreenTimeLog(entry) {
-  const result = dbRun(
-    `INSERT INTO screen_time (user_id, domain, path, durationSeconds, timestamp, recovered)
+async function insertScreenTimeLog(entry) {
+  const result = await driver.run(
+    `INSERT INTO screen_time (user_id, domain, path, "durationSeconds", timestamp, recovered)
      VALUES (?, ?, ?, ?, ?, ?)`,
     [entry.userId || '', entry.domain, entry.path, entry.durationSeconds, entry.timestamp, entry.recovered ? 1 : 0],
   );
@@ -197,32 +252,34 @@ function insertScreenTimeLog(entry) {
 /**
  * Retrieve all screen-time logs from storage.
  */
-function getAllScreenTimeLogs(userId) {
-  return dbAll(
-    `SELECT id, domain, path, durationSeconds, timestamp, recovered, ingested_at
+async function getAllScreenTimeLogs(userId) {
+  const rows = await driver.all(
+    `SELECT id, domain, path, "durationSeconds", timestamp, recovered, ingested_at
      FROM screen_time
      WHERE user_id = ?
      ORDER BY id DESC`,
     [userId || ''],
-  ).map((row) => ({
+  );
+  return rows.map((row) => ({
     ...row,
-    recovered: row.recovered === 1,
+    recovered: row.recovered === 1 || row.recovered === true,
   }));
 }
 
 /**
  * Aggregate screen-time logs grouped by domain for a given date.
  */
-function getAggregatedByDomain(date, userId) {
+async function getAggregatedByDomain(date, userId) {
   const dateValue = date || new Date().toISOString().slice(0, 10);
-  return dbAll(
-    `SELECT domain, ROUND(SUM(durationSeconds) / 60.0, 2) AS totalMinutes
+  const rows = await driver.all(
+    `SELECT domain, ROUND(SUM("durationSeconds") / 60.0, 2) AS totalMinutes
      FROM screen_time
      WHERE date(timestamp) = ? AND user_id = ?
      GROUP BY domain
      ORDER BY totalMinutes DESC`,
     [dateValue, userId || ''],
-  ).map((row) => ({
+  );
+  return rows.map((row) => ({
     domain: row.domain,
     totalMinutes: row.totalMinutes || 0,
   }));
@@ -231,14 +288,15 @@ function getAggregatedByDomain(date, userId) {
 /**
  * Return all distinct dates that have screen-time data, sorted descending.
  */
-function getAvailableDates(userId) {
-  return dbAll(
+async function getAvailableDates(userId) {
+  const rows = await driver.all(
     `SELECT DISTINCT date(timestamp) AS d
      FROM screen_time
      WHERE user_id = ?
      ORDER BY d DESC`,
     [userId || ''],
-  ).map((row) => row.d);
+  );
+  return rows.map((row) => row.d);
 }
 
 /**
@@ -276,15 +334,16 @@ function getPeriodRange(dateStr, period) {
 /**
  * Aggregate screen-time logs grouped by domain for a date range.
  */
-function getAggregatedByDomainForPeriod(startDate, endDate, userId) {
-  return dbAll(
-    `SELECT domain, ROUND(SUM(durationSeconds) / 60.0, 2) AS totalMinutes
+async function getAggregatedByDomainForPeriod(startDate, endDate, userId) {
+  const rows = await driver.all(
+    `SELECT domain, ROUND(SUM("durationSeconds") / 60.0, 2) AS totalMinutes
      FROM screen_time
      WHERE date(timestamp) >= ? AND date(timestamp) <= ? AND user_id = ?
      GROUP BY domain
      ORDER BY totalMinutes DESC`,
     [startDate, endDate, userId || ''],
-  ).map((row) => ({
+  );
+  return rows.map((row) => ({
     domain: row.domain,
     totalMinutes: row.totalMinutes || 0,
   }));
@@ -293,391 +352,44 @@ function getAggregatedByDomainForPeriod(startDate, endDate, userId) {
 /**
  * Return total minutes per day for a date range.
  */
-function getDailyBreakdownForPeriod(startDate, endDate, userId) {
-  return dbAll(
-    `SELECT date(timestamp) AS d, ROUND(SUM(durationSeconds) / 60.0, 2) AS totalMinutes
+async function getDailyBreakdownForPeriod(startDate, endDate, userId) {
+  const rows = await driver.all(
+    `SELECT date(timestamp) AS d, ROUND(SUM("durationSeconds") / 60.0, 2) AS totalMinutes
      FROM screen_time
      WHERE date(timestamp) >= ? AND date(timestamp) <= ? AND user_id = ?
      GROUP BY date(timestamp)
      ORDER BY d ASC`,
     [startDate, endDate, userId || ''],
-  ).map((row) => ({
+  );
+  return rows.map((row) => ({
     date: row.d,
     totalMinutes: row.totalMinutes || 0,
   }));
 }
-
-// ─── Routes ─────────────────────────────────────────────────────────────────
-
-/**
- * POST /api/screen-time
- *
- * Accepts screen-time payloads sent by the tracking snippet.
- */
-app.post("/api/screen-time", (req, res) => {
-  try {
-    let payload = req.body;
-
-    // If the body is a string (text/plain), parse it as JSON
-    if (typeof payload === "string") {
-      try {
-        payload = JSON.parse(payload);
-      } catch (parseErr) {
-        return res.status(400).json({
-          status: "error",
-          message: "Invalid JSON in request body",
-        });
-      }
-    }
-
-    // Extract user token (from body or header)
-    const userToken = payload.userToken || req.headers['x-user-token'] || '';
-
-    // Validate required fields
-    if (!payload || !payload.domain || !payload.durationSeconds) {
-      return res.status(400).json({
-        status: "error",
-        message: "Missing required fields: domain, durationSeconds",
-        received: payload,
-      });
-    }
-
-    // Validate types
-    if (
-      typeof payload.durationSeconds !== "number" ||
-      payload.durationSeconds < 0
-    ) {
-      return res.status(400).json({
-        status: "error",
-        message: "durationSeconds must be a non-negative number",
-      });
-    }
-
-    // Validate duration is reasonable (max 1 hour per event)
-    if (payload.durationSeconds > 3600) {
-      return res.status(400).json({
-        status: "error",
-        message: "durationSeconds exceeds maximum allowed (3600)",
-      });
-    }
-
-    // Clean and normalize the entry
-    const entry = {
-      userId: userToken,
-      domain: String(payload.domain)
-        .toLowerCase()
-        .replace(/^www\./, ""),
-      path: String(payload.path || "/"),
-      durationSeconds: payload.durationSeconds,
-      timestamp: payload.timestamp || new Date().toISOString(),
-      recovered: payload.recovered === true,
-    };
-
-    // Reject localhost — never store dashboard self-tracking data
-    if (
-      entry.domain === "localhost" ||
-      entry.domain === "127.0.0.1" ||
-      entry.domain === ""
-    ) {
-      return res.status(200).json({ status: "ignored", reason: "localhost" });
-    }
-
-    // Store the entry
-    insertScreenTimeLog(entry);
-
-    console.log(
-      `[screen-time] ${entry.domain}${entry.path} — ${entry.durationSeconds}s` +
-        (entry.recovered ? " (recovered)" : ""),
-    );
-
-    return res.status(201).json({
-      status: "ok",
-      id: entry._id,
-    });
-  } catch (err) {
-    console.error("[screen-time] Error processing request:", err);
-    return res.status(500).json({
-      status: "error",
-      message: "Internal server error",
-    });
-  }
-});
-
-/**
- * GET /api/dashboard
- *
- * Returns aggregated screen-time data grouped by domain for a given date.
- *
- * Query params:
- *   date — Optional. YYYY-MM-DD format. Defaults to today (UTC).
- *   user — Optional. User token for multi-user isolation. Defaults to ''.
- */
-app.get("/api/dashboard", (req, res) => {
-  try {
-    const requestedDate = req.query.date || null;
-
-    // Validate date format if provided
-    if (requestedDate && !/^\d{4}-\d{2}-\d{2}$/.test(requestedDate)) {
-      return res.status(400).json({
-        status: "error",
-        message: "Invalid date format. Use YYYY-MM-DD.",
-      });
-    }
-
-    const userId = req.query.user || '';
-
-    const domains = getAggregatedByDomain(requestedDate, userId);
-    const availableDates = getAvailableDates(userId);
-
-    const totalMinutes = domains.reduce((sum, d) => sum + d.totalMinutes, 0);
-    const totalDomains = domains.length;
-    const topDomain = domains.length > 0 ? domains[0].domain : null;
-
-    const effectiveDate =
-      requestedDate || new Date().toISOString().slice(0, 10);
-
-    return res.json({
-      date: effectiveDate,
-      totalDomains,
-      totalMinutes: Math.round(totalMinutes * 100) / 100,
-      topDomain,
-      domains,
-      availableDates,
-    });
-  } catch (err) {
-    console.error("[dashboard] Error aggregating data:", err);
-    return res.status(500).json({
-      status: "error",
-      message: "Internal server error",
-    });
-  }
-});
-
-/**
- * GET /api/summary
- *
- * Returns aggregated screen-time data grouped by domain for a week or month
- * period, along with a daily breakdown for that period.
- *
- * Query params:
- *   period — 'week' or 'month'. Defaults to 'week'.
- *   date   — Reference date YYYY-MM-DD. Defaults to today (UTC).
- *   user   — Optional. User token for multi-user isolation.
- */
-app.get("/api/summary", (req, res) => {
-  try {
-    const period = req.query.period || "week";
-    const referenceDate =
-      req.query.date || new Date().toISOString().slice(0, 10);
-
-    if (!["week", "month"].includes(period)) {
-      return res.status(400).json({
-        status: "error",
-        message: "Invalid period. Use 'week' or 'month'.",
-      });
-    }
-
-    if (referenceDate && !/^\d{4}-\d{2}-\d{2}$/.test(referenceDate)) {
-      return res.status(400).json({
-        status: "error",
-        message: "Invalid date format. Use YYYY-MM-DD.",
-      });
-    }
-
-    const { start, end } = getPeriodRange(referenceDate, period);
-    const userId = req.query.user || '';
-
-    const domains = getAggregatedByDomainForPeriod(start, end, userId);
-    const dailyBreakdown = getDailyBreakdownForPeriod(start, end, userId);
-    const availableDates = getAvailableDates(userId);
-
-    const totalMinutes = domains.reduce((sum, d) => sum + d.totalMinutes, 0);
-    const totalDomains = domains.length;
-    const topDomain = domains.length > 0 ? domains[0].domain : null;
-
-    return res.json({
-      period,
-      startDate: start,
-      endDate: end,
-      totalDomains,
-      totalMinutes: Math.round(totalMinutes * 100) / 100,
-      topDomain,
-      domains,
-      dailyBreakdown,
-      availableDates,
-    });
-  } catch (err) {
-    console.error("[summary] Error aggregating data:", err);
-    return res.status(500).json({
-      status: "error",
-      message: "Internal server error",
-    });
-  }
-});
-
-// ─── Goals Routes ───────────────────────────────────────────────────────────
-
-/**
- * GET /api/goals
- */
-app.get("/api/goals", (req, res) => {
-  try {
-    const goals = getGoals();
-    return res.json({ goals });
-  } catch (err) {
-    console.error("[goals] Error fetching goals:", err);
-    return res
-      .status(500)
-      .json({ status: "error", message: "Internal server error" });
-  }
-});
-
-/**
- * POST /api/goals
- * Body: { domain: string, max_minutes: number }
- */
-app.post("/api/goals", (req, res) => {
-  try {
-    const { domain, max_minutes } = req.body;
-
-    if (!domain || !max_minutes) {
-      return res.status(400).json({
-        status: "error",
-        message: "Missing required fields: domain, max_minutes",
-      });
-    }
-
-    if (typeof max_minutes !== "number" || max_minutes <= 0) {
-      return res.status(400).json({
-        status: "error",
-        message: "max_minutes must be a positive number",
-      });
-    }
-
-    const result = createGoal(domain, max_minutes);
-    return res.status(201).json({ status: "ok", id: result.id });
-  } catch (err) {
-    console.error("[goals] Error creating goal:", err);
-    return res
-      .status(500)
-      .json({ status: "error", message: "Internal server error" });
-  }
-});
-
-/**
- * PUT /api/goals/:id
- * Body: { domain?: string, max_minutes?: number, enabled?: boolean }
- */
-app.put("/api/goals/:id", (req, res) => {
-  try {
-    const id = parseInt(req.params.id, 10);
-    if (isNaN(id)) {
-      return res
-        .status(400)
-        .json({ status: "error", message: "Invalid goal ID" });
-    }
-
-    const result = updateGoal(id, req.body);
-    if (!result.updated) {
-      return res
-        .status(404)
-        .json({ status: "error", message: "Goal not found" });
-    }
-
-    return res.json({ status: "ok" });
-  } catch (err) {
-    console.error("[goals] Error updating goal:", err);
-    return res
-      .status(500)
-      .json({ status: "error", message: "Internal server error" });
-  }
-});
-
-/**
- * DELETE /api/goals/:id
- */
-app.delete("/api/goals/:id", (req, res) => {
-  try {
-    const id = parseInt(req.params.id, 10);
-    if (isNaN(id)) {
-      return res
-        .status(400)
-        .json({ status: "error", message: "Invalid goal ID" });
-    }
-
-    const result = deleteGoal(id);
-    if (!result.deleted) {
-      return res
-        .status(404)
-        .json({ status: "error", message: "Goal not found" });
-    }
-
-    return res.json({ status: "ok" });
-  } catch (err) {
-    console.error("[goals] Error deleting goal:", err);
-    return res
-      .status(500)
-      .json({ status: "error", message: "Internal server error" });
-  }
-});
-
-/**
- * GET /api/goals/status
- *
- * Returns today's usage compared against all enabled goals.
- */
-app.get("/api/goals/status", (req, res) => {
-  try {
-    const userId = req.query.user || '';
-    const statuses = getGoalStatus(userId);
-    return res.json({ goals: statuses });
-  } catch (err) {
-    console.error("[goals] Error getting goal status:", err);
-    return res
-      .status(500)
-      .json({ status: "error", message: "Internal server error" });
-  }
-});
-
-/**
- * GET /api/logs
- *
- * Returns all raw logs for debugging / inspection.
- */
-app.get("/api/logs", (req, res) => {
-  try {
-    const userId = req.query.user || '';
-    const logs = getAllScreenTimeLogs(userId);
-    return res.json({ total: logs.length, logs });
-  } catch (err) {
-    console.error("[logs] Error fetching logs:", err);
-    return res
-      .status(500)
-      .json({ status: "error", message: "Internal server error" });
-  }
-});
 
 // ─── Daily Goals Helper Functions ───────────────────────────────────────────
 
 /**
  * Get all daily goals.
  */
-function getGoals() {
-  return dbAll(
+async function getGoals() {
+  const rows = await driver.all(
     `SELECT id, domain, max_minutes, enabled, created_at, updated_at
      FROM daily_goals
      ORDER BY created_at DESC`,
-  ).map((row) => ({
+  );
+  return rows.map((row) => ({
     ...row,
-    enabled: row.enabled === 1,
+    enabled: row.enabled === 1 || row.enabled === true,
+    max_minutes: Number(row.max_minutes),
   }));
 }
 
 /**
  * Create a new daily goal.
  */
-function createGoal(domain, maxMinutes) {
-  const result = dbRun(
+async function createGoal(domain, maxMinutes) {
+  const result = await driver.run(
     `INSERT INTO daily_goals (domain, max_minutes) VALUES (?, ?)`,
     [domain.toLowerCase().replace(/^www\./, ""), maxMinutes],
   );
@@ -687,7 +399,7 @@ function createGoal(domain, maxMinutes) {
 /**
  * Update an existing daily goal.
  */
-function updateGoal(id, fields) {
+async function updateGoal(id, fields) {
   const sets = [];
   const values = [];
 
@@ -706,28 +418,33 @@ function updateGoal(id, fields) {
 
   if (sets.length === 0) return { updated: false };
 
-  sets.push("updated_at = datetime('now')");
+  // Use correct "now" for each database
+  const nowExpr = driver.isPostgres ? "NOW()" : "datetime('now')";
+  sets.push(`updated_at = ${nowExpr}`);
   values.push(id);
 
-  const result = dbRun(`UPDATE daily_goals SET ${sets.join(", ")} WHERE id = ?`, values);
+  const result = await driver.run(
+    `UPDATE daily_goals SET ${sets.join(", ")} WHERE id = ?`,
+    values,
+  );
   return { updated: result.changes > 0 };
 }
 
 /**
  * Delete a daily goal.
  */
-function deleteGoal(id) {
-  const result = dbRun("DELETE FROM daily_goals WHERE id = ?", [id]);
+async function deleteGoal(id) {
+  const result = await driver.run("DELETE FROM daily_goals WHERE id = ?", [id]);
   return { deleted: result.changes > 0 };
 }
 
 /**
  * Get today's usage minutes for a specific domain.
  */
-function getTodayMinutesForDomain(domain, userId) {
+async function getTodayMinutesForDomain(domain, userId) {
   const today = new Date().toISOString().slice(0, 10);
-  const row = dbGet(
-    `SELECT ROUND(SUM(durationSeconds) / 60.0, 2) AS totalMinutes
+  const row = await driver.get(
+    `SELECT ROUND(SUM("durationSeconds") / 60.0, 2) AS totalMinutes
      FROM screen_time
      WHERE date(timestamp) = ? AND domain = ? AND user_id = ?`,
     [today, domain, userId || ''],
@@ -738,18 +455,19 @@ function getTodayMinutesForDomain(domain, userId) {
 /**
  * Get goal status — compare today's usage against all enabled goals.
  */
-function getGoalStatus(userId) {
-  const goals = getGoals();
+async function getGoalStatus(userId) {
+  const goals = await getGoals();
   const enabledGoals = goals.filter((g) => g.enabled);
 
-  return enabledGoals.map((goal) => {
-    const todayMinutes = getTodayMinutesForDomain(goal.domain, userId);
+  const result = [];
+  for (const goal of enabledGoals) {
+    const todayMinutes = await getTodayMinutesForDomain(goal.domain, userId);
     const percentage =
       goal.max_minutes > 0
         ? Math.min(Math.round((todayMinutes / goal.max_minutes) * 100), 999)
         : 0;
 
-    return {
+    result.push({
       id: goal.id,
       domain: goal.domain,
       maxMinutes: goal.max_minutes,
@@ -758,14 +476,269 @@ function getGoalStatus(userId) {
       remainingMinutes: Math.max(0, goal.max_minutes - todayMinutes),
       exceeded: todayMinutes >= goal.max_minutes,
       approaching: percentage >= 80 && percentage < 100,
-    };
-  });
+    });
+  }
+  return result;
 }
 
-// ─── Start Server ───────────────────────────────────────────────────────────
+// ─── Routes ─────────────────────────────────────────────────────────────────
+
+/**
+ * POST /api/screen-time
+ * Accepts screen-time payloads sent by the tracking snippet.
+ */
+app.post("/api/screen-time", async (req, res) => {
+  try {
+    let payload = req.body;
+
+    if (typeof payload === "string") {
+      try {
+        payload = JSON.parse(payload);
+      } catch (parseErr) {
+        return res.status(400).json({
+          status: "error",
+          message: "Invalid JSON in request body",
+        });
+      }
+    }
+
+    const userToken = payload.userToken || req.headers['x-user-token'] || '';
+
+    if (!payload || !payload.domain || !payload.durationSeconds) {
+      return res.status(400).json({
+        status: "error",
+        message: "Missing required fields: domain, durationSeconds",
+        received: payload,
+      });
+    }
+
+    if (typeof payload.durationSeconds !== "number" || payload.durationSeconds < 0) {
+      return res.status(400).json({
+        status: "error",
+        message: "durationSeconds must be a non-negative number",
+      });
+    }
+
+    if (payload.durationSeconds > 3600) {
+      return res.status(400).json({
+        status: "error",
+        message: "durationSeconds exceeds maximum allowed (3600)",
+      });
+    }
+
+    const entry = {
+      userId: userToken,
+      domain: String(payload.domain).toLowerCase().replace(/^www\./, ""),
+      path: String(payload.path || "/"),
+      durationSeconds: payload.durationSeconds,
+      timestamp: payload.timestamp || new Date().toISOString(),
+      recovered: payload.recovered === true,
+    };
+
+    if (entry.domain === "localhost" || entry.domain === "127.0.0.1" || entry.domain === "") {
+      return res.status(200).json({ status: "ignored", reason: "localhost" });
+    }
+
+    await insertScreenTimeLog(entry);
+
+    console.log(
+      `[screen-time] ${entry.domain}${entry.path} — ${entry.durationSeconds}s` +
+        (entry.recovered ? " (recovered)" : ""),
+    );
+
+    return res.status(201).json({ status: "ok", id: entry._id });
+  } catch (err) {
+    console.error("[screen-time] Error processing request:", err);
+    return res.status(500).json({ status: "error", message: "Internal server error" });
+  }
+});
+
+/**
+ * GET /api/dashboard
+ * Returns aggregated screen-time data grouped by domain for a given date.
+ */
+app.get("/api/dashboard", async (req, res) => {
+  try {
+    const requestedDate = req.query.date || null;
+
+    if (requestedDate && !/^\d{4}-\d{2}-\d{2}$/.test(requestedDate)) {
+      return res.status(400).json({ status: "error", message: "Invalid date format. Use YYYY-MM-DD." });
+    }
+
+    const userId = req.query.user || '';
+    const domains = await getAggregatedByDomain(requestedDate, userId);
+    const availableDates = await getAvailableDates(userId);
+
+    const totalMinutes = domains.reduce((sum, d) => sum + d.totalMinutes, 0);
+    const totalDomains = domains.length;
+    const topDomain = domains.length > 0 ? domains[0].domain : null;
+
+    const effectiveDate = requestedDate || new Date().toISOString().slice(0, 10);
+
+    return res.json({
+      date: effectiveDate,
+      totalDomains,
+      totalMinutes: Math.round(totalMinutes * 100) / 100,
+      topDomain,
+      domains,
+      availableDates,
+    });
+  } catch (err) {
+    console.error("[dashboard] Error aggregating data:", err);
+    return res.status(500).json({ status: "error", message: "Internal server error" });
+  }
+});
+
+/**
+ * GET /api/summary
+ * Returns aggregated screen-time data grouped by domain for a week or month period.
+ */
+app.get("/api/summary", async (req, res) => {
+  try {
+    const period = req.query.period || "week";
+    const referenceDate = req.query.date || new Date().toISOString().slice(0, 10);
+
+    if (!["week", "month"].includes(period)) {
+      return res.status(400).json({ status: "error", message: "Invalid period. Use 'week' or 'month'." });
+    }
+
+    if (referenceDate && !/^\d{4}-\d{2}-\d{2}$/.test(referenceDate)) {
+      return res.status(400).json({ status: "error", message: "Invalid date format. Use YYYY-MM-DD." });
+    }
+
+    const { start, end } = getPeriodRange(referenceDate, period);
+    const userId = req.query.user || '';
+
+    const domains = await getAggregatedByDomainForPeriod(start, end, userId);
+    const dailyBreakdown = await getDailyBreakdownForPeriod(start, end, userId);
+    const availableDates = await getAvailableDates(userId);
+
+    const totalMinutes = domains.reduce((sum, d) => sum + d.totalMinutes, 0);
+    const totalDomains = domains.length;
+    const topDomain = domains.length > 0 ? domains[0].domain : null;
+
+    return res.json({
+      period,
+      startDate: start,
+      endDate: end,
+      totalDomains,
+      totalMinutes: Math.round(totalMinutes * 100) / 100,
+      topDomain,
+      domains,
+      dailyBreakdown,
+      availableDates,
+    });
+  } catch (err) {
+    console.error("[summary] Error aggregating data:", err);
+    return res.status(500).json({ status: "error", message: "Internal server error" });
+  }
+});
+
+// ─── Goals Routes ───────────────────────────────────────────────────────────
+
+app.get("/api/goals", async (req, res) => {
+  try {
+    const goals = await getGoals();
+    return res.json({ goals });
+  } catch (err) {
+    console.error("[goals] Error fetching goals:", err);
+    return res.status(500).json({ status: "error", message: "Internal server error" });
+  }
+});
+
+app.post("/api/goals", async (req, res) => {
+  try {
+    const { domain, max_minutes } = req.body;
+
+    if (!domain || !max_minutes) {
+      return res.status(400).json({ status: "error", message: "Missing required fields: domain, max_minutes" });
+    }
+
+    if (typeof max_minutes !== "number" || max_minutes <= 0) {
+      return res.status(400).json({ status: "error", message: "max_minutes must be a positive number" });
+    }
+
+    const result = await createGoal(domain, max_minutes);
+    return res.status(201).json({ status: "ok", id: result.id });
+  } catch (err) {
+    console.error("[goals] Error creating goal:", err);
+    return res.status(500).json({ status: "error", message: "Internal server error" });
+  }
+});
+
+app.put("/api/goals/:id", async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) {
+      return res.status(400).json({ status: "error", message: "Invalid goal ID" });
+    }
+
+    const result = await updateGoal(id, req.body);
+    if (!result.updated) {
+      return res.status(404).json({ status: "error", message: "Goal not found" });
+    }
+
+    return res.json({ status: "ok" });
+  } catch (err) {
+    console.error("[goals] Error updating goal:", err);
+    return res.status(500).json({ status: "error", message: "Internal server error" });
+  }
+});
+
+app.delete("/api/goals/:id", async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) {
+      return res.status(400).json({ status: "error", message: "Invalid goal ID" });
+    }
+
+    const result = await deleteGoal(id);
+    if (!result.deleted) {
+      return res.status(404).json({ status: "error", message: "Goal not found" });
+    }
+
+    return res.json({ status: "ok" });
+  } catch (err) {
+    console.error("[goals] Error deleting goal:", err);
+    return res.status(500).json({ status: "error", message: "Internal server error" });
+  }
+});
+
+app.get("/api/goals/status", async (req, res) => {
+  try {
+    const userId = req.query.user || '';
+    const statuses = await getGoalStatus(userId);
+    return res.json({ goals: statuses });
+  } catch (err) {
+    console.error("[goals] Error getting goal status:", err);
+    return res.status(500).json({ status: "error", message: "Internal server error" });
+  }
+});
+
+app.get("/api/logs", async (req, res) => {
+  try {
+    const userId = req.query.user || '';
+    const logs = await getAllScreenTimeLogs(userId);
+    return res.json({ total: logs.length, logs });
+  } catch (err) {
+    console.error("[logs] Error fetching logs:", err);
+    return res.status(500).json({ status: "error", message: "Internal server error" });
+  }
+});
+
+// ─── Startup ────────────────────────────────────────────────────────────────
 
 async function start() {
-  await initDatabase();
+  if (USE_PG) {
+    console.log("[db] DATABASE_URL detected — using PostgreSQL");
+    driver = await createPostgresDriver(process.env.DATABASE_URL);
+  } else {
+    console.log("[db] No DATABASE_URL — using SQLite (sql.js)");
+    driver = await createSqliteDriver();
+  }
+
+  await driver.init();
+  console.log("[db] Database initialized successfully");
 
   app.listen(PORT, () => {
     console.log(`
@@ -777,8 +750,7 @@ async function start() {
 ║  GET   /api/logs          ← Raw logs (debug)     ║
 ║                                                  ║
 ║  Listening on http://localhost:${String(PORT).padEnd(5)}              ║
-║  Database: SQLite (sql.js — zero native deps)    ║
-║  Location: ${DB_PATH.padEnd(52)}  ║
+║  Database: ${USE_PG ? "PostgreSQL".padEnd(43) : "SQLite (sql.js)".padEnd(43)} ║
 ╚══════════════════════════════════════════════════╝
     `);
   });
@@ -791,14 +763,14 @@ start().catch((err) => {
 
 // ─── Graceful Shutdown ──────────────────────────────────────────────────────
 
-process.on("SIGINT", () => {
-  console.log("\n[db] Saving and closing database...");
-  saveDatabase();
+process.on("SIGINT", async () => {
+  console.log("\n[db] Shutting down...");
+  if (driver) await driver.close();
   process.exit(0);
 });
 
-process.on("SIGTERM", () => {
-  console.log("\n[db] Saving and closing database...");
-  saveDatabase();
+process.on("SIGTERM", async () => {
+  console.log("\n[db] Shutting down...");
+  if (driver) await driver.close();
   process.exit(0);
 });
