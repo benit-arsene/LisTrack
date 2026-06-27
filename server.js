@@ -761,6 +761,69 @@ app.get("/api/logs", async (req, res) => {
   }
 });
 
+// ─── Debug / Diagnostic Routes (remove after fixing) ────────────────────────
+
+app.get("/api/debug", async (req, res) => {
+  try {
+    const results = {};
+
+    // 1. Check if screen_time table exists and its columns
+    try {
+      const cols = await driver.all(`
+        SELECT column_name, data_type, is_nullable, column_default
+        FROM information_schema.columns
+        WHERE table_name = 'screen_time'
+        ORDER BY ordinal_position
+      `);
+      results.screen_time_columns = cols;
+    } catch (err) {
+      results.screen_time_columns_error = err.message;
+    }
+
+    // 2. Try a simple count query
+    try {
+      const rows = await driver.all(`SELECT COUNT(*) AS cnt FROM screen_time`);
+      results.screen_time_count = rows[0]?.cnt || 0;
+    } catch (err) {
+      results.screen_time_count_error = err.message;
+    }
+
+    // 3. Check daily_goals table columns
+    try {
+      const cols2 = await driver.all(`
+        SELECT column_name, data_type, is_nullable, column_default
+        FROM information_schema.columns
+        WHERE table_name = 'daily_goals'
+        ORDER BY ordinal_position
+      `);
+      results.daily_goals_columns = cols2;
+    } catch (err) {
+      results.daily_goals_columns_error = err.message;
+    }
+
+    // 4. Try the EXACT query that dashboard uses (with ? placeholder)
+    try {
+      const today = new Date().toISOString().slice(0, 10);
+      const rows = await driver.all(
+        `SELECT domain, ROUND(SUM(durationSeconds) / 60.0, 2) AS totalMinutes
+         FROM screen_time
+         WHERE date("timestamp") = ?
+         GROUP BY domain
+         ORDER BY totalMinutes DESC`,
+        [today]
+      );
+      results.test_query_ok = true;
+      results.test_query_result = rows;
+    } catch (err) {
+      results.test_query_error = err.message;
+    }
+
+    return res.json(results);
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
 // ─── Startup ────────────────────────────────────────────────────────────────
 
 async function start() {
