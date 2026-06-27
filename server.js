@@ -77,6 +77,19 @@ async function createSqliteDriver() {
 
     init: async () => {
       db.run(sql_schema);
+
+      // Migration: add user_id column if the table was created before multi-user support
+      try {
+        const tableInfo = db.exec("PRAGMA table_info('screen_time')");
+        const columns = tableInfo[0]?.values?.map(v => v[1]) || [];
+        if (!columns.includes('user_id')) {
+          db.run("ALTER TABLE screen_time ADD COLUMN user_id TEXT NOT NULL DEFAULT ''");
+          console.log('[db] SQLite migration: added user_id column');
+        }
+      } catch (err) {
+        console.error('[db] SQLite migration error:', err.message);
+      }
+
       save();
       console.log("[db] SQLite schema ready");
     },
@@ -144,13 +157,24 @@ async function createPostgresDriver(connectionString) {
 
       // Migration: add user_id column if the table was created before multi-user support
       try {
-        await pool.query(`ALTER TABLE screen_time ADD COLUMN IF NOT EXISTS user_id TEXT NOT NULL DEFAULT ''`);
-      } catch (_) { /* column may already exist — ignore */ }
+        const colResult = await pool.query(`
+          SELECT column_name FROM information_schema.columns
+          WHERE table_name = 'screen_time' AND column_name = 'user_id'
+        `);
+        if (colResult.rows.length === 0) {
+          await pool.query(`ALTER TABLE screen_time ADD COLUMN user_id TEXT NOT NULL DEFAULT ''`);
+          console.log('[db] PostgreSQL migration: added user_id column');
+        }
+      } catch (err) {
+        console.error('[db] PostgreSQL migration error:', err.message);
+      }
 
       // Migration: ensure indexes exist for new columns
       try {
         await pool.query(`CREATE INDEX IF NOT EXISTS idx_screen_time_user ON screen_time(user_id)`);
-      } catch (_) { /* ignore */ }
+      } catch (err) {
+        console.error('[db] PostgreSQL index migration error:', err.message);
+      }
 
       console.log("[db] PostgreSQL schema ready");
     },
@@ -254,7 +278,7 @@ async function insertScreenTimeLog(entry) {
   const result = await driver.run(
     `INSERT INTO screen_time (user_id, domain, path, durationSeconds, "timestamp", recovered)
      VALUES (?, ?, ?, ?, ?, ?)`,
-    [entry.userId || '', entry.domain, entry.path, entry.durationSeconds, entry.timestamp, entry.recovered ? 1 : 0],
+    [entry.userId || '', entry.domain, entry.path, entry.durationSeconds, entry.timestamp, driver.isPostgres ? !!entry.recovered : (entry.recovered ? 1 : 0)],
   );
   entry._id = result.lastInsertRowid;
   return entry;
