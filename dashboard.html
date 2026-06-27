@@ -331,7 +331,10 @@
      *  the tracker records exact time internally, but the display
      *  rounds up so you never see "0 min" when you spent real time. */
     function formatTime(totalMinutes) {
-      if (totalMinutes == null || totalMinutes < 1) return "< 1 min";
+      if (totalMinutes == null || totalMinutes <= 0) return "0s";
+      const totalSeconds = Math.round(totalMinutes * 60);
+      // Show seconds for anything under 1 minute so the user sees their actual time
+      if (totalSeconds < 60) return `${totalSeconds}s`;
       const hours = Math.floor(totalMinutes / 60);
       const mins = Math.ceil(totalMinutes % 60);
       if (hours > 0 && mins >= 60) {
