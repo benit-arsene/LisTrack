@@ -141,6 +141,17 @@ async function createPostgresDriver(connectionString) {
 
     init: async () => {
       await pool.query(sql_schema_pg);
+
+      // Migration: add user_id column if the table was created before multi-user support
+      try {
+        await pool.query(`ALTER TABLE screen_time ADD COLUMN IF NOT EXISTS user_id TEXT NOT NULL DEFAULT ''`);
+      } catch (_) { /* column may already exist — ignore */ }
+
+      // Migration: ensure indexes exist for new columns
+      try {
+        await pool.query(`CREATE INDEX IF NOT EXISTS idx_screen_time_user ON screen_time(user_id)`);
+      } catch (_) { /* ignore */ }
+
       console.log("[db] PostgreSQL schema ready");
     },
 
@@ -241,7 +252,7 @@ const sql_schema_pg = `
  */
 async function insertScreenTimeLog(entry) {
   const result = await driver.run(
-    `INSERT INTO screen_time (user_id, domain, path, "durationSeconds", timestamp, recovered)
+    `INSERT INTO screen_time (user_id, domain, path, "durationSeconds", "timestamp", recovered)
      VALUES (?, ?, ?, ?, ?, ?)`,
     [entry.userId || '', entry.domain, entry.path, entry.durationSeconds, entry.timestamp, entry.recovered ? 1 : 0],
   );
@@ -254,7 +265,7 @@ async function insertScreenTimeLog(entry) {
  */
 async function getAllScreenTimeLogs(userId) {
   const rows = await driver.all(
-    `SELECT id, domain, path, "durationSeconds", timestamp, recovered, ingested_at
+    `SELECT id, domain, path, "durationSeconds", "timestamp", recovered, ingested_at
      FROM screen_time
      WHERE user_id = ?
      ORDER BY id DESC`,
@@ -274,7 +285,7 @@ async function getAggregatedByDomain(date, userId) {
   const rows = await driver.all(
     `SELECT domain, ROUND(SUM("durationSeconds") / 60.0, 2) AS totalMinutes
      FROM screen_time
-     WHERE date(timestamp) = ? AND user_id = ?
+     WHERE date("timestamp") = ? AND user_id = ?
      GROUP BY domain
      ORDER BY totalMinutes DESC`,
     [dateValue, userId || ''],
@@ -290,7 +301,7 @@ async function getAggregatedByDomain(date, userId) {
  */
 async function getAvailableDates(userId) {
   const rows = await driver.all(
-    `SELECT DISTINCT date(timestamp) AS d
+    `SELECT DISTINCT date("timestamp") AS d
      FROM screen_time
      WHERE user_id = ?
      ORDER BY d DESC`,
@@ -338,7 +349,7 @@ async function getAggregatedByDomainForPeriod(startDate, endDate, userId) {
   const rows = await driver.all(
     `SELECT domain, ROUND(SUM("durationSeconds") / 60.0, 2) AS totalMinutes
      FROM screen_time
-     WHERE date(timestamp) >= ? AND date(timestamp) <= ? AND user_id = ?
+     WHERE date("timestamp") >= ? AND date("timestamp") <= ? AND user_id = ?
      GROUP BY domain
      ORDER BY totalMinutes DESC`,
     [startDate, endDate, userId || ''],
@@ -354,10 +365,10 @@ async function getAggregatedByDomainForPeriod(startDate, endDate, userId) {
  */
 async function getDailyBreakdownForPeriod(startDate, endDate, userId) {
   const rows = await driver.all(
-    `SELECT date(timestamp) AS d, ROUND(SUM("durationSeconds") / 60.0, 2) AS totalMinutes
+    `SELECT date("timestamp") AS d, ROUND(SUM("durationSeconds") / 60.0, 2) AS totalMinutes
      FROM screen_time
-     WHERE date(timestamp) >= ? AND date(timestamp) <= ? AND user_id = ?
-     GROUP BY date(timestamp)
+     WHERE date("timestamp") >= ? AND date("timestamp") <= ? AND user_id = ?
+     GROUP BY date("timestamp")
      ORDER BY d ASC`,
     [startDate, endDate, userId || ''],
   );
@@ -446,7 +457,7 @@ async function getTodayMinutesForDomain(domain, userId) {
   const row = await driver.get(
     `SELECT ROUND(SUM("durationSeconds") / 60.0, 2) AS totalMinutes
      FROM screen_time
-     WHERE date(timestamp) = ? AND domain = ? AND user_id = ?`,
+     WHERE date("timestamp") = ? AND domain = ? AND user_id = ?`,
     [today, domain, userId || ''],
   );
   return (row && row.totalMinutes) || 0;
