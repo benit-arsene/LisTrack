@@ -1,8 +1,8 @@
 /**
  * Web Screen-Time Tracker (Fixed & Optimized)
  * -----------------------------------------
- * Tracks time continuously while the tab is visible — no idle timeout.
- * Blocks back-to-back unload triggers and safely clears crash checkpoints.
+ * Handles idle states, tab visibility, blocks back-to-back unload triggers,
+ * and safely clears crash checkpoints on orderly tab closures.
  */
 
 (function () {
@@ -10,37 +10,34 @@
 
   // ─── Configuration ───────────────────────────────────────────────────────
   const CONFIG = {
-    // Send tracking data to the deployed backend.
-    API_URL: "https://listrack-2.onrender.com/api/screen-time",
+    // Use relative path so the snippet posts to the same origin when testing locally.
+    API_URL: '/api/screen-time',
+    IDLE_THRESHOLD_MS: 60_000,
     CHECKPOINT_INTERVAL_MS: 5_000,
     STORAGE_KEY: "web_screen_time_tracker",
   };
 
   // Domains to exclude from tracking. Uses suffix matching so "render.com"
   // catches "dashboard.render.com", "api.render.com", etc.
-  const IGNORED_DOMAIN_PATTERNS = [
-    "localhost",
-    "listrack.onrender.com",
-    "listrack-2.onrender.com",
-    "render.com",
-  ];
+  const IGNORED_DOMAIN_PATTERNS = ["localhost", "listrack.onrender.com", "render.com"];
 
   function shouldTrackDomain(domain) {
     return (
       typeof domain === "string" &&
       domain.length > 0 &&
-      !IGNORED_DOMAIN_PATTERNS.some(
-        (pattern) => domain === pattern || domain.endsWith("." + pattern),
+      !IGNORED_DOMAIN_PATTERNS.some((pattern) =>
+        domain === pattern || domain.endsWith("." + pattern)
       )
     );
   }
 
   // ─── State ───────────────────────────────────────────────────────────────
   const state = {
-    userToken: null,
     activeTimeMs: 0,
     sessionStart: null,
+    lastActivity: Date.now(),
     isTabVisible: !document.hidden,
+    hasEverInteracted: false,
     checkpointInterval: null,
     _finalSent: false,
   };
@@ -62,8 +59,20 @@
   }
 
   function handleUserActivity() {
+    state.lastActivity = Date.now();
+    state.hasEverInteracted = true;
+
     if (state.sessionStart === null && state.isTabVisible) {
       resumeTimer();
+    }
+  }
+
+  function checkIdle() {
+    if (state.sessionStart !== null && state.isTabVisible) {
+      const elapsed = Date.now() - state.lastActivity;
+      if (elapsed >= CONFIG.IDLE_THRESHOLD_MS) {
+        pauseTimer();
+      }
     }
   }
 
@@ -75,7 +84,10 @@
       pauseTimer();
     } else {
       state.isTabVisible = true;
-      resumeTimer();
+      const elapsed = Date.now() - state.lastActivity;
+      if (elapsed < CONFIG.IDLE_THRESHOLD_MS) {
+        resumeTimer();
+      }
     }
   }
 
@@ -99,14 +111,9 @@
       path: window.location.pathname,
       durationSeconds: durationSeconds,
       timestamp: new Date().toISOString(),
-      userToken: state.userToken || '',
     };
 
-    if (
-      typeof chrome !== "undefined" &&
-      chrome.runtime &&
-      chrome.runtime.sendMessage
-    ) {
+    if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.sendMessage) {
       try {
         chrome.runtime.sendMessage(payload);
         state.activeTimeMs = 0;
@@ -114,9 +121,7 @@
       } catch (err) {}
     }
 
-    const blob = new Blob([JSON.stringify(payload)], {
-      type: "application/json",
-    });
+    const blob = new Blob([JSON.stringify(payload)], { type: "application/json" });
 
     try {
       navigator.sendBeacon(CONFIG.API_URL, blob);
@@ -136,6 +141,7 @@
   }
 
   function onCheckpoint() {
+    checkIdle();
     if (state.activeTimeMs <= 0) return;
 
     const domain = window.location.hostname;
@@ -147,6 +153,7 @@
     try {
       const data = {
         activeTimeMs: state.activeTimeMs,
+        lastActivity: state.lastActivity,
         domain,
         path: window.location.pathname,
         timestamp: Date.now(),
@@ -160,7 +167,7 @@
       const raw = localStorage.getItem(CONFIG.STORAGE_KEY);
       if (!raw) return;
       const data = JSON.parse(raw);
-
+      
       if (
         data.domain === window.location.hostname &&
         Date.now() - data.timestamp < 3_600_000 &&
@@ -172,21 +179,12 @@
           durationSeconds: data.activeTimeMs / 1000,
           timestamp: new Date(data.timestamp).toISOString(),
           recovered: true,
-          userToken: state.userToken || '',
         };
 
-        if (
-          typeof chrome !== "undefined" &&
-          chrome.runtime &&
-          chrome.runtime.sendMessage
-        ) {
-          try {
-            chrome.runtime.sendMessage(payload);
-          } catch (err) {}
+        if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.sendMessage) {
+          try { chrome.runtime.sendMessage(payload); } catch (err) {}
         } else {
-          const blob = new Blob([JSON.stringify(payload)], {
-            type: "application/json",
-          });
+          const blob = new Blob([JSON.stringify(payload)], { type: "application/json" });
           navigator.sendBeacon(CONFIG.API_URL, blob);
         }
       }
@@ -196,61 +194,15 @@
 
   // ─── Bind Events & Initialize ────────────────────────────────────────────
 
-  /**
-   * Fetch the user token from the extension's background script or localStorage.
-   */
-  async function fetchUserToken() {
-    // Try chrome.runtime.sendMessage to background first (works in extension context)
-    if (
-      typeof chrome !== "undefined" &&
-      chrome.runtime &&
-      chrome.runtime.sendMessage
-    ) {
-      try {
-        const response = await new Promise((resolve, reject) => {
-          chrome.runtime.sendMessage("getUserToken", (result) => {
-            if (chrome.runtime.lastError) {
-              reject(chrome.runtime.lastError);
-            } else {
-              resolve(result);
-            }
-          });
-        });
-        if (response && response.token) {
-          state.userToken = response.token;
-          return;
-        }
-      } catch (err) {
-        // Fall through to localStorage fallback
-      }
-    }
-
-    // Fallback: try reading from localStorage (for standalone / non-extension usage)
-    try {
-      const stored = localStorage.getItem("lisTrackUserToken");
-      if (stored) {
-        state.userToken = stored;
-      }
-    } catch (_) {}
-  }
-
-  async function init() {
-    await fetchUserToken();
+  function init() {
     recoverCrashData();
 
     if (!document.hidden) {
+      state.lastActivity = Date.now();
       resumeTimer();
     }
 
-    const activityEvents = [
-      "mousemove",
-      "mousedown",
-      "keydown",
-      "scroll",
-      "touchstart",
-      "touchmove",
-      "wheel",
-    ];
+    const activityEvents = ["mousemove", "mousedown", "keydown", "scroll", "touchstart", "touchmove", "wheel"];
     activityEvents.forEach((eventType) => {
       window.addEventListener(eventType, handleUserActivity, { passive: true });
     });
@@ -261,30 +213,7 @@
     function onPageUnload() {
       if (state._finalSent) return;
       state._finalSent = true;
-
-      // Pause the timer to capture final accumulated time
-      pauseTimer();
-      const durationSeconds = state.activeTimeMs / 1000;
-      if (durationSeconds > 0) {
-        const domain = window.location.hostname;
-        if (shouldTrackDomain(domain)) {
-          const payload = {
-            domain,
-            path: window.location.pathname,
-            durationSeconds,
-            timestamp: new Date().toISOString(),
-            userToken: state.userToken || '',
-          };
-
-          // Always use sendBeacon for unload — it's the most reliable during page teardown
-          try {
-            const blob = new Blob([JSON.stringify(payload)], { type: "application/json" });
-            navigator.sendBeacon(CONFIG.API_URL, blob);
-          } catch (_) {}
-        }
-      }
-      state.activeTimeMs = 0;
-
+      sendScreenTime(true);
       try {
         localStorage.removeItem(CONFIG.STORAGE_KEY);
       } catch (_) {}
@@ -292,20 +221,17 @@
     window.addEventListener("pagehide", onPageUnload);
     window.addEventListener("beforeunload", onPageUnload);
 
-    state.checkpointInterval = setInterval(
-      onCheckpoint,
-      CONFIG.CHECKPOINT_INTERVAL_MS,
-    );
+    state.checkpointInterval = setInterval(onCheckpoint, CONFIG.CHECKPOINT_INTERVAL_MS);
 
-    // Handles rolling intervals — every 5s, send accumulated time if ≥1s
+    // Handles rolling intervals — every 10s, send accumulated time if ≥5s
     setInterval(function () {
-      if (state.activeTimeMs >= 1_000) {
+      if (state.activeTimeMs >= 5_000) {
         sendScreenTime(false);
       }
       if (state.isTabVisible) {
         resumeTimer();
       }
-    }, 5_000);
+    }, 10_000);
   }
 
   // FIX: Enabled running on localhost so you can actually test your extension locally!

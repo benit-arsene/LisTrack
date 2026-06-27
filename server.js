@@ -2,7 +2,8 @@
  * Web Screen-Time Tracker — Backend Server
  * ==========================================
  * Express server that collects screen-time data from the tracking snippet
- * and exposes a dashboard API. Uses PostgreSQL for persistent storage.
+ * and exposes a dashboard API. Uses SQLite for persistent storage so it
+ * runs with zero configuration — no external database needed.
  *
  * Endpoints:
  *   POST /api/screen-time   — Accept screen-time payloads (JSON or text/plain)
@@ -13,30 +14,31 @@
  *   npm start       (or)   node server.js
  *
  * Environment:
- *   DATABASE_URL    — PostgreSQL connection string (required)
- *                    Example: postgres://user:pass@host:5432/listrack
  *   PORT            — HTTP server port (default: 3000)
+ *   DATABASE_PATH   — Path to SQLite database file (default: ./data/screen-time.db)
  */
 
 const express = require("express");
 const cors = require("cors");
-const { Pool } = require("pg");
+const path = require("path");
+const fs = require("fs");
+const Database = require("better-sqlite3");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
 // ─── Middleware ──────────────────────────────────────────────────────────────
 
-// Enable CORS for all origins (adjust in production)
+// Enable CORS for all origins
 app.use(cors());
 
-// Parse JSON bodies (for standard fetch / axios requests)
+// Parse JSON bodies
 app.use(express.json({ type: "application/json" }));
 
 // Parse text/plain bodies (navigator.sendBeacon often sends text/plain)
 app.use(express.text({ type: "text/plain" }));
 
-// Serve static files from the project root (dashboard.html, tracker.js, etc.)
+// Serve static files from the project root
 app.use(express.static(__dirname));
 
 // Redirect root path to dashboard.html
@@ -44,249 +46,147 @@ app.get("/", (req, res) => {
   res.redirect("/dashboard.html");
 });
 
-// ─── PostgreSQL Database Setup ──────────────────────────────────────────────
+// ─── SQLite Database Setup ──────────────────────────────────────────────────
 
-const DATABASE_URL = process.env.DATABASE_URL;
+const DATA_DIR = path.resolve(__dirname, "data");
+const DB_PATH = process.env.DATABASE_PATH || path.join(DATA_DIR, "screen-time.db");
 
-if (!DATABASE_URL) {
-  console.error("");
-  console.error(
-    "╔══════════════════════════════════════════════════════════════╗",
-  );
-  console.error(
-    "║  ERROR: DATABASE_URL environment variable is not set!       ║",
-  );
-  console.error(
-    "╠══════════════════════════════════════════════════════════════╣",
-  );
-  console.error(
-    "║  To use this server, you must provide a PostgreSQL           ║",
-  );
-  console.error(
-    "║  connection string via the DATABASE_URL environment var.     ║",
-  );
-  console.error(
-    "║                                                              ║",
-  );
-  console.error(
-    "║  Example:                                                     ║",
-  );
-  console.error(
-    "║    DATABASE_URL=postgres://user:pass@host:5432/listrack       ║",
-  );
-  console.error(
-    "║                                                              ║",
-  );
-  console.error(
-    "║  On Render: Create a PostgreSQL database in your dashboard    ║",
-  );
-  console.error(
-    "║  and it will auto-inject the DATABASE_URL env var.           ║",
-  );
-  console.error(
-    "╚══════════════════════════════════════════════════════════════╝",
-  );
-  console.error("");
-  process.exit(1);
+// Ensure the data directory exists
+if (!fs.existsSync(DATA_DIR)) {
+  fs.mkdirSync(DATA_DIR, { recursive: true });
 }
 
-// Create a connection pool using the DATABASE_URL
-const pool = new Pool({
-  connectionString: DATABASE_URL,
-  // Allow Render to enforce SSL (required by Render PostgreSQL)
-  ssl: {
-    rejectUnauthorized: false,
-  },
-  // Connection pool settings
-  max: 10,
-  idleTimeoutMillis: 30000,
-  connectionTimeoutMillis: 10000,
-});
+const db = new Database(DB_PATH);
 
-// Test the database connection and create tables on startup
-async function initializeDatabase() {
-  try {
-    // Test the connection
-    const client = await pool.connect();
-    console.log("[db] Connected to PostgreSQL successfully");
+// Enable WAL mode for better concurrent read performance
+db.pragma("journal_mode = WAL");
 
-    // Create the screen_time table if it doesn't exist
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS screen_time (
-        id              SERIAL PRIMARY KEY,
-        user_id         TEXT NOT NULL DEFAULT '',
-        domain          TEXT NOT NULL,
-        path            TEXT NOT NULL DEFAULT '/',
-        "durationSeconds" DOUBLE PRECISION NOT NULL,
-        "timestamp"     TEXT NOT NULL,
-        recovered       BOOLEAN NOT NULL DEFAULT FALSE,
-        ingested_at     TIMESTAMP NOT NULL DEFAULT NOW()
-      )
-    `);
+// Create tables if they don't exist
+db.exec(`
+  CREATE TABLE IF NOT EXISTS screen_time (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id         TEXT NOT NULL DEFAULT '',
+    domain          TEXT NOT NULL,
+    path            TEXT NOT NULL DEFAULT '/',
+    durationSeconds REAL NOT NULL,
+    timestamp       TEXT NOT NULL,
+    recovered       INTEGER NOT NULL DEFAULT 0,
+    ingested_at     TEXT NOT NULL DEFAULT (datetime('now'))
+  )
+`);
 
-    // Add user_id column to existing tables (safe to run on fresh installs too)
-    await client.query(`
-      ALTER TABLE screen_time
-      ADD COLUMN IF NOT EXISTS user_id TEXT NOT NULL DEFAULT ''
-    `);
+db.exec(`
+  CREATE INDEX IF NOT EXISTS idx_screen_time_domain
+  ON screen_time(domain)
+`);
 
-    // Index on domain for faster aggregation queries
-    await client.query(`
-      CREATE INDEX IF NOT EXISTS idx_screen_time_domain
-      ON screen_time(domain)
-    `);
+db.exec(`
+  CREATE INDEX IF NOT EXISTS idx_screen_time_timestamp
+  ON screen_time(timestamp)
+`);
 
-    // Create the daily_goals table if it doesn't exist
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS daily_goals (
-        id          SERIAL PRIMARY KEY,
-        domain      TEXT NOT NULL,
-        max_minutes DOUBLE PRECISION NOT NULL,
-        enabled     BOOLEAN NOT NULL DEFAULT TRUE,
-        created_at  TIMESTAMP NOT NULL DEFAULT NOW(),
-        updated_at  TIMESTAMP NOT NULL DEFAULT NOW()
-      )
-    `);
+db.exec(`
+  CREATE INDEX IF NOT EXISTS idx_screen_time_user
+  ON screen_time(user_id)
+`);
 
-    // Index on domain for faster lookups
-    await client.query(`
-      CREATE INDEX IF NOT EXISTS idx_daily_goals_domain
-      ON daily_goals(domain)
-    `);
+db.exec(`
+  CREATE TABLE IF NOT EXISTS daily_goals (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    domain      TEXT NOT NULL,
+    max_minutes REAL NOT NULL,
+    enabled     INTEGER NOT NULL DEFAULT 1,
+    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+  )
+`);
 
-    client.release();
-    console.log("[db] Database tables initialized successfully");
-  } catch (err) {
-    console.error("[db] Failed to initialize PostgreSQL database:", err);
-    process.exit(1);
-  }
-}
+db.exec(`
+  CREATE INDEX IF NOT EXISTS idx_daily_goals_domain
+  ON daily_goals(domain)
+`);
 
-// Run database initialization, then start the server
-initializeDatabase().then(() => {
-  app.listen(PORT, () => {
-    console.log(`
-╔══════════════════════════════════════════════════╗
-║     Web Screen-Time Tracker — Server Running     ║
-╠══════════════════════════════════════════════════╣
-║  POST  /api/screen-time   ← Collector           ║
-║  GET   /api/dashboard     ← Dashboard API        ║
-║  GET   /api/logs          ← Raw logs (debug)     ║
-║                                                  ║
-║  Listening on http://localhost:${String(PORT).padEnd(5)}              ║
-╚══════════════════════════════════════════════════╝
-  `);
-  });
-});
+console.log(`[db] SQLite database opened at ${DB_PATH}`);
 
 // ─── Database Helper Functions ──────────────────────────────────────────────
 
 /**
  * Insert a screen-time log entry into storage.
- *
- * @param {Object} entry - The screen-time payload
- * @returns {Promise<Object>} The inserted row with its generated id
  */
-async function insertScreenTimeLog(entry) {
-  const result = await pool.query(
-    `INSERT INTO screen_time (user_id, domain, path, "durationSeconds", "timestamp", recovered)
-     VALUES ($1, $2, $3, $4, $5, $6)
-     RETURNING id`,
-    [
-      entry.userId || '',
-      entry.domain,
-      entry.path,
-      entry.durationSeconds,
-      entry.timestamp,
-      entry.recovered,
-    ],
+function insertScreenTimeLog(entry) {
+  const stmt = db.prepare(`
+    INSERT INTO screen_time (user_id, domain, path, durationSeconds, timestamp, recovered)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `);
+  const result = stmt.run(
+    entry.userId || '',
+    entry.domain,
+    entry.path,
+    entry.durationSeconds,
+    entry.timestamp,
+    entry.recovered ? 1 : 0,
   );
-
-  entry._id = result.rows[0].id;
+  entry._id = result.lastInsertRowid;
   return entry;
 }
 
 /**
  * Retrieve all screen-time logs from storage.
- *
- * @returns {Promise<Array>} Array of log entries
  */
-async function getAllScreenTimeLogs(userId) {
-  const result = await pool.query(
-    `SELECT id, domain, path, "durationSeconds", "timestamp", recovered, ingested_at
-     FROM screen_time
-     WHERE user_id = $1
-     ORDER BY id DESC`,
-    [userId || ''],
-  );
-
-  // recovered is already a boolean from PostgreSQL
-  return result.rows.map((row) => ({
+function getAllScreenTimeLogs(userId) {
+  const stmt = db.prepare(`
+    SELECT id, domain, path, durationSeconds, timestamp, recovered, ingested_at
+    FROM screen_time
+    WHERE user_id = ?
+    ORDER BY id DESC
+  `);
+  return stmt.all(userId || '').map((row) => ({
     ...row,
-    recovered: row.recovered,
+    recovered: row.recovered === 1,
   }));
 }
 
 /**
- * Aggregate screen-time logs grouped by domain, summing total active minutes.
- * Only includes entries from today (resets at midnight) so the dashboard shows
- * daily screen time instead of an ever-growing cumulative total.
- *
- * @param {string} [date] - Optional date string in YYYY-MM-DD format. Defaults to today.
- * @returns {Promise<Array<{ domain: string, totalMinutes: number }>>}
- *          Sorted descending by totalMinutes.
+ * Aggregate screen-time logs grouped by domain for a given date.
  */
-async function getAggregatedByDomain(date, userId) {
-  // Default to today's UTC date so the query is always parameterized
+function getAggregatedByDomain(date, userId) {
   const dateValue = date || new Date().toISOString().slice(0, 10);
-
-  const result = await pool.query(
-    `SELECT
-       domain,
-       ROUND(CAST((SUM("durationSeconds") / 60.0) AS numeric), 2) AS totalMinutes
-     FROM screen_time
-     WHERE CAST("timestamp" AS DATE) = $1 AND user_id = $2
-     GROUP BY domain
-     ORDER BY totalMinutes DESC`,
-    [dateValue, userId || ''],
-  );
-
-  return result.rows.map((row) => ({
+  const stmt = db.prepare(`
+    SELECT
+      domain,
+      ROUND(SUM(durationSeconds) / 60.0, 2) AS totalMinutes
+    FROM screen_time
+    WHERE date(timestamp) = ? AND user_id = ?
+    GROUP BY domain
+    ORDER BY totalMinutes DESC
+  `);
+  return stmt.all(dateValue, userId || '').map((row) => ({
     domain: row.domain,
-    totalMinutes: parseFloat(row.totalminutes) || 0,
+    totalMinutes: row.totalMinutes || 0,
   }));
 }
 
 /**
  * Return all distinct dates that have screen-time data, sorted descending.
- *
- * @returns {Promise<string[]>} Array of date strings in YYYY-MM-DD format.
  */
-async function getAvailableDates(userId) {
-  const result = await pool.query(
-    `SELECT DISTINCT CAST("timestamp" AS DATE) AS d
-     FROM screen_time
-     WHERE user_id = $1
-     ORDER BY d DESC`,
-    [userId || ''],
-  );
-
-  return result.rows.map((row) => row.d);
+function getAvailableDates(userId) {
+  const stmt = db.prepare(`
+    SELECT DISTINCT date(timestamp) AS d
+    FROM screen_time
+    WHERE user_id = ?
+    ORDER BY d DESC
+  `);
+  return stmt.all(userId || '').map((row) => row.d);
 }
 
 /**
  * Calculate the start and end date of a period (week or month) containing
  * the given reference date.
- *
- * @param {string} dateStr - Reference date in YYYY-MM-DD format.
- * @param {'week'|'month'} period - The period type.
- * @returns {{ start: string, end: string }} ISO date strings.
  */
 function getPeriodRange(dateStr, period) {
   const d = new Date(dateStr + "T00:00:00Z");
 
   if (period === "week") {
-    // Monday-first weeks: Monday=1, Sunday=0 → treat Sunday as 7
     const day = d.getUTCDay();
     const diff = day === 0 ? -6 : 1 - day;
     const start = new Date(d);
@@ -308,57 +208,44 @@ function getPeriodRange(dateStr, period) {
     };
   }
 
-  // Fallback — single date
   return { start: dateStr, end: dateStr };
 }
 
 /**
  * Aggregate screen-time logs grouped by domain for a date range.
- *
- * @param {string} startDate - Start date YYYY-MM-DD (inclusive).
- * @param {string} endDate   - End date YYYY-MM-DD (inclusive).
- * @returns {Promise<Array<{ domain: string, totalMinutes: number }>>}
  */
-async function getAggregatedByDomainForPeriod(startDate, endDate, userId) {
-  const result = await pool.query(
-    `SELECT
-       domain,
-       ROUND(CAST((SUM("durationSeconds") / 60.0) AS numeric), 2) AS totalMinutes
-     FROM screen_time
-     WHERE CAST("timestamp" AS DATE) >= $1 AND CAST("timestamp" AS DATE) <= $2 AND user_id = $3
-     GROUP BY domain
-     ORDER BY totalMinutes DESC`,
-    [startDate, endDate, userId || ''],
-  );
-
-  return result.rows.map((row) => ({
+function getAggregatedByDomainForPeriod(startDate, endDate, userId) {
+  const stmt = db.prepare(`
+    SELECT
+      domain,
+      ROUND(SUM(durationSeconds) / 60.0, 2) AS totalMinutes
+    FROM screen_time
+    WHERE date(timestamp) >= ? AND date(timestamp) <= ? AND user_id = ?
+    GROUP BY domain
+    ORDER BY totalMinutes DESC
+  `);
+  return stmt.all(startDate, endDate, userId || '').map((row) => ({
     domain: row.domain,
-    totalMinutes: parseFloat(row.totalminutes) || 0,
+    totalMinutes: row.totalMinutes || 0,
   }));
 }
 
 /**
- * Return total minutes per day for a date range — used for the daily breakdown chart.
- *
- * @param {string} startDate - Start date YYYY-MM-DD (inclusive).
- * @param {string} endDate   - End date YYYY-MM-DD (inclusive).
- * @returns {Promise<Array<{ date: string, totalMinutes: number }>>}
+ * Return total minutes per day for a date range.
  */
-async function getDailyBreakdownForPeriod(startDate, endDate, userId) {
-  const result = await pool.query(
-    `SELECT
-       CAST("timestamp" AS DATE) AS d,
-       ROUND(CAST((SUM("durationSeconds") / 60.0) AS numeric), 2) AS totalMinutes
-     FROM screen_time
-     WHERE CAST("timestamp" AS DATE) >= $1 AND CAST("timestamp" AS DATE) <= $2 AND user_id = $3
-     GROUP BY CAST("timestamp" AS DATE)
-     ORDER BY d ASC`,
-    [startDate, endDate, userId || ''],
-  );
-
-  return result.rows.map((row) => ({
+function getDailyBreakdownForPeriod(startDate, endDate, userId) {
+  const stmt = db.prepare(`
+    SELECT
+      date(timestamp) AS d,
+      ROUND(SUM(durationSeconds) / 60.0, 2) AS totalMinutes
+    FROM screen_time
+    WHERE date(timestamp) >= ? AND date(timestamp) <= ? AND user_id = ?
+    GROUP BY date(timestamp)
+    ORDER BY d ASC
+  `);
+  return stmt.all(startDate, endDate, userId || '').map((row) => ({
     date: row.d,
-    totalMinutes: parseFloat(row.totalminutes) || 0,
+    totalMinutes: row.totalMinutes || 0,
   }));
 }
 
@@ -368,16 +255,8 @@ async function getDailyBreakdownForPeriod(startDate, endDate, userId) {
  * POST /api/screen-time
  *
  * Accepts screen-time payloads sent by the tracking snippet.
- * Handles both:
- *   - application/json (Content-Type: application/json)
- *   - text/plain (Content-Type: text/plain) — sent by navigator.sendBeacon
- *
- * Request body (JSON):
- *   { domain, path, durationSeconds, timestamp }
- *
- * Response: 201 { status: "ok", id }
  */
-app.post("/api/screen-time", async (req, res) => {
+app.post("/api/screen-time", (req, res) => {
   try {
     let payload = req.body;
 
@@ -416,7 +295,7 @@ app.post("/api/screen-time", async (req, res) => {
       });
     }
 
-    // Validate duration is reasonable (max 1 hour per event — prevents abuse)
+    // Validate duration is reasonable (max 1 hour per event)
     if (payload.durationSeconds > 3600) {
       return res.status(400).json({
         status: "error",
@@ -445,8 +324,8 @@ app.post("/api/screen-time", async (req, res) => {
       return res.status(200).json({ status: "ignored", reason: "localhost" });
     }
 
-    // Store the entry (via the DB helper)
-    await insertScreenTimeLog(entry);
+    // Store the entry
+    insertScreenTimeLog(entry);
 
     console.log(
       `[screen-time] ${entry.domain}${entry.path} — ${entry.durationSeconds}s` +
@@ -469,23 +348,13 @@ app.post("/api/screen-time", async (req, res) => {
 /**
  * GET /api/dashboard
  *
- * Returns aggregated screen-time data grouped by domain for a given date,
- * sorted from most-visited to least-visited, along with summary metrics.
+ * Returns aggregated screen-time data grouped by domain for a given date.
  *
  * Query params:
  *   date — Optional. YYYY-MM-DD format. Defaults to today (UTC).
- *
- * Response:
- * {
- *   date: string,            // The date being viewed (YYYY-MM-DD)
- *   totalDomains: number,
- *   totalMinutes: number,
- *   topDomain: string | null,
- *   domains: [ { domain, totalMinutes } ],
- *   availableDates: string[] // All dates that have data
- * }
+ *   user — Optional. User token for multi-user isolation. Defaults to ''.
  */
-app.get("/api/dashboard", async (req, res) => {
+app.get("/api/dashboard", (req, res) => {
   try {
     const requestedDate = req.query.date || null;
 
@@ -499,23 +368,13 @@ app.get("/api/dashboard", async (req, res) => {
 
     const userId = req.query.user || '';
 
-    if (!userId) {
-      return res.status(400).json({
-        status: "error",
-        message: "Missing required query parameter: user",
-      });
-    }
-
-    const [domains, availableDates] = await Promise.all([
-      getAggregatedByDomain(requestedDate, userId),
-      getAvailableDates(userId),
-    ]);
+    const domains = getAggregatedByDomain(requestedDate, userId);
+    const availableDates = getAvailableDates(userId);
 
     const totalMinutes = domains.reduce((sum, d) => sum + d.totalMinutes, 0);
     const totalDomains = domains.length;
     const topDomain = domains.length > 0 ? domains[0].domain : null;
 
-    // Determine the effective date being viewed
     const effectiveDate =
       requestedDate || new Date().toISOString().slice(0, 10);
 
@@ -545,21 +404,9 @@ app.get("/api/dashboard", async (req, res) => {
  * Query params:
  *   period — 'week' or 'month'. Defaults to 'week'.
  *   date   — Reference date YYYY-MM-DD. Defaults to today (UTC).
- *
- * Response:
- * {
- *   period: string,
- *   startDate: string,       // Period start (inclusive)
- *   endDate: string,         // Period end (inclusive)
- *   totalDomains: number,
- *   totalMinutes: number,
- *   topDomain: string | null,
- *   domains: [ { domain, totalMinutes } ],
- *   dailyBreakdown: [ { date, totalMinutes } ],
- *   availableDates: string[]
- * }
+ *   user   — Optional. User token for multi-user isolation.
  */
-app.get("/api/summary", async (req, res) => {
+app.get("/api/summary", (req, res) => {
   try {
     const period = req.query.period || "week";
     const referenceDate =
@@ -580,21 +427,11 @@ app.get("/api/summary", async (req, res) => {
     }
 
     const { start, end } = getPeriodRange(referenceDate, period);
-
     const userId = req.query.user || '';
 
-    if (!userId) {
-      return res.status(400).json({
-        status: "error",
-        message: "Missing required query parameter: user",
-      });
-    }
-
-    const [domains, dailyBreakdown, availableDates] = await Promise.all([
-      getAggregatedByDomainForPeriod(start, end, userId),
-      getDailyBreakdownForPeriod(start, end, userId),
-      getAvailableDates(userId),
-    ]);
+    const domains = getAggregatedByDomainForPeriod(start, end, userId);
+    const dailyBreakdown = getDailyBreakdownForPeriod(start, end, userId);
+    const availableDates = getAvailableDates(userId);
 
     const totalMinutes = domains.reduce((sum, d) => sum + d.totalMinutes, 0);
     const totalDomains = domains.length;
@@ -624,12 +461,10 @@ app.get("/api/summary", async (req, res) => {
 
 /**
  * GET /api/goals
- *
- * Returns all daily goals.
  */
-app.get("/api/goals", async (req, res) => {
+app.get("/api/goals", (req, res) => {
   try {
-    const goals = await getGoals();
+    const goals = getGoals();
     return res.json({ goals });
   } catch (err) {
     console.error("[goals] Error fetching goals:", err);
@@ -641,11 +476,9 @@ app.get("/api/goals", async (req, res) => {
 
 /**
  * POST /api/goals
- *
- * Create a new daily goal.
  * Body: { domain: string, max_minutes: number }
  */
-app.post("/api/goals", async (req, res) => {
+app.post("/api/goals", (req, res) => {
   try {
     const { domain, max_minutes } = req.body;
 
@@ -663,7 +496,7 @@ app.post("/api/goals", async (req, res) => {
       });
     }
 
-    const result = await createGoal(domain, max_minutes);
+    const result = createGoal(domain, max_minutes);
     return res.status(201).json({ status: "ok", id: result.id });
   } catch (err) {
     console.error("[goals] Error creating goal:", err);
@@ -675,11 +508,9 @@ app.post("/api/goals", async (req, res) => {
 
 /**
  * PUT /api/goals/:id
- *
- * Update an existing daily goal.
  * Body: { domain?: string, max_minutes?: number, enabled?: boolean }
  */
-app.put("/api/goals/:id", async (req, res) => {
+app.put("/api/goals/:id", (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
     if (isNaN(id)) {
@@ -688,7 +519,7 @@ app.put("/api/goals/:id", async (req, res) => {
         .json({ status: "error", message: "Invalid goal ID" });
     }
 
-    const result = await updateGoal(id, req.body);
+    const result = updateGoal(id, req.body);
     if (!result.updated) {
       return res
         .status(404)
@@ -706,10 +537,8 @@ app.put("/api/goals/:id", async (req, res) => {
 
 /**
  * DELETE /api/goals/:id
- *
- * Delete a daily goal.
  */
-app.delete("/api/goals/:id", async (req, res) => {
+app.delete("/api/goals/:id", (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
     if (isNaN(id)) {
@@ -718,7 +547,7 @@ app.delete("/api/goals/:id", async (req, res) => {
         .json({ status: "error", message: "Invalid goal ID" });
     }
 
-    const result = await deleteGoal(id);
+    const result = deleteGoal(id);
     if (!result.deleted) {
       return res
         .status(404)
@@ -738,12 +567,11 @@ app.delete("/api/goals/:id", async (req, res) => {
  * GET /api/goals/status
  *
  * Returns today's usage compared against all enabled goals.
- * Used by the background service worker and dashboard.
  */
-app.get("/api/goals/status", async (req, res) => {
+app.get("/api/goals/status", (req, res) => {
   try {
     const userId = req.query.user || '';
-    const statuses = await getGoalStatus(userId);
+    const statuses = getGoalStatus(userId);
     return res.json({ goals: statuses });
   } catch (err) {
     console.error("[goals] Error getting goal status:", err);
@@ -756,12 +584,12 @@ app.get("/api/goals/status", async (req, res) => {
 /**
  * GET /api/logs
  *
- * (Optional) Returns all raw logs for debugging / inspection.
+ * Returns all raw logs for debugging / inspection.
  */
-app.get("/api/logs", async (req, res) => {
+app.get("/api/logs", (req, res) => {
   try {
     const userId = req.query.user || '';
-    const logs = await getAllScreenTimeLogs(userId);
+    const logs = getAllScreenTimeLogs(userId);
     return res.json({ total: logs.length, logs });
   } catch (err) {
     console.error("[logs] Error fetching logs:", err);
@@ -776,136 +604,137 @@ app.get("/api/logs", async (req, res) => {
 /**
  * Get all daily goals.
  */
-async function getGoals() {
-  const result = await pool.query(`
+function getGoals() {
+  const stmt = db.prepare(`
     SELECT id, domain, max_minutes, enabled, created_at, updated_at
     FROM daily_goals
     ORDER BY created_at DESC
   `);
-
-  // enabled is already a boolean from PostgreSQL
-  return result.rows.map((row) => ({
+  return stmt.all().map((row) => ({
     ...row,
-    enabled: row.enabled,
+    enabled: row.enabled === 1,
   }));
 }
 
 /**
  * Create a new daily goal.
  */
-async function createGoal(domain, maxMinutes) {
-  const result = await pool.query(
-    `INSERT INTO daily_goals (domain, max_minutes)
-     VALUES ($1, $2)
-     RETURNING id`,
-    [domain.toLowerCase().replace(/^www\./, ""), maxMinutes],
-  );
-
-  return { id: result.rows[0].id };
+function createGoal(domain, maxMinutes) {
+  const stmt = db.prepare(`
+    INSERT INTO daily_goals (domain, max_minutes)
+    VALUES (?, ?)
+  `);
+  const result = stmt.run(domain.toLowerCase().replace(/^www\./, ""), maxMinutes);
+  return { id: result.lastInsertRowid };
 }
 
 /**
  * Update an existing daily goal.
  */
-async function updateGoal(id, fields) {
+function updateGoal(id, fields) {
   const sets = [];
   const values = [];
-  let paramIndex = 1;
 
   if (fields.domain !== undefined) {
-    sets.push(`domain = $${paramIndex++}`);
+    sets.push("domain = ?");
     values.push(fields.domain.toLowerCase().replace(/^www\./, ""));
   }
   if (fields.max_minutes !== undefined) {
-    sets.push(`max_minutes = $${paramIndex++}`);
+    sets.push("max_minutes = ?");
     values.push(fields.max_minutes);
   }
   if (fields.enabled !== undefined) {
-    sets.push(`enabled = $${paramIndex++}`);
-    values.push(fields.enabled);
+    sets.push("enabled = ?");
+    values.push(fields.enabled ? 1 : 0);
   }
 
   if (sets.length === 0) return { updated: false };
 
-  sets.push(`updated_at = NOW()`);
+  sets.push("updated_at = datetime('now')");
   values.push(id);
 
-  const result = await pool.query(
-    `UPDATE daily_goals SET ${sets.join(", ")} WHERE id = $${paramIndex}`,
-    values,
-  );
-
-  return { updated: result.rowCount > 0 };
+  const stmt = db.prepare(`UPDATE daily_goals SET ${sets.join(", ")} WHERE id = ?`);
+  const result = stmt.run(...values);
+  return { updated: result.changes > 0 };
 }
 
 /**
  * Delete a daily goal.
  */
-async function deleteGoal(id) {
-  const result = await pool.query(`DELETE FROM daily_goals WHERE id = $1`, [
-    id,
-  ]);
-
-  return { deleted: result.rowCount > 0 };
+function deleteGoal(id) {
+  const stmt = db.prepare("DELETE FROM daily_goals WHERE id = ?");
+  const result = stmt.run(id);
+  return { deleted: result.changes > 0 };
 }
 
 /**
- * Get today's usage minutes for a specific domain (used by the status endpoint).
+ * Get today's usage minutes for a specific domain.
  */
-async function getTodayMinutesForDomain(domain, userId) {
+function getTodayMinutesForDomain(domain, userId) {
   const today = new Date().toISOString().slice(0, 10);
-
-  const result = await pool.query(
-    `SELECT ROUND(CAST((SUM("durationSeconds") / 60.0) AS numeric), 2) AS totalMinutes
-     FROM screen_time
-     WHERE CAST("timestamp" AS DATE) = $1 AND domain = $2 AND user_id = $3`,
-    [today, domain, userId || ''],
-  );
-
-  return result.rows[0] ? parseFloat(result.rows[0].totalminutes) || 0 : 0;
+  const stmt = db.prepare(`
+    SELECT ROUND(SUM(durationSeconds) / 60.0, 2) AS totalMinutes
+    FROM screen_time
+    WHERE date(timestamp) = ? AND domain = ? AND user_id = ?
+  `);
+  const row = stmt.get(today, domain, userId || '');
+  return row.totalMinutes || 0;
 }
 
 /**
  * Get goal status — compare today's usage against all enabled goals.
- * Returns each goal with its current usage, limit, and percentage.
- */async function getGoalStatus(userId) {
-  const goals = await getGoals();
+ */
+function getGoalStatus(userId) {
+  const goals = getGoals();
   const enabledGoals = goals.filter((g) => g.enabled);
 
-  const statuses = await Promise.all(
-    enabledGoals.map(async (goal) => {
-      const todayMinutes = await getTodayMinutesForDomain(goal.domain, userId);
-      const percentage =
-        goal.max_minutes > 0
-          ? Math.min(Math.round((todayMinutes / goal.max_minutes) * 100), 999)
-          : 0;
+  return enabledGoals.map((goal) => {
+    const todayMinutes = getTodayMinutesForDomain(goal.domain, userId);
+    const percentage =
+      goal.max_minutes > 0
+        ? Math.min(Math.round((todayMinutes / goal.max_minutes) * 100), 999)
+        : 0;
 
-      return {
-        id: goal.id,
-        domain: goal.domain,
-        maxMinutes: goal.max_minutes,
-        todayMinutes,
-        percentage,
-        remainingMinutes: Math.max(0, goal.max_minutes - todayMinutes),
-        exceeded: todayMinutes >= goal.max_minutes,
-        approaching: percentage >= 80 && percentage < 100,
-      };
-    }),
-  );
-
-  return statuses;
+    return {
+      id: goal.id,
+      domain: goal.domain,
+      maxMinutes: goal.max_minutes,
+      todayMinutes,
+      percentage,
+      remainingMinutes: Math.max(0, goal.max_minutes - todayMinutes),
+      exceeded: todayMinutes >= goal.max_minutes,
+      approaching: percentage >= 80 && percentage < 100,
+    };
+  });
 }
+
+// ─── Start Server ───────────────────────────────────────────────────────────
+
+app.listen(PORT, () => {
+  console.log(`
+╔══════════════════════════════════════════════════╗
+║     Web Screen-Time Tracker — Server Running     ║
+╠══════════════════════════════════════════════════╣
+║  POST  /api/screen-time   ← Collector           ║
+║  GET   /api/dashboard     ← Dashboard API        ║
+║  GET   /api/logs          ← Raw logs (debug)     ║
+║                                                  ║
+║  Listening on http://localhost:${String(PORT).padEnd(5)}              ║
+║  Database: SQLite (./data/screen-time.db)        ║
+╚══════════════════════════════════════════════════╝
+  `);
+});
 
 // ─── Graceful Shutdown ──────────────────────────────────────────────────────
 
-process.on("SIGINT", async () => {
-  console.log("\n[db] Closing database connections...");
-  await pool.end();
+process.on("SIGINT", () => {
+  console.log("\n[db] Closing database...");
+  db.close();
   process.exit(0);
 });
 
-process.on("SIGTERM", async () => {
-  console.log("\n[db] Closing database connections...");
-  await pool.end();
+process.on("SIGTERM", () => {
+  console.log("\n[db] Closing database...");
+  db.close();
   process.exit(0);
 });
