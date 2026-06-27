@@ -311,7 +311,7 @@ async function getAggregatedByDomain(date, userId) {
      FROM screen_time
      WHERE date("timestamp") = ? AND user_id = ?
      GROUP BY domain
-     ORDER BY totalMinutes DESC`,
+     ORDER BY "totalMinutes" DESC`,
     [dateValue, userId || ''],
   );
   return rows.map((row) => ({
@@ -375,7 +375,7 @@ async function getAggregatedByDomainForPeriod(startDate, endDate, userId) {
      FROM screen_time
      WHERE date("timestamp") >= ? AND date("timestamp") <= ? AND user_id = ?
      GROUP BY domain
-     ORDER BY totalMinutes DESC`,
+     ORDER BY "totalMinutes" DESC`,
     [startDate, endDate, userId || ''],
   );
   return rows.map((row) => ({
