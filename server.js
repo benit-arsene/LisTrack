@@ -307,7 +307,7 @@ async function getAllScreenTimeLogs(userId) {
 async function getAggregatedByDomain(date, userId) {
   const dateValue = date || new Date().toISOString().slice(0, 10);
   const rows = await driver.all(
-    `SELECT domain, ROUND(CAST(SUM("durationSeconds") / 60.0 AS NUMERIC), 2) AS totalMinutes
+    `SELECT domain, ROUND(CAST(SUM("durationSeconds") / 60.0 AS NUMERIC), 2) AS "totalMinutes"
      FROM screen_time
      WHERE date("timestamp") = ? AND user_id = ?
      GROUP BY domain
@@ -371,7 +371,7 @@ function getPeriodRange(dateStr, period) {
  */
 async function getAggregatedByDomainForPeriod(startDate, endDate, userId) {
   const rows = await driver.all(
-    `SELECT domain, ROUND(CAST(SUM("durationSeconds") / 60.0 AS NUMERIC), 2) AS totalMinutes
+    `SELECT domain, ROUND(CAST(SUM("durationSeconds") / 60.0 AS NUMERIC), 2) AS "totalMinutes"
      FROM screen_time
      WHERE date("timestamp") >= ? AND date("timestamp") <= ? AND user_id = ?
      GROUP BY domain
@@ -389,7 +389,7 @@ async function getAggregatedByDomainForPeriod(startDate, endDate, userId) {
  */
 async function getDailyBreakdownForPeriod(startDate, endDate, userId) {
   const rows = await driver.all(
-    `SELECT date("timestamp") AS d, ROUND(CAST(SUM("durationSeconds") / 60.0 AS NUMERIC), 2) AS totalMinutes
+    `SELECT date("timestamp") AS d, ROUND(CAST(SUM("durationSeconds") / 60.0 AS NUMERIC), 2) AS "totalMinutes"
      FROM screen_time
      WHERE date("timestamp") >= ? AND date("timestamp") <= ? AND user_id = ?
      GROUP BY date("timestamp")
@@ -479,7 +479,7 @@ async function deleteGoal(id) {
 async function getTodayMinutesForDomain(domain, userId) {
   const today = new Date().toISOString().slice(0, 10);
   const row = await driver.get(
-    `SELECT ROUND(CAST(SUM("durationSeconds") / 60.0 AS NUMERIC), 2) AS totalMinutes
+    `SELECT ROUND(CAST(SUM("durationSeconds") / 60.0 AS NUMERIC), 2) AS "totalMinutes"
      FROM screen_time
      WHERE date("timestamp") = ? AND domain = ? AND user_id = ?`,
     [today, domain, userId || ''],
@@ -761,82 +761,6 @@ app.get("/api/logs", async (req, res) => {
   }
 });
 
-// ─── Temporary Diagnostic Endpoint (remove after fixing) ──────────────────
-
-app.get("/api/check", async (req, res) => {
-  try {
-    const results = {};
-
-    // 1. Raw count
-    const countRows = await driver.all(`SELECT COUNT(*) AS cnt FROM screen_time`);
-    results.total_rows = countRows[0]?.cnt;
-
-    // 2. Count today
-    const today = new Date().toISOString().slice(0, 10);
-    const todayRows = await driver.all(
-      `SELECT COUNT(*) AS cnt FROM screen_time WHERE date("timestamp") = ?`,
-      [today]
-    );
-    results.today_count = todayRows[0]?.cnt;
-
-    // 3. Check if date() works at all
-    const dateSample = await driver.all(
-      `SELECT "timestamp", date("timestamp") AS d FROM screen_time ORDER BY id DESC LIMIT 3`
-    );
-    results.date_sample = dateSample;
-
-    // 4. Aggregate without date filter
-    const aggAll = await driver.all(
-      `SELECT domain, ROUND(CAST(SUM("durationSeconds") / 60.0 AS NUMERIC), 2) AS totalMinutes
-       FROM screen_time
-       GROUP BY domain
-       ORDER BY totalMinutes DESC
-       LIMIT 5`
-    );
-    results.agg_no_date = aggAll;
-
-    // 5. Aggregate WITH date filter but no user filter
-    const aggToday = await driver.all(
-      `SELECT domain, ROUND(CAST(SUM("durationSeconds") / 60.0 AS NUMERIC), 2) AS totalMinutes
-       FROM screen_time
-       WHERE date("timestamp") = ?
-       GROUP BY domain
-       ORDER BY totalMinutes DESC
-       LIMIT 5`,
-      [today]
-    );
-    results.agg_today = aggToday;
-
-    // 6. Aggregate with date AND empty user
-    const aggTodayUser = await driver.all(
-      `SELECT domain, ROUND(CAST(SUM("durationSeconds") / 60.0 AS NUMERIC), 2) AS totalMinutes
-       FROM screen_time
-       WHERE date("timestamp") = ? AND user_id = ?
-       GROUP BY domain
-       ORDER BY totalMinutes DESC
-       LIMIT 5`,
-      [today, '']
-    );
-    results.agg_today_user = aggTodayUser;
-
-    // 7. Calculate SUM("durationSeconds") for today
-    const sumToday = await driver.all(
-      `SELECT domain, SUM("durationSeconds") AS total_seconds
-       FROM screen_time
-       WHERE date("timestamp") = ?
-       GROUP BY domain
-       ORDER BY total_seconds DESC
-       LIMIT 5`,
-      [today]
-    );
-    results.sum_today = sumToday;
-
-    return res.json({ query_date: today, results });
-  } catch (err) {
-    console.error("[check] Error:", err);
-    return res.status(500).json({ status: "error", message: err.message });
-  }
-});
 
 // ─── Startup ────────────────────────────────────────────────────────────────
 
