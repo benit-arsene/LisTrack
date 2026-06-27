@@ -2,8 +2,9 @@
  * Web Screen-Time Tracker — Backend Server
  * ==========================================
  * Express server that collects screen-time data from the tracking snippet
- * and exposes a dashboard API. Uses SQLite for persistent storage so it
- * runs with zero configuration — no external database needed.
+ * and exposes a dashboard API. Uses sql.js (pure JavaScript SQLite via
+ * WebAssembly) for zero-configuration persistent storage — no native
+ * compilation required, works on every platform including Render.
  *
  * Endpoints:
  *   POST /api/screen-time   — Accept screen-time payloads (JSON or text/plain)
@@ -22,7 +23,7 @@ const express = require("express");
 const cors = require("cors");
 const path = require("path");
 const fs = require("fs");
-const Database = require("better-sqlite3");
+const initSqlJs = require("sql.js");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -46,67 +47,137 @@ app.get("/", (req, res) => {
   res.redirect("/dashboard.html");
 });
 
-// ─── SQLite Database Setup ──────────────────────────────────────────────────
+// ─── SQLite Database Setup (sql.js — pure JS, no native compilation) ──────
 
 const DATA_DIR = path.resolve(__dirname, "data");
 const DB_PATH = process.env.DATABASE_PATH || path.join(DATA_DIR, "screen-time.db");
 
-// Ensure the data directory exists
-if (!fs.existsSync(DATA_DIR)) {
-  fs.mkdirSync(DATA_DIR, { recursive: true });
+// ─── sql.js helper wrappers ────────────────────────────────────────────────
+// sql.js is an in-memory SQLite. We persist to disk manually via export().
+// These helpers mimic the better-sqlite3 API we were using before.
+
+let db = null;
+
+/** Initialize sql.js, load or create the database, and run DDL. */
+async function initDatabase() {
+  const SQL = await initSqlJs();
+
+  // Load existing database or create empty one
+  if (fs.existsSync(DB_PATH)) {
+    const buffer = fs.readFileSync(DB_PATH);
+    db = new SQL.Database(buffer);
+    console.log(`[db] Loaded existing database from ${DB_PATH}`);
+  } else {
+    // Ensure the data directory exists
+    if (!fs.existsSync(DATA_DIR)) {
+      fs.mkdirSync(DATA_DIR, { recursive: true });
+    }
+    db = new SQL.Database();
+    console.log(`[db] Created new database at ${DB_PATH}`);
+  }
+
+  // Create tables and indexes
+  db.run(`
+    CREATE TABLE IF NOT EXISTS screen_time (
+      id              INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id         TEXT NOT NULL DEFAULT '',
+      domain          TEXT NOT NULL,
+      path            TEXT NOT NULL DEFAULT '/',
+      durationSeconds REAL NOT NULL,
+      timestamp       TEXT NOT NULL,
+      recovered       INTEGER NOT NULL DEFAULT 0,
+      ingested_at     TEXT NOT NULL DEFAULT (datetime('now'))
+    )
+  `);
+
+  db.run(`
+    CREATE INDEX IF NOT EXISTS idx_screen_time_domain
+    ON screen_time(domain)
+  `);
+
+  db.run(`
+    CREATE INDEX IF NOT EXISTS idx_screen_time_timestamp
+    ON screen_time(timestamp)
+  `);
+
+  db.run(`
+    CREATE INDEX IF NOT EXISTS idx_screen_time_user
+    ON screen_time(user_id)
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS daily_goals (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      domain      TEXT NOT NULL,
+      max_minutes REAL NOT NULL,
+      enabled     INTEGER NOT NULL DEFAULT 1,
+      created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+    )
+  `);
+
+  db.run(`
+    CREATE INDEX IF NOT EXISTS idx_daily_goals_domain
+    ON daily_goals(domain)
+  `);
+
+  // Persist the newly created schema
+  saveDatabase();
+
+  console.log(`[db] Database ready at ${DB_PATH}`);
 }
 
-const db = new Database(DB_PATH);
+/** Persist the in-memory database to disk. */
+function saveDatabase() {
+  const data = db.export();
+  fs.writeFileSync(DB_PATH, Buffer.from(data));
+}
 
-// Enable WAL mode for better concurrent read performance
-db.pragma("journal_mode = WAL");
+/** Query all rows and return them as an array of objects. */
+function dbAll(sql, params = []) {
+  const stmt = db.prepare(sql);
+  if (params.length > 0) stmt.bind(params);
+  const rows = [];
+  while (stmt.step()) {
+    rows.push(stmt.getAsObject());
+  }
+  stmt.free();
+  return rows;
+}
 
-// Create tables if they don't exist
-db.exec(`
-  CREATE TABLE IF NOT EXISTS screen_time (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id         TEXT NOT NULL DEFAULT '',
-    domain          TEXT NOT NULL,
-    path            TEXT NOT NULL DEFAULT '/',
-    durationSeconds REAL NOT NULL,
-    timestamp       TEXT NOT NULL,
-    recovered       INTEGER NOT NULL DEFAULT 0,
-    ingested_at     TEXT NOT NULL DEFAULT (datetime('now'))
-  )
-`);
+/** Query a single row and return it as an object (or null). */
+function dbGet(sql, params = []) {
+  const stmt = db.prepare(sql);
+  if (params.length > 0) stmt.bind(params);
+  let row = null;
+  if (stmt.step()) {
+    row = stmt.getAsObject();
+  }
+  stmt.free();
+  return row;
+}
 
-db.exec(`
-  CREATE INDEX IF NOT EXISTS idx_screen_time_domain
-  ON screen_time(domain)
-`);
+/** Execute a write statement (INSERT/UPDATE/DELETE) and return result info. */
+function dbRun(sql, params = []) {
+  const stmt = db.prepare(sql);
+  if (params.length > 0) stmt.bind(params);
+  stmt.step();
+  stmt.free();
 
-db.exec(`
-  CREATE INDEX IF NOT EXISTS idx_screen_time_timestamp
-  ON screen_time(timestamp)
-`);
+  // Retrieve lastInsertRowid and changes count
+  const idRow = db.exec("SELECT last_insert_rowid() AS id");
+  const changesRow = db.exec("SELECT changes() AS n");
 
-db.exec(`
-  CREATE INDEX IF NOT EXISTS idx_screen_time_user
-  ON screen_time(user_id)
-`);
+  const lastInsertRowid =
+    idRow && idRow.length > 0 ? idRow[0].values[0][0] : null;
+  const changes =
+    changesRow && changesRow.length > 0 ? changesRow[0].values[0][0] : 0;
 
-db.exec(`
-  CREATE TABLE IF NOT EXISTS daily_goals (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    domain      TEXT NOT NULL,
-    max_minutes REAL NOT NULL,
-    enabled     INTEGER NOT NULL DEFAULT 1,
-    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
-  )
-`);
+  // Persist to disk after every write
+  saveDatabase();
 
-db.exec(`
-  CREATE INDEX IF NOT EXISTS idx_daily_goals_domain
-  ON daily_goals(domain)
-`);
-
-console.log(`[db] SQLite database opened at ${DB_PATH}`);
+  return { lastInsertRowid, changes };
+}
 
 // ─── Database Helper Functions ──────────────────────────────────────────────
 
@@ -114,17 +185,10 @@ console.log(`[db] SQLite database opened at ${DB_PATH}`);
  * Insert a screen-time log entry into storage.
  */
 function insertScreenTimeLog(entry) {
-  const stmt = db.prepare(`
-    INSERT INTO screen_time (user_id, domain, path, durationSeconds, timestamp, recovered)
-    VALUES (?, ?, ?, ?, ?, ?)
-  `);
-  const result = stmt.run(
-    entry.userId || '',
-    entry.domain,
-    entry.path,
-    entry.durationSeconds,
-    entry.timestamp,
-    entry.recovered ? 1 : 0,
+  const result = dbRun(
+    `INSERT INTO screen_time (user_id, domain, path, durationSeconds, timestamp, recovered)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+    [entry.userId || '', entry.domain, entry.path, entry.durationSeconds, entry.timestamp, entry.recovered ? 1 : 0],
   );
   entry._id = result.lastInsertRowid;
   return entry;
@@ -134,13 +198,13 @@ function insertScreenTimeLog(entry) {
  * Retrieve all screen-time logs from storage.
  */
 function getAllScreenTimeLogs(userId) {
-  const stmt = db.prepare(`
-    SELECT id, domain, path, durationSeconds, timestamp, recovered, ingested_at
-    FROM screen_time
-    WHERE user_id = ?
-    ORDER BY id DESC
-  `);
-  return stmt.all(userId || '').map((row) => ({
+  return dbAll(
+    `SELECT id, domain, path, durationSeconds, timestamp, recovered, ingested_at
+     FROM screen_time
+     WHERE user_id = ?
+     ORDER BY id DESC`,
+    [userId || ''],
+  ).map((row) => ({
     ...row,
     recovered: row.recovered === 1,
   }));
@@ -151,16 +215,14 @@ function getAllScreenTimeLogs(userId) {
  */
 function getAggregatedByDomain(date, userId) {
   const dateValue = date || new Date().toISOString().slice(0, 10);
-  const stmt = db.prepare(`
-    SELECT
-      domain,
-      ROUND(SUM(durationSeconds) / 60.0, 2) AS totalMinutes
-    FROM screen_time
-    WHERE date(timestamp) = ? AND user_id = ?
-    GROUP BY domain
-    ORDER BY totalMinutes DESC
-  `);
-  return stmt.all(dateValue, userId || '').map((row) => ({
+  return dbAll(
+    `SELECT domain, ROUND(SUM(durationSeconds) / 60.0, 2) AS totalMinutes
+     FROM screen_time
+     WHERE date(timestamp) = ? AND user_id = ?
+     GROUP BY domain
+     ORDER BY totalMinutes DESC`,
+    [dateValue, userId || ''],
+  ).map((row) => ({
     domain: row.domain,
     totalMinutes: row.totalMinutes || 0,
   }));
@@ -170,13 +232,13 @@ function getAggregatedByDomain(date, userId) {
  * Return all distinct dates that have screen-time data, sorted descending.
  */
 function getAvailableDates(userId) {
-  const stmt = db.prepare(`
-    SELECT DISTINCT date(timestamp) AS d
-    FROM screen_time
-    WHERE user_id = ?
-    ORDER BY d DESC
-  `);
-  return stmt.all(userId || '').map((row) => row.d);
+  return dbAll(
+    `SELECT DISTINCT date(timestamp) AS d
+     FROM screen_time
+     WHERE user_id = ?
+     ORDER BY d DESC`,
+    [userId || ''],
+  ).map((row) => row.d);
 }
 
 /**
@@ -215,16 +277,14 @@ function getPeriodRange(dateStr, period) {
  * Aggregate screen-time logs grouped by domain for a date range.
  */
 function getAggregatedByDomainForPeriod(startDate, endDate, userId) {
-  const stmt = db.prepare(`
-    SELECT
-      domain,
-      ROUND(SUM(durationSeconds) / 60.0, 2) AS totalMinutes
-    FROM screen_time
-    WHERE date(timestamp) >= ? AND date(timestamp) <= ? AND user_id = ?
-    GROUP BY domain
-    ORDER BY totalMinutes DESC
-  `);
-  return stmt.all(startDate, endDate, userId || '').map((row) => ({
+  return dbAll(
+    `SELECT domain, ROUND(SUM(durationSeconds) / 60.0, 2) AS totalMinutes
+     FROM screen_time
+     WHERE date(timestamp) >= ? AND date(timestamp) <= ? AND user_id = ?
+     GROUP BY domain
+     ORDER BY totalMinutes DESC`,
+    [startDate, endDate, userId || ''],
+  ).map((row) => ({
     domain: row.domain,
     totalMinutes: row.totalMinutes || 0,
   }));
@@ -234,16 +294,14 @@ function getAggregatedByDomainForPeriod(startDate, endDate, userId) {
  * Return total minutes per day for a date range.
  */
 function getDailyBreakdownForPeriod(startDate, endDate, userId) {
-  const stmt = db.prepare(`
-    SELECT
-      date(timestamp) AS d,
-      ROUND(SUM(durationSeconds) / 60.0, 2) AS totalMinutes
-    FROM screen_time
-    WHERE date(timestamp) >= ? AND date(timestamp) <= ? AND user_id = ?
-    GROUP BY date(timestamp)
-    ORDER BY d ASC
-  `);
-  return stmt.all(startDate, endDate, userId || '').map((row) => ({
+  return dbAll(
+    `SELECT date(timestamp) AS d, ROUND(SUM(durationSeconds) / 60.0, 2) AS totalMinutes
+     FROM screen_time
+     WHERE date(timestamp) >= ? AND date(timestamp) <= ? AND user_id = ?
+     GROUP BY date(timestamp)
+     ORDER BY d ASC`,
+    [startDate, endDate, userId || ''],
+  ).map((row) => ({
     date: row.d,
     totalMinutes: row.totalMinutes || 0,
   }));
@@ -605,12 +663,11 @@ app.get("/api/logs", (req, res) => {
  * Get all daily goals.
  */
 function getGoals() {
-  const stmt = db.prepare(`
-    SELECT id, domain, max_minutes, enabled, created_at, updated_at
-    FROM daily_goals
-    ORDER BY created_at DESC
-  `);
-  return stmt.all().map((row) => ({
+  return dbAll(
+    `SELECT id, domain, max_minutes, enabled, created_at, updated_at
+     FROM daily_goals
+     ORDER BY created_at DESC`,
+  ).map((row) => ({
     ...row,
     enabled: row.enabled === 1,
   }));
@@ -620,11 +677,10 @@ function getGoals() {
  * Create a new daily goal.
  */
 function createGoal(domain, maxMinutes) {
-  const stmt = db.prepare(`
-    INSERT INTO daily_goals (domain, max_minutes)
-    VALUES (?, ?)
-  `);
-  const result = stmt.run(domain.toLowerCase().replace(/^www\./, ""), maxMinutes);
+  const result = dbRun(
+    `INSERT INTO daily_goals (domain, max_minutes) VALUES (?, ?)`,
+    [domain.toLowerCase().replace(/^www\./, ""), maxMinutes],
+  );
   return { id: result.lastInsertRowid };
 }
 
@@ -653,8 +709,7 @@ function updateGoal(id, fields) {
   sets.push("updated_at = datetime('now')");
   values.push(id);
 
-  const stmt = db.prepare(`UPDATE daily_goals SET ${sets.join(", ")} WHERE id = ?`);
-  const result = stmt.run(...values);
+  const result = dbRun(`UPDATE daily_goals SET ${sets.join(", ")} WHERE id = ?`, values);
   return { updated: result.changes > 0 };
 }
 
@@ -662,8 +717,7 @@ function updateGoal(id, fields) {
  * Delete a daily goal.
  */
 function deleteGoal(id) {
-  const stmt = db.prepare("DELETE FROM daily_goals WHERE id = ?");
-  const result = stmt.run(id);
+  const result = dbRun("DELETE FROM daily_goals WHERE id = ?", [id]);
   return { deleted: result.changes > 0 };
 }
 
@@ -672,13 +726,13 @@ function deleteGoal(id) {
  */
 function getTodayMinutesForDomain(domain, userId) {
   const today = new Date().toISOString().slice(0, 10);
-  const stmt = db.prepare(`
-    SELECT ROUND(SUM(durationSeconds) / 60.0, 2) AS totalMinutes
-    FROM screen_time
-    WHERE date(timestamp) = ? AND domain = ? AND user_id = ?
-  `);
-  const row = stmt.get(today, domain, userId || '');
-  return row.totalMinutes || 0;
+  const row = dbGet(
+    `SELECT ROUND(SUM(durationSeconds) / 60.0, 2) AS totalMinutes
+     FROM screen_time
+     WHERE date(timestamp) = ? AND domain = ? AND user_id = ?`,
+    [today, domain, userId || ''],
+  );
+  return (row && row.totalMinutes) || 0;
 }
 
 /**
@@ -710,8 +764,11 @@ function getGoalStatus(userId) {
 
 // ─── Start Server ───────────────────────────────────────────────────────────
 
-app.listen(PORT, () => {
-  console.log(`
+async function start() {
+  await initDatabase();
+
+  app.listen(PORT, () => {
+    console.log(`
 ╔══════════════════════════════════════════════════╗
 ║     Web Screen-Time Tracker — Server Running     ║
 ╠══════════════════════════════════════════════════╣
@@ -720,21 +777,28 @@ app.listen(PORT, () => {
 ║  GET   /api/logs          ← Raw logs (debug)     ║
 ║                                                  ║
 ║  Listening on http://localhost:${String(PORT).padEnd(5)}              ║
-║  Database: SQLite (./data/screen-time.db)        ║
+║  Database: SQLite (sql.js — zero native deps)    ║
+║  Location: ${DB_PATH.padEnd(52)}  ║
 ╚══════════════════════════════════════════════════╝
-  `);
+    `);
+  });
+}
+
+start().catch((err) => {
+  console.error("Failed to start server:", err);
+  process.exit(1);
 });
 
 // ─── Graceful Shutdown ──────────────────────────────────────────────────────
 
 process.on("SIGINT", () => {
-  console.log("\n[db] Closing database...");
-  db.close();
+  console.log("\n[db] Saving and closing database...");
+  saveDatabase();
   process.exit(0);
 });
 
 process.on("SIGTERM", () => {
-  console.log("\n[db] Closing database...");
-  db.close();
+  console.log("\n[db] Saving and closing database...");
+  saveDatabase();
   process.exit(0);
 });
