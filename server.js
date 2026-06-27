@@ -194,7 +194,7 @@ const sql_schema = `
     user_id         TEXT NOT NULL DEFAULT '',
     domain          TEXT NOT NULL,
     path            TEXT NOT NULL DEFAULT '/',
-    "durationSeconds" REAL NOT NULL,
+    durationSeconds REAL NOT NULL,
     timestamp       TEXT NOT NULL,
     recovered       INTEGER NOT NULL DEFAULT 0,
     ingested_at     TEXT NOT NULL DEFAULT (datetime('now'))
@@ -223,7 +223,7 @@ const sql_schema_pg = `
     user_id         TEXT NOT NULL DEFAULT '',
     domain          TEXT NOT NULL,
     path            TEXT NOT NULL DEFAULT '/',
-    "durationSeconds" DOUBLE PRECISION NOT NULL,
+    durationSeconds DOUBLE PRECISION NOT NULL,
     timestamp       TIMESTAMP NOT NULL,
     recovered       BOOLEAN NOT NULL DEFAULT FALSE,
     ingested_at     TIMESTAMP NOT NULL DEFAULT NOW()
@@ -252,7 +252,7 @@ const sql_schema_pg = `
  */
 async function insertScreenTimeLog(entry) {
   const result = await driver.run(
-    `INSERT INTO screen_time (user_id, domain, path, "durationSeconds", "timestamp", recovered)
+    `INSERT INTO screen_time (user_id, domain, path, durationSeconds, "timestamp", recovered)
      VALUES (?, ?, ?, ?, ?, ?)`,
     [entry.userId || '', entry.domain, entry.path, entry.durationSeconds, entry.timestamp, entry.recovered ? 1 : 0],
   );
@@ -265,7 +265,7 @@ async function insertScreenTimeLog(entry) {
  */
 async function getAllScreenTimeLogs(userId) {
   const rows = await driver.all(
-    `SELECT id, domain, path, "durationSeconds", "timestamp", recovered, ingested_at
+    `SELECT id, domain, path, durationSeconds, "timestamp", recovered, ingested_at
      FROM screen_time
      WHERE user_id = ?
      ORDER BY id DESC`,
@@ -283,7 +283,7 @@ async function getAllScreenTimeLogs(userId) {
 async function getAggregatedByDomain(date, userId) {
   const dateValue = date || new Date().toISOString().slice(0, 10);
   const rows = await driver.all(
-    `SELECT domain, ROUND(SUM("durationSeconds") / 60.0, 2) AS totalMinutes
+    `SELECT domain, ROUND(SUM(durationSeconds) / 60.0, 2) AS totalMinutes
      FROM screen_time
      WHERE date("timestamp") = ? AND user_id = ?
      GROUP BY domain
@@ -347,7 +347,7 @@ function getPeriodRange(dateStr, period) {
  */
 async function getAggregatedByDomainForPeriod(startDate, endDate, userId) {
   const rows = await driver.all(
-    `SELECT domain, ROUND(SUM("durationSeconds") / 60.0, 2) AS totalMinutes
+    `SELECT domain, ROUND(SUM(durationSeconds) / 60.0, 2) AS totalMinutes
      FROM screen_time
      WHERE date("timestamp") >= ? AND date("timestamp") <= ? AND user_id = ?
      GROUP BY domain
@@ -365,7 +365,7 @@ async function getAggregatedByDomainForPeriod(startDate, endDate, userId) {
  */
 async function getDailyBreakdownForPeriod(startDate, endDate, userId) {
   const rows = await driver.all(
-    `SELECT date("timestamp") AS d, ROUND(SUM("durationSeconds") / 60.0, 2) AS totalMinutes
+    `SELECT date("timestamp") AS d, ROUND(SUM(durationSeconds) / 60.0, 2) AS totalMinutes
      FROM screen_time
      WHERE date("timestamp") >= ? AND date("timestamp") <= ? AND user_id = ?
      GROUP BY date("timestamp")
@@ -455,7 +455,7 @@ async function deleteGoal(id) {
 async function getTodayMinutesForDomain(domain, userId) {
   const today = new Date().toISOString().slice(0, 10);
   const row = await driver.get(
-    `SELECT ROUND(SUM("durationSeconds") / 60.0, 2) AS totalMinutes
+    `SELECT ROUND(SUM(durationSeconds) / 60.0, 2) AS totalMinutes
      FROM screen_time
      WHERE date("timestamp") = ? AND domain = ? AND user_id = ?`,
     [today, domain, userId || ''],
