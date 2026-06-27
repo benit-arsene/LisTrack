@@ -316,7 +316,7 @@ async function getAggregatedByDomain(date, userId) {
   );
   return rows.map((row) => ({
     domain: row.domain,
-    totalMinutes: row.totalMinutes || 0,
+    totalMinutes: Number(row.totalMinutes) || 0,
   }));
 }
 
@@ -380,7 +380,7 @@ async function getAggregatedByDomainForPeriod(startDate, endDate, userId) {
   );
   return rows.map((row) => ({
     domain: row.domain,
-    totalMinutes: row.totalMinutes || 0,
+    totalMinutes: Number(row.totalMinutes) || 0,
   }));
 }
 
@@ -398,7 +398,7 @@ async function getDailyBreakdownForPeriod(startDate, endDate, userId) {
   );
   return rows.map((row) => ({
     date: row.d,
-    totalMinutes: row.totalMinutes || 0,
+    totalMinutes: Number(row.totalMinutes) || 0,
   }));
 }
 
@@ -484,7 +484,7 @@ async function getTodayMinutesForDomain(domain, userId) {
      WHERE date("timestamp") = ? AND domain = ? AND user_id = ?`,
     [today, domain, userId || ''],
   );
-  return (row && row.totalMinutes) || 0;
+  return (row && Number(row.totalMinutes)) || 0;
 }
 
 /**
