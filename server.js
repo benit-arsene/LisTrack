@@ -307,7 +307,7 @@ async function getAllScreenTimeLogs(userId) {
 async function getAggregatedByDomain(date, userId) {
   const dateValue = date || new Date().toISOString().slice(0, 10);
   const rows = await driver.all(
-    `SELECT domain, ROUND(SUM("durationSeconds") / 60.0, 2) AS totalMinutes
+    `SELECT domain, ROUND(CAST(SUM("durationSeconds") / 60.0 AS NUMERIC), 2) AS totalMinutes
      FROM screen_time
      WHERE date("timestamp") = ? AND user_id = ?
      GROUP BY domain
@@ -371,7 +371,7 @@ function getPeriodRange(dateStr, period) {
  */
 async function getAggregatedByDomainForPeriod(startDate, endDate, userId) {
   const rows = await driver.all(
-    `SELECT domain, ROUND(SUM("durationSeconds") / 60.0, 2) AS totalMinutes
+    `SELECT domain, ROUND(CAST(SUM("durationSeconds") / 60.0 AS NUMERIC), 2) AS totalMinutes
      FROM screen_time
      WHERE date("timestamp") >= ? AND date("timestamp") <= ? AND user_id = ?
      GROUP BY domain
@@ -389,7 +389,7 @@ async function getAggregatedByDomainForPeriod(startDate, endDate, userId) {
  */
 async function getDailyBreakdownForPeriod(startDate, endDate, userId) {
   const rows = await driver.all(
-    `SELECT date("timestamp") AS d, ROUND(SUM("durationSeconds") / 60.0, 2) AS totalMinutes
+    `SELECT date("timestamp") AS d, ROUND(CAST(SUM("durationSeconds") / 60.0 AS NUMERIC), 2) AS totalMinutes
      FROM screen_time
      WHERE date("timestamp") >= ? AND date("timestamp") <= ? AND user_id = ?
      GROUP BY date("timestamp")
@@ -479,7 +479,7 @@ async function deleteGoal(id) {
 async function getTodayMinutesForDomain(domain, userId) {
   const today = new Date().toISOString().slice(0, 10);
   const row = await driver.get(
-    `SELECT ROUND(SUM("durationSeconds") / 60.0, 2) AS totalMinutes
+    `SELECT ROUND(CAST(SUM("durationSeconds") / 60.0 AS NUMERIC), 2) AS totalMinutes
      FROM screen_time
      WHERE date("timestamp") = ? AND domain = ? AND user_id = ?`,
     [today, domain, userId || ''],
@@ -805,7 +805,7 @@ app.get("/api/debug", async (req, res) => {
     try {
       const today = new Date().toISOString().slice(0, 10);
       const rows = await driver.all(
-        `SELECT domain, ROUND(SUM("durationSeconds") / 60.0, 2) AS totalMinutes
+        `SELECT domain, ROUND(CAST(SUM("durationSeconds") / 60.0 AS NUMERIC), 2) AS totalMinutes
          FROM screen_time
          WHERE date("timestamp") = ?
          GROUP BY domain
