@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>LisTrack — Personal Screen Time Tracker</title>
+  <link rel="icon" href="/icon.png" type="image/png" />
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = { darkMode: 'class' }
+  </script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
+  <style>
+    * { font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif; }
+    body { background: #f3f4f6; }
+    .fade-in { animation: fadeIn 0.6s ease-out forwards; opacity: 0; }
+    .slide-up { animation: slideUp 0.5s ease-out forwards; opacity: 0; }
+    @keyframes fadeIn { to { opacity: 1; } }
+    @keyframes slideUp { to { opacity: 1; transform: translateY(0); } }
+    .step-card { transition: transform 0.2s ease, box-shadow 0.2s ease; }
+    .step-card:hover { transform: translateY(-2px); box-shadow: 0 12px 20px -8px rgba(0,0,0,0.1); }
+    .dark .step-card:hover { box-shadow: 0 12px 20px -8px rgba(0,0,0,0.4); }
+    html, body { transition: background-color 0.3s ease, color 0.3s ease; }
+  </style>
+</head>
+<body class="min-h-screen bg-gradient-to-br from-gray-50 to-gray-100 dark:from-gray-900 dark:to-gray-950">
+
+  <div class="max-w-4xl mx-auto px-4 py-8 sm:px-6 lg:px-8">
+
+    <!-- Header -->
+    <header class="mb-12 fade-in">
+      <div class="flex items-center justify-between">
+        <div class="flex items-center gap-3">
+          <img src="/icon.png" alt="LisTrack" class="w-10 h-10 rounded-xl" />
+          <div>
+            <h1 class="text-2xl font-bold text-gray-900 dark:text-gray-100 tracking-tight">LisTrack</h1>
+            <p class="text-xs text-gray-500 dark:text-gray-400">Personal Screen Time Tracker</p>
+          </div>
+        </div>
+        <div class="flex items-center gap-3">
+          <button
+            onclick="toggleTheme()"
+            class="inline-flex items-center justify-center w-9 h-9 text-gray-500 dark:text-gray-400 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl hover:bg-gray-50 dark:hover:bg-gray-700 transition-all duration-150 shadow-sm"
+            title="Toggle dark mode"
+            aria-label="Toggle dark mode"
+          >
+            <svg id="sunIcon" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z" />
+            </svg>
+            <svg id="moonIcon" class="w-4 h-4 hidden" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" />
+            </svg>
+          </button>
+          <a
+            href="/dashboard.html"
+            class="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-white bg-indigo-600 rounded-xl hover:bg-indigo-700 transition-all duration-150 shadow-sm"
+          >
+            <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M13.5 6H5.25A2.25 2.25 0 003 8.25v10.5A2.25 2.25 0 005.25 21h10.5A2.25 2.25 0 0018 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25" />
+            </svg>
+            Dashboard
+          </a>
+        </div>
+      </div>
+    </header>
+
+    <!-- Hero -->
+    <section class="text-center mb-16 fade-in" style="animation-delay: 0.1s;">
+      <div class="inline-flex items-center justify-center w-20 h-20 bg-indigo-50 dark:bg-indigo-900/40 rounded-3xl mb-6">
+        <svg class="w-10 h-10 text-indigo-600 dark:text-indigo-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M12 21a9.004 9.004 0 008.716-6.747M12 21a9.004 9.004 0 01-8.716-6.747M12 21c2.485 0 4.5-4.03 4.5-9S14.485 3 12 3m0 18c-2.485 0-4.5-4.03-4.5-9S9.515 3 12 3m0 0a8.997 8.997 0 017.843 4.582M12 3a8.997 8.997 0 00-7.843 4.582m15.686 0A11.953 11.953 0 0112 10.5c-2.998 0-5.74-1.1-7.843-2.918m15.686 0A8.959 8.959 0 0121 12c0 .778-.099 1.533-.284 2.253m0 0A17.919 17.919 0 0112 16.5c-3.162 0-6.133-.815-8.716-2.247m0 0A9.015 9.015 0 013 12c0-1.605.42-3.113 1.157-4.418" />
+        </svg>
+      </div>
+      <h2 class="text-4xl sm:text-5xl font-extrabold text-gray-900 dark:text-gray-100 tracking-tight mb-4">
+        Know where your<br/>time goes
+      </h2>
+      <p class="text-lg text-gray-500 dark:text-gray-400 max-w-2xl mx-auto mb-8">
+        LisTrack is a lightweight Chrome extension that automatically tracks your active screen time
+        on every website you visit. See your browsing habits on a beautiful dashboard.
+      </p>
+      <div class="flex flex-col sm:flex-row items-center justify-center gap-4">
+        <a
+          href="/lisTrack-extension.zip"
+          download
+          class="inline-flex items-center gap-2 px-6 py-3 text-base font-semibold text-white bg-indigo-600 rounded-xl hover:bg-indigo-700 transition-all duration-150 shadow-md hover:shadow-lg"
+        >
+          <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
+          </svg>
+          Download Extension
+        </a>
+        <a
+          href="/dashboard.html"
+          class="inline-flex items-center gap-2 px-6 py-3 text-base font-semibold text-gray-700 dark:text-gray-300 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl hover:bg-gray-50 dark:hover:bg-gray-700 transition-all duration-150 shadow-sm"
+        >
+          <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M13.5 6H5.25A2.25 2.25 0 003 8.25v10.5A2.25 2.25 0 005.25 21h10.5A2.25 2.25 0 0018 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25" />
+          </svg>
+          Open Dashboard
+        </a>
+      </div>
+    </section>
+
+    <!-- Features -->
+    <section class="grid grid-cols-1 sm:grid-cols-3 gap-6 mb-16 slide-up" style="animation-delay: 0.2s;">
+      <div class="bg-white dark:bg-gray-800 rounded-2xl p-6 shadow-sm border border-gray-100 dark:border-gray-700 text-center">
+        <div class="inline-flex items-center justify-center w-12 h-12 bg-indigo-50 dark:bg-indigo-900/40 rounded-xl mb-4">
+          <svg class="w-6 h-6 text-indigo-600 dark:text-indigo-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z" />
+          </svg>
+        </div>
+        <h3 class="text-sm font-semibold text-gray-900 dark:text-gray-100 mb-1">Automatic Tracking</h3>
+        <p class="text-xs text-gray-500 dark:text-gray-400">Tracks active time per site. Pauses when you're idle or switch tabs.</p>
+      </div>
+      <div class="bg-white dark:bg-gray-800 rounded-2xl p-6 shadow-sm border border-gray-100 dark:border-gray-700 text-center">
+        <div class="inline-flex items-center justify-center w-12 h-12 bg-emerald-50 dark:bg-emerald-900/40 rounded-xl mb-4">
+          <svg class="w-6 h-6 text-emerald-600 dark:text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 013 19.875v-6.75zM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V8.625zM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v15.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V4.125z" />
+          </svg>
+        </div>
+        <h3 class="text-sm font-semibold text-gray-900 dark:text-gray-100 mb-1">Beautiful Dashboard</h3>
+        <p class="text-xs text-gray-500 dark:text-gray-400">View your time by day, week, month, or the last 7 days. Dark mode included.</p>
+      </div>
+      <div class="bg-white dark:bg-gray-800 rounded-2xl p-6 shadow-sm border border-gray-100 dark:border-gray-700 text-center">
+        <div class="inline-flex items-center justify-center w-12 h-12 bg-amber-50 dark:bg-amber-900/40 rounded-xl mb-4">
+          <svg class="w-6 h-6 text-amber-600 dark:text-amber-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z" />
+          </svg>
+        </div>
+        <h3 class="text-sm font-semibold text-gray-900 dark:text-gray-100 mb-1">Daily Goals</h3>
+        <p class="text-xs text-gray-500 dark:text-gray-400">Set screen-time budgets for specific sites. Get notified when you're close to the limit.</p>
+      </div>
+    </section>
+
+    <!-- Installation Instructions -->
+    <section class="bg-white dark:bg-gray-800 rounded-2xl shadow-sm border border-gray-100 dark:border-gray-700 overflow-hidden slide-up mb-8" style="animation-delay: 0.3s;">
+      <div class="px-6 py-5 border-b border-gray-100 dark:border-gray-700">
+        <h2 class="text-lg font-semibold text-gray-900 dark:text-gray-100">Installation Guide</h2>
+        <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">Follow these steps to install LisTrack in Chrome.</p>
+      </div>
+      <div class="divide-y divide-gray-50 dark:divide-gray-700/50">
+        <!-- Step 1 -->
+        <div class="step-card px-6 py-5 flex items-start gap-4">
+          <span class="flex-shrink-0 w-8 h-8 bg-indigo-100 dark:bg-indigo-900/50 text-indigo-600 dark:text-indigo-400 rounded-xl flex items-center justify-center text-sm font-bold">1</span>
+          <div>
+            <h3 class="text-sm font-semibold text-gray-900 dark:text-gray-100 mb-1">Download the extension</h3>
+            <p class="text-xs text-gray-500 dark:text-gray-400">Click the download button above to get <code class="text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-900/30 px-1 rounded">lisTrack-extension.zip</code>.</p>
+          </div>
+        </div>
+        <!-- Step 2 -->
+        <div class="step-card px-6 py-5 flex items-start gap-4">
+          <span class="flex-shrink-0 w-8 h-8 bg-indigo-100 dark:bg-indigo-900/50 text-indigo-600 dark:text-indigo-400 rounded-xl flex items-center justify-center text-sm font-bold">2</span>
+          <div>
+            <h3 class="text-sm font-semibold text-gray-900 dark:text-gray-100 mb-1">Unzip the file</h3>
+            <p class="text-xs text-gray-500 dark:text-gray-400">Extract the contents to a folder on your computer. Make sure you remember where you saved it — you'll need it in the next step.</p>
+          </div>
+        </div>
+        <!-- Step 3 -->
+        <div class="step-card px-6 py-5 flex items-start gap-4">
+          <span class="flex-shrink-0 w-8 h-8 bg-indigo-100 dark:bg-indigo-900/50 text-indigo-600 dark:text-indigo-400 rounded-xl flex items-center justify-center text-sm font-bold">3</span>
+          <div>
+            <h3 class="text-sm font-semibold text-gray-900 dark:text-gray-100 mb-1">Open Chrome Extensions page</h3>
+            <p class="text-xs text-gray-500 dark:text-gray-400">
+              Open a new tab and go to
+              <code class="text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-900/30 px-1 rounded">chrome://extensions/</code>
+              — or click
+              <span class="text-gray-500 dark:text-gray-400"> ⋮ Menu → Extensions → Manage Extensions</span>.
+            </p>
+          </div>
+        </div>
+        <!-- Step 4 -->
+        <div class="step-card px-6 py-5 flex items-start gap-4">
+          <span class="flex-shrink-0 w-8 h-8 bg-indigo-100 dark:bg-indigo-900/50 text-indigo-600 dark:text-indigo-400 rounded-xl flex items-center justify-center text-sm font-bold">4</span>
+          <div>
+            <h3 class="text-sm font-semibold text-gray-900 dark:text-gray-100 mb-1">Enable Developer Mode</h3>
+            <p class="text-xs text-gray-500 dark:text-gray-400">Toggle on <strong>Developer mode</strong> in the top-right corner of the extensions page.</p>
+          </div>
+        </div>
+        <!-- Step 5 -->
+        <div class="step-card px-6 py-5 flex items-start gap-4">
+          <span class="flex-shrink-0 w-8 h-8 bg-indigo-100 dark:bg-indigo-900/50 text-indigo-600 dark:text-indigo-400 rounded-xl flex items-center justify-center text-sm font-bold">5</span>
+          <div>
+            <h3 class="text-sm font-semibold text-gray-900 dark:text-gray-100 mb-1">Load the extension</h3>
+            <p class="text-xs text-gray-500 dark:text-gray-400">Click <strong>Load unpacked</strong> and select the folder you extracted in step 2. The LisTrack icon will appear in your toolbar.</p>
+          </div>
+        </div>
+        <!-- Step 6 -->
+        <div class="step-card px-6 py-5 flex items-start gap-4 border-b-0">
+          <span class="flex-shrink-0 w-8 h-8 bg-emerald-100 dark:bg-emerald-900/50 text-emerald-600 dark:text-emerald-400 rounded-xl flex items-center justify-center text-sm font-bold">6</span>
+          <div>
+            <h3 class="text-sm font-semibold text-gray-900 dark:text-gray-100 mb-1">Open the dashboard</h3>
+            <p class="text-xs text-gray-500 dark:text-gray-400">
+              Click the LisTrack icon in your toolbar, then click <strong>Open Dashboard</strong> to view your screen time data. Start browsing — the tracker works automatically!
+            </p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Footer -->
+    <p class="mt-8 text-xs text-gray-400 dark:text-gray-600 text-center">
+      Created by LODD YRB &middot; Data is stored securely on the server.
+    </p>
+  </div>
+
+  <script>
+    // ─── Dark Mode ─────────────────────────────────────────────────────────
+
+    function setTheme(isDark) {
+      const root = document.documentElement;
+      const sunIcon = document.getElementById('sunIcon');
+      const moonIcon = document.getElementById('moonIcon');
+      if (isDark) {
+        root.classList.add('dark');
+        sunIcon?.classList.add('hidden');
+        moonIcon?.classList.remove('hidden');
+      } else {
+        root.classList.remove('dark');
+        sunIcon?.classList.remove('hidden');
+        moonIcon?.classList.add('hidden');
+      }
+      try { localStorage.setItem('lisTrackTheme', isDark ? 'dark' : 'light'); } catch (_) {}
+    }
+
+    function toggleTheme() {
+      setTheme(!document.documentElement.classList.contains('dark'));
+    }
+
+    function initTheme() {
+      const saved = (() => { try { return localStorage.getItem('lisTrackTheme'); } catch (_) { return null; } })();
+      if (saved === 'dark') setTheme(true);
+      else if (saved === 'light') setTheme(false);
+      else setTheme(window.matchMedia('(prefers-color-scheme: dark)').matches);
+    }
+
+    document.addEventListener('DOMContentLoaded', initTheme);
+    window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', (e) => {
+      if (!localStorage.getItem('lisTrackTheme')) setTheme(e.matches);
+    });
+  </script>
+
+</body>
+</html>

@@ -39,7 +39,7 @@ app.use(express.text({ type: "text/plain" }));
 app.use(express.static(__dirname));
 
 app.get("/", (req, res) => {
-  res.redirect("/dashboard.html");
+  res.sendFile(path.join(__dirname, "index.html"));
 });
 
 // ─── Database Abstraction ───────────────────────────────────────────────────
