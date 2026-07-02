@@ -1233,14 +1233,27 @@
         ? (currentPeriod === 'day' ? 'Today' : formatPeriodLabel(data))
         : formatPeriodLabel(data);
 
-      // Disable next button if at current period
+      // Disable navigation buttons
+      const prevBtn = document.getElementById('prevBtn');
       const nextBtn = document.getElementById('nextBtn');
       const todayBtn = document.getElementById('todayBtn');
-      if (inCurrent) {
+
+      if (currentPeriod === '7days') {
+        // 7 Days view is static — no prev/next navigation, keep arrows visible but disabled
+        prevBtn.classList.add('opacity-30', 'cursor-not-allowed');
+        prevBtn.disabled = true;
+        nextBtn.classList.add('opacity-30', 'cursor-not-allowed');
+        nextBtn.disabled = true;
+        todayBtn.classList.add('hidden');
+      } else if (inCurrent) {
+        prevBtn.classList.remove('opacity-30', 'cursor-not-allowed');
+        prevBtn.disabled = false;
         nextBtn.classList.add('opacity-30', 'cursor-not-allowed');
         nextBtn.disabled = true;
         todayBtn.classList.add('hidden');
       } else {
+        prevBtn.classList.remove('opacity-30', 'cursor-not-allowed');
+        prevBtn.disabled = false;
         nextBtn.classList.remove('opacity-30', 'cursor-not-allowed');
         nextBtn.disabled = false;
         todayBtn.classList.remove('hidden');
