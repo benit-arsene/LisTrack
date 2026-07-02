@@ -38,9 +38,7 @@ app.use(express.json({ type: "application/json" }));
 app.use(express.text({ type: "text/plain" }));
 app.use(express.static(__dirname));
 
-app.get("/", (req, res) => {
-  res.sendFile(path.join(__dirname, "index.html"));
-});
+// Root route — express.static automatically serves index.html
 
 // ─── Database Abstraction ───────────────────────────────────────────────────
 // Two drivers: PostgreSQL (production) and SQLite (local dev)
