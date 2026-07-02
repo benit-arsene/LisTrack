@@ -363,6 +363,15 @@ function getPeriodRange(dateStr, period) {
     };
   }
 
+  if (period === "7days") {
+    const start = new Date(d);
+    start.setUTCDate(d.getUTCDate() - 6);
+    return {
+      start: start.toISOString().slice(0, 10),
+      end: dateStr,
+    };
+  }
+
   return { start: dateStr, end: dateStr };
 }
 
@@ -633,8 +642,8 @@ app.get("/api/summary", async (req, res) => {
     const period = req.query.period || "week";
     const referenceDate = req.query.date || new Date().toISOString().slice(0, 10);
 
-    if (!["week", "month"].includes(period)) {
-      return res.status(400).json({ status: "error", message: "Invalid period. Use 'week' or 'month'." });
+    if (!["week", "month", "7days"].includes(period)) {
+      return res.status(400).json({ status: "error", message: "Invalid period. Use 'week', 'month', or '7days'." });
     }
 
     if (referenceDate && !/^\d{4}-\d{2}-\d{2}$/.test(referenceDate)) {

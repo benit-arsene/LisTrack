@@ -135,6 +135,7 @@
         <button onclick="setPeriod('day')"   id="periodDayBtn"   class="period-btn px-3.5 py-1.5 text-xs font-semibold rounded-lg transition-all duration-150 dark:text-gray-400">Day</button>
         <button onclick="setPeriod('week')"  id="periodWeekBtn"  class="period-btn px-3.5 py-1.5 text-xs font-semibold rounded-lg transition-all duration-150 dark:text-gray-400">Week</button>
         <button onclick="setPeriod('month')" id="periodMonthBtn" class="period-btn px-3.5 py-1.5 text-xs font-semibold rounded-lg transition-all duration-150 dark:text-gray-400">Month</button>
+        <button onclick="setPeriod('7days')" id="period7daysBtn" class="period-btn px-3.5 py-1.5 text-xs font-semibold rounded-lg transition-all duration-150 dark:text-gray-400">7 Days</button>
       </div>
 
       <!-- Date Navigation -->
@@ -464,7 +465,9 @@
     /** Offset a reference date by one period step. */
     function offsetPeriod(dateStr, delta) {
       const d = new Date(dateStr + 'T00:00:00Z');
-      if (currentPeriod === 'week') {
+      if (currentPeriod === '7days') {
+        d.setUTCDate(d.getUTCDate() + delta * 7);
+      } else if (currentPeriod === 'week') {
         d.setUTCDate(d.getUTCDate() + delta * 7);
       } else if (currentPeriod === 'month') {
         d.setUTCMonth(d.getUTCMonth() + delta);
@@ -477,6 +480,12 @@
     /** Check whether a reference date is in the current period. */
     function isCurrentPeriod(dateStr) {
       const today = getTodayStr();
+      if (currentPeriod === '7days') {
+        const d = new Date(today + 'T00:00:00Z');
+        const sevenDaysAgo = new Date(d);
+        sevenDaysAgo.setUTCDate(d.getUTCDate() - 6);
+        return dateStr >= sevenDaysAgo.toISOString().slice(0, 10);
+      }
       if (currentPeriod === 'day') return dateStr === today;
       if (currentPeriod === 'week') {
         // Get current week start
@@ -495,6 +504,15 @@
 
     /** Format a human-friendly label for the current period view. */
     function formatPeriodLabel(data) {
+      if (currentPeriod === '7days') {
+        const start = new Date(data.startDate + 'T00:00:00Z');
+        const end = new Date(data.endDate + 'T00:00:00Z');
+        const s = start.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+        const e = end.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+        if (isCurrentPeriod(data.startDate)) return 'Last 7 Days';
+        return `${s} \u2013 ${e}`;
+      }
+
       if (currentPeriod === 'day') {
         const dateStr = data.date || getTodayStr();
         const today = getTodayStr();
@@ -1231,7 +1249,8 @@
       // Update the "Today/This Week/This Month" button label
       document.getElementById('todayBtnLabel').textContent =
         currentPeriod === 'day' ? 'Today' :
-        currentPeriod === 'week' ? 'This Week' : 'This Month';
+        currentPeriod === 'week' ? 'This Week' :
+        currentPeriod === '7days' ? 'Last 7 Days' : 'This Month';
 
       // ── Export Button Visibility (hide for current period) ──
       const exportBtn = document.getElementById('exportBtn');
@@ -1368,7 +1387,7 @@
       const params = new URLSearchParams(window.location.search);
       const urlPeriod = params.get('period');
       const urlDate = params.get('date');
-      if (urlPeriod && ['day', 'week', 'month'].includes(urlPeriod)) {
+      if (urlPeriod && ['day', 'week', 'month', '7days'].includes(urlPeriod)) {
         currentPeriod = urlPeriod;
       }
       if (urlDate && /^\d{4}-\d{2}-\d{2}$/.test(urlDate)) {
