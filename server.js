@@ -97,11 +97,30 @@ async function createSqliteDriver() {
         const columns = tableInfo[0]?.values?.map(v => v[1]) || [];
         if (!columns.includes('user_id')) {
           db.run("ALTER TABLE screen_time ADD COLUMN user_id TEXT NOT NULL DEFAULT ''");
-          console.log('[db] SQLite migration: added user_id column');
+          console.log('[db] SQLite migration: added user_id column to screen_time');
         }
       } catch (err) {
         console.error('[db] SQLite migration error:', err.message);
       }
+
+      // Migration: add user_id column to daily_goals
+      try {
+        const goalsInfo = db.exec("PRAGMA table_info('daily_goals')");
+        const goalCols = goalsInfo[0]?.values?.map(v => v[1]) || [];
+        if (!goalCols.includes('user_id')) {
+          db.run("ALTER TABLE daily_goals ADD COLUMN user_id TEXT NOT NULL DEFAULT ''");
+          console.log('[db] SQLite migration: added user_id column to daily_goals');
+        }
+        // Create index on user_id (safe to run even if column already existed)
+        db.run("CREATE INDEX IF NOT EXISTS idx_daily_goals_user ON daily_goals(user_id)");
+      } catch (err) {
+        console.error('[db] SQLite migration error (daily_goals):', err.message);
+      }
+
+      // Clean up old global goals (user_id is empty — created before per-user goals)
+      try {
+        db.run("DELETE FROM daily_goals WHERE user_id = ''");
+      } catch (_) {}
 
       save();
       console.log("[db] SQLite schema ready");
@@ -189,6 +208,27 @@ async function createPostgresDriver(connectionString) {
         console.error('[db] PostgreSQL index migration error:', err.message);
       }
 
+      // Migration: add user_id column to daily_goals
+      try {
+        const colResult = await pool.query(`
+          SELECT column_name FROM information_schema.columns
+          WHERE table_name = 'daily_goals' AND column_name = 'user_id'
+        `);
+        if (colResult.rows.length === 0) {
+          await pool.query(`ALTER TABLE daily_goals ADD COLUMN user_id TEXT NOT NULL DEFAULT ''`);
+          console.log('[db] PostgreSQL migration: added user_id column to daily_goals');
+        }
+        // Create index on user_id (safe to run even if column already existed)
+        await pool.query(`CREATE INDEX IF NOT EXISTS idx_daily_goals_user ON daily_goals(user_id)`);
+      } catch (err) {
+        console.error('[db] PostgreSQL migration error (daily_goals):', err.message);
+      }
+
+      // Clean up old global goals
+      try {
+        await pool.query(`DELETE FROM daily_goals WHERE user_id = ''`);
+      } catch (_) {}
+
       console.log("[db] PostgreSQL schema ready");
     },
 
@@ -243,6 +283,7 @@ const sql_schema = `
 
   CREATE TABLE IF NOT EXISTS daily_goals (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id       TEXT NOT NULL DEFAULT '',
     domain        TEXT NOT NULL,
     max_minutes   REAL NOT NULL,
     enabled       INTEGER NOT NULL DEFAULT 1,
@@ -272,6 +313,7 @@ const sql_schema_pg = `
 
   CREATE TABLE IF NOT EXISTS daily_goals (
     id            SERIAL PRIMARY KEY,
+    user_id       TEXT NOT NULL DEFAULT '',
     domain        TEXT NOT NULL,
     max_minutes   DOUBLE PRECISION NOT NULL,
     enabled       BOOLEAN NOT NULL DEFAULT TRUE,
@@ -427,13 +469,16 @@ async function getDailyBreakdownForPeriod(startDate, endDate, userId) {
 // ─── Daily Goals Helper Functions ───────────────────────────────────────────
 
 /**
- * Get all daily goals.
+ * Get daily goals for a specific user.
  */
-async function getGoals() {
+async function getGoals(userId) {
+  if (!userId) return [];
   const rows = await driver.all(
-    `SELECT id, domain, max_minutes, enabled, created_at, updated_at
+    `SELECT id, user_id, domain, max_minutes, enabled, created_at, updated_at
      FROM daily_goals
+     WHERE user_id = ?
      ORDER BY created_at DESC`,
+    [userId],
   );
   return rows.map((row) => ({
     ...row,
@@ -443,20 +488,23 @@ async function getGoals() {
 }
 
 /**
- * Create a new daily goal.
+ * Create a new daily goal for a specific user.
  */
-async function createGoal(domain, maxMinutes) {
+async function createGoal(domain, maxMinutes, userId) {
   const result = await driver.run(
-    `INSERT INTO daily_goals (domain, max_minutes) VALUES (?, ?)`,
-    [domain.toLowerCase().replace(/^www\./, ""), maxMinutes],
+    `INSERT INTO daily_goals (user_id, domain, max_minutes) VALUES (?, ?, ?)`,
+    [userId || '', domain.toLowerCase().replace(/^www\./, ""), maxMinutes],
   );
   return { id: result.lastInsertRowid };
 }
 
 /**
- * Update an existing daily goal.
+ * Update an existing daily goal (only if it belongs to the user).
  */
-async function updateGoal(id, fields) {
+async function updateGoal(id, fields, userId) {
+  const goal = await driver.get("SELECT user_id FROM daily_goals WHERE id = ?", [id]);
+  if (!goal || goal.user_id !== userId) return { updated: false };
+
   const sets = [];
   const values = [];
 
@@ -488,9 +536,12 @@ async function updateGoal(id, fields) {
 }
 
 /**
- * Delete a daily goal.
+ * Delete a daily goal (only if it belongs to the user).
  */
-async function deleteGoal(id) {
+async function deleteGoal(id, userId) {
+  const goal = await driver.get("SELECT user_id FROM daily_goals WHERE id = ?", [id]);
+  if (!goal || goal.user_id !== userId) return { deleted: false };
+
   const result = await driver.run("DELETE FROM daily_goals WHERE id = ?", [id]);
   return { deleted: result.changes > 0 };
 }
@@ -510,10 +561,10 @@ async function getTodayMinutesForDomain(domain, userId) {
 }
 
 /**
- * Get goal status — compare today's usage against all enabled goals.
+ * Get goal status — compare today's usage against the user's enabled goals.
  */
 async function getGoalStatus(userId) {
-  const goals = await getGoals();
+  const goals = await getGoals(userId);
   const enabledGoals = goals.filter((g) => g.enabled);
 
   const result = [];
@@ -697,7 +748,8 @@ app.get("/api/summary", async (req, res) => {
 
 app.get("/api/goals", async (req, res) => {
   try {
-    const goals = await getGoals();
+    const userId = req.query.user || '';
+    const goals = await getGoals(userId);
     return res.json({ goals });
   } catch (err) {
     console.error("[goals] Error fetching goals:", err);
@@ -707,7 +759,7 @@ app.get("/api/goals", async (req, res) => {
 
 app.post("/api/goals", async (req, res) => {
   try {
-    const { domain, max_minutes } = req.body;
+    const { domain, max_minutes, userToken } = req.body;
 
     if (!domain || !max_minutes) {
       return res.status(400).json({ status: "error", message: "Missing required fields: domain, max_minutes" });
@@ -717,7 +769,11 @@ app.post("/api/goals", async (req, res) => {
       return res.status(400).json({ status: "error", message: "max_minutes must be a positive number" });
     }
 
-    const result = await createGoal(domain, max_minutes);
+    if (!userToken) {
+      return res.status(400).json({ status: "error", message: "Missing userToken" });
+    }
+
+    const result = await createGoal(domain, max_minutes, userToken);
     return res.status(201).json({ status: "ok", id: result.id });
   } catch (err) {
     console.error("[goals] Error creating goal:", err);
@@ -732,7 +788,8 @@ app.put("/api/goals/:id", async (req, res) => {
       return res.status(400).json({ status: "error", message: "Invalid goal ID" });
     }
 
-    const result = await updateGoal(id, req.body);
+    const userId = req.query.user || '';
+    const result = await updateGoal(id, req.body, userId);
     if (!result.updated) {
       return res.status(404).json({ status: "error", message: "Goal not found" });
     }
@@ -751,7 +808,8 @@ app.delete("/api/goals/:id", async (req, res) => {
       return res.status(400).json({ status: "error", message: "Invalid goal ID" });
     }
 
-    const result = await deleteGoal(id);
+    const userId = req.query.user || '';
+    const result = await deleteGoal(id, userId);
     if (!result.deleted) {
       return res.status(404).json({ status: "error", message: "Goal not found" });
     }
@@ -866,12 +924,12 @@ app.post("/api/seed", async (req, res) => {
       }
     }
 
-    // Create sample goals
+    // Create sample goals for this user
     let goalCount = 0;
     for (const goal of SEED_GOALS) {
       await driver.run(
-        `INSERT INTO daily_goals (domain, max_minutes) VALUES (?, ?)`,
-        [goal.domain, goal.max_minutes]
+        `INSERT INTO daily_goals (user_id, domain, max_minutes) VALUES (?, ?, ?)`,
+        [userId, goal.domain, goal.max_minutes]
       );
       goalCount++;
     }

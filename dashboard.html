@@ -761,7 +761,7 @@
       try {
         // Fetch both endpoints in parallel
         const [allResp, statusResp] = await Promise.all([
-          fetch(API_BASE + '/goals'),
+          fetch(apiUrl('/goals')),
           fetch(apiUrl('/goals/status')),
         ]);
 
@@ -883,7 +883,7 @@
       }
 
       try {
-        const response = await fetch(API_BASE + '/goals/' + id, {
+        const response = await fetch(apiUrl('/goals/' + id), {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ max_minutes: newValue }),
@@ -1092,7 +1092,7 @@
     /** Delete a goal by ID. */
     async function deleteGoal(id) {
       try {
-        const response = await fetch(API_BASE + '/goals/' + id, {
+        const response = await fetch(apiUrl('/goals/' + id), {
           method: 'DELETE',
         });
 
@@ -1107,7 +1107,7 @@
     /** Toggle a goal's enabled state. */
     async function toggleGoal(id, enabled) {
       try {
-        const response = await fetch(API_BASE + '/goals/' + id, {
+        const response = await fetch(apiUrl('/goals/' + id), {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ enabled }),
