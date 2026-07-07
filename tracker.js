@@ -15,6 +15,7 @@
     IDLE_THRESHOLD_MS: 60_000,
     CHECKPOINT_INTERVAL_MS: 5_000,
     STORAGE_KEY: "web_screen_time_tracker",
+    USER_TOKEN_KEY: "lisTrackTrackerToken",
   };
 
   // Domains to exclude from tracking. Uses suffix matching so "render.com"
@@ -29,6 +30,33 @@
         domain === pattern || domain.endsWith("." + pattern)
       )
     );
+  }
+
+  // ─── Fallback Token ──────────────────────────────────────────────────────
+  // Used when the Chrome extension is not installed — generates a persistent
+  // identifier in localStorage so data sent via sendBeacon/fetch fallback
+  // gets attributed to the correct user on the dashboard.
+
+  function generateFallbackToken() {
+    const chars = "0123456789abcdef";
+    let token = "";
+    for (let i = 0; i < 32; i++) {
+      token += chars[Math.floor(Math.random() * 16)];
+    }
+    return token;
+  }
+
+  function getOrCreateFallbackToken() {
+    try {
+      let token = localStorage.getItem(CONFIG.USER_TOKEN_KEY);
+      if (!token) {
+        token = generateFallbackToken();
+        localStorage.setItem(CONFIG.USER_TOKEN_KEY, token);
+      }
+      return token;
+    } catch (_) {
+      return null;
+    }
   }
 
   // ─── State ───────────────────────────────────────────────────────────────
@@ -111,6 +139,7 @@
       path: window.location.pathname,
       durationSeconds: durationSeconds,
       timestamp: new Date().toISOString(),
+      userToken: getOrCreateFallbackToken(),
     };
 
     if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.sendMessage) {
@@ -179,6 +208,7 @@
           durationSeconds: data.activeTimeMs / 1000,
           timestamp: new Date(data.timestamp).toISOString(),
           recovered: true,
+          userToken: getOrCreateFallbackToken(),
         };
 
         if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.sendMessage) {

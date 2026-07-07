@@ -639,6 +639,7 @@ app.get("/api/dashboard", async (req, res) => {
       topDomain,
       domains,
       availableDates,
+      allowSeed: !driver.isPostgres,
     });
   } catch (err) {
     console.error("[dashboard] Error aggregating data:", err);
@@ -684,6 +685,7 @@ app.get("/api/summary", async (req, res) => {
       domains,
       dailyBreakdown,
       availableDates,
+      allowSeed: !driver.isPostgres,
     });
   } catch (err) {
     console.error("[summary] Error aggregating data:", err);
@@ -784,6 +786,114 @@ app.get("/api/logs", async (req, res) => {
 });
 
 
+// ─── Seed Data Route ─────────────────────────────────────────────────────────
+// ONLY available when using SQLite (local dev). Never available on PostgreSQL (production).
+
+const SEED_DOMAINS = [
+  { domain: "youtube.com", duration: 2700, path: "/watch" },
+  { domain: "github.com", duration: 1800, path: "/" },
+  { domain: "stackoverflow.com", duration: 1200, path: "/questions" },
+  { domain: "reddit.com", duration: 1500, path: "/r/programming" },
+  { domain: "google.com", duration: 900, path: "/search" },
+  { domain: "gmail.com", duration: 600, path: "/inbox" },
+  { domain: "twitter.com", duration: 900, path: "/home" },
+  { domain: "medium.com", duration: 480, path: "/" },
+  { domain: "news.ycombinator.com", duration: 300, path: "/" },
+  { domain: "docs.google.com", duration: 720, path: "/document" },
+];
+
+const SEED_GOALS = [
+  { domain: "youtube.com", max_minutes: 60 },
+  { domain: "reddit.com", max_minutes: 20 },
+  { domain: "twitter.com", max_minutes: 10 },
+  { domain: "github.com", max_minutes: 45 },
+];
+
+/**
+ * POST /api/seed
+ * Generates sample screen-time data and goals for local development testing.
+ * Only works with SQLite (local). Returns 403 on PostgreSQL (production).
+ */
+app.post("/api/seed", async (req, res) => {
+  try {
+    if (driver.isPostgres) {
+      return res.status(403).json({
+        status: "error",
+        message: "Seed data is only available in local development (SQLite) mode.",
+      });
+    }
+
+    const userId = req.query.user || "localhost-dev";
+    const today = new Date().toISOString().slice(0, 10);
+    const now = new Date();
+
+    // Clear existing data for this user
+    await driver.run(`DELETE FROM screen_time WHERE user_id = ?`, [userId]);
+    await driver.run(`DELETE FROM daily_goals`);
+
+    let screenTimeCount = 0;
+
+    // Generate data for the past 6 days + today (7 days total)
+    for (let dayOffset = 6; dayOffset >= 0; dayOffset--) {
+      const date = new Date(now);
+      date.setDate(date.getDate() - dayOffset);
+      const dateStr = date.toISOString().slice(0, 10);
+
+      // Vary the amount per day for realistic patterns
+      const dayFactor = 0.5 + Math.random() * 1.0;
+
+      for (const site of SEED_DOMAINS) {
+        // Some days randomly skip some sites
+        if (Math.random() < 0.2) continue;
+
+        const randomVariation = 0.7 + Math.random() * 0.6;
+        const seconds = Math.round(site.duration * dayFactor * randomVariation);
+
+        if (seconds < 10) continue;
+
+        // Spread visits throughout the day
+        const hour = Math.floor(Math.random() * 14) + 8; // 8am to 10pm
+        const minute = Math.floor(Math.random() * 60);
+        date.setHours(hour, minute, 0, 0);
+        const timestamp = date.toISOString();
+
+        await driver.run(
+          `INSERT INTO screen_time (user_id, domain, path, "durationSeconds", "timestamp", recovered)
+           VALUES (?, ?, ?, ?, ?, ?)`,
+          [userId, site.domain, site.path, seconds, timestamp, driver.isPostgres ? false : 0]
+        );
+        screenTimeCount++;
+      }
+    }
+
+    // Create sample goals
+    let goalCount = 0;
+    for (const goal of SEED_GOALS) {
+      await driver.run(
+        `INSERT INTO daily_goals (domain, max_minutes) VALUES (?, ?)`,
+        [goal.domain, goal.max_minutes]
+      );
+      goalCount++;
+    }
+
+    console.log(`[seed] Created ${screenTimeCount} screen-time records and ${goalCount} goals for user "${userId}"`);
+
+    return res.status(201).json({
+      status: "ok",
+      message: `Generated sample data for the past 7 days.`,
+      stats: {
+        screenTimeRecords: screenTimeCount,
+        goals: goalCount,
+        userId: userId,
+        daysGenerated: 7,
+      },
+    });
+  } catch (err) {
+    console.error("[seed] Error generating seed data:", err);
+    return res.status(500).json({ status: "error", message: "Internal server error" });
+  }
+});
+
 // ─── Startup ────────────────────────────────────────────────────────────────
 
 async function start() {
@@ -806,6 +916,7 @@ async function start() {
 ║  POST  /api/screen-time   ← Collector           ║
 ║  GET   /api/dashboard     ← Dashboard API        ║
 ║  GET   /api/logs          ← Raw logs (debug)     ║
+║  POST  /api/seed          ← Seed data (local)    ║
 ║                                                  ║
 ║  Listening on http://localhost:${String(PORT).padEnd(5)}              ║
 ║  Database: ${USE_PG ? "PostgreSQL".padEnd(43) : "SQLite (sql.js)".padEnd(43)} ║
