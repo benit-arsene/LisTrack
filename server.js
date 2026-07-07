@@ -36,7 +36,22 @@ const USE_PG = !!process.env.DATABASE_URL;
 app.use(cors());
 app.use(express.json({ type: "application/json" }));
 app.use(express.text({ type: "text/plain" }));
+
+// Redirect old /dashboard.html links to clean /dashboard (preserves query params like ?user=TOKEN)
+app.use((req, res, next) => {
+  if (req.path === "/dashboard.html") {
+    const query = req.url.includes("?") ? req.url.substring(req.url.indexOf("?")) : "";
+    return res.redirect(301, "/dashboard" + query);
+  }
+  next();
+});
+
 app.use(express.static(__dirname));
+
+// Serve dashboard at the clean /dashboard URL
+app.get("/dashboard", (req, res) => {
+  res.sendFile(path.join(__dirname, "dashboard.html"));
+});
 
 // Root route — express.static automatically serves index.html
 

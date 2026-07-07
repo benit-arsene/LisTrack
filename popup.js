@@ -23,7 +23,7 @@ const SERVER_URL = "https://listrack-2.onrender.com";
       return;
     }
 
-    const dashboardUrl = `${SERVER_URL}/dashboard.html?user=${encodeURIComponent(token)}`;
+    const dashboardUrl = `${SERVER_URL}/dashboard?user=${encodeURIComponent(token)}`;
 
     app.innerHTML = `
       <div class="logo">
