@@ -516,7 +516,7 @@ async function getGoalStatus(userId) {
       todayMinutes,
       percentage,
       remainingMinutes: Math.max(0, goal.max_minutes - todayMinutes),
-      exceeded: todayMinutes >= goal.max_minutes,
+      exceeded: todayMinutes > goal.max_minutes,
       approaching: percentage >= 80 && percentage < 100,
     });
   }
