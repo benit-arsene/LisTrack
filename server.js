@@ -38,13 +38,11 @@ app.use(express.json({ type: "application/json" }));
 app.use(express.text({ type: "text/plain" }));
 
 // Redirect old listrack-2.onrender.com to new listrack.onrender.com
-// (preserves full path and query params like ?user=TOKEN)
+// (preserves full original URL including path and query params)
 app.use((req, res, next) => {
   const host = req.headers.host || "";
   if (host === "listrack-2.onrender.com") {
-    const query = req.url.includes("?") ? req.url.substring(req.url.indexOf("?")) : "";
-    const path = req.path === "/" ? "" : req.path;
-    return res.redirect(301, "https://listrack.onrender.com" + path + query);
+    return res.redirect(301, "https://listrack.onrender.com" + req.originalUrl);
   }
   next();
 });
