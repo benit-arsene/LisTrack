@@ -1272,15 +1272,8 @@
       else exportBtn.classList.remove('hidden');
 
       animateCounter(document.getElementById('totalDomains'), data.totalDomains, '');
-      animateCounter(document.getElementById('totalMinutes'), 0, '');
-      // For totalMinutes, extract number and animate
       const totalMinEl = document.getElementById('totalMinutes');
-      if (totalMinEl) {
-        const val = data.totalMinutes || 0;
-        const suffix = val >= 60 ? '' : '';
-        // For simplicity, just set it with formatTime
-        totalMinEl.textContent = formatTime(val);
-      }
+      if (totalMinEl) totalMinEl.textContent = formatTime(data.totalMinutes || 0);
 
       document.getElementById('topDomain').textContent = data.topDomain || '—';
       updateTopSiteFavicon(data.topDomain);
@@ -1337,8 +1330,9 @@
         }
       });
 
-      // Update chart silently
-      if (data.dailyBreakdown) {
+      // Update chart silently (only for period views with breakdown data)
+      if (currentPeriod !== 'day' && data.dailyBreakdown) {
+        window._lastChartData = data;
         renderDailyChart(data);
       }
     }
@@ -1402,10 +1396,13 @@
       const chartSection = document.getElementById('chartSection');
       if (currentPeriod !== 'day' && data.dailyBreakdown) {
         chartSection.style.display = 'block';
+        // Store data for theme-change re-render
+        window._lastChartData = data;
         // Slight delay so DOM is ready
         setTimeout(() => renderDailyChart(data), 100);
       } else {
         chartSection.style.display = 'none';
+        window._lastChartData = null;
       }
 
       renderDomainList(data, document.getElementById('domainList'));
