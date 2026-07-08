@@ -37,16 +37,6 @@ app.use(cors());
 app.use(express.json({ type: "application/json" }));
 app.use(express.text({ type: "text/plain" }));
 
-// Redirect old listrack-2.onrender.com to new listrack.onrender.com
-// (preserves full original URL including path and query params)
-app.use((req, res, next) => {
-  const host = req.headers.host || "";
-  if (host === "listrack-2.onrender.com") {
-    return res.redirect(301, "https://listrack.onrender.com" + req.originalUrl);
-  }
-  next();
-});
-
 // Redirect old /dashboard.html links to clean /dashboard (preserves query params like ?user=TOKEN)
 app.use((req, res, next) => {
   if (req.path === "/dashboard.html") {
