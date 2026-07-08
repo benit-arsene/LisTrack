@@ -18,9 +18,9 @@
     USER_TOKEN_KEY: "lisTrackTrackerToken",
   };
 
-  // Domains to exclude from tracking. Uses suffix matching so "render.com"
-  // catches "dashboard.render.com", "api.render.com", etc.
-  const IGNORED_DOMAIN_PATTERNS = ["localhost", "listrack.onrender.com", "render.com"];
+  // Domains to exclude from tracking (suffix matching).
+  // Only localhost is blocked — all other domains are trackable.
+  const IGNORED_DOMAIN_PATTERNS = ["localhost"];
 
   function shouldTrackDomain(domain) {
     return (
