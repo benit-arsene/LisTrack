@@ -7,28 +7,30 @@
   <link rel="icon" href="/icon.png" type="image/png" />
   <script src="https://cdn.tailwindcss.com"></script>
   <script>
-    tailwind.config = {
-      darkMode: 'class',
-    }
+    tailwind.config = { darkMode: 'class' }
   </script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
   <style>
     * { font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif; }
     body { background: #f3f4f6; }
     .progress-bar { transition: width 1s cubic-bezier(0.4, 0, 0.2, 1); }
     .fade-in { animation: fadeIn 0.6s ease-out forwards; opacity: 0; }
     .slide-up { animation: slideUp 0.5s ease-out forwards; opacity: 0; }
+    .scale-in { animation: scaleIn 0.3s ease-out forwards; opacity: 0; }
     .metric-card { transition: transform 0.2s ease, box-shadow 0.2s ease; }
     .metric-card:hover { transform: translateY(-2px); box-shadow: 0 12px 20px -8px rgba(0,0,0,0.1); }
     .dark .metric-card:hover { box-shadow: 0 12px 20px -8px rgba(0,0,0,0.4); }
-    .rank-item { transition: background-color 0.15s ease, transform 0.2s ease; }
+    .rank-item { transition: background-color 0.15s ease, transform 0.15s ease; }
     .rank-item:hover { background-color: #f9fafb; transform: translateX(4px); }
     .dark .rank-item:hover { background-color: rgba(55, 65, 81, 0.3); }
     @keyframes fadeIn { to { opacity: 1; } }
-    @keyframes slideUp { to { opacity: 1; transform: translateY(0); } }
+    @keyframes slideUp { 0% { opacity: 0; transform: translateY(16px); } to { opacity: 1; transform: translateY(0); } }
+    @keyframes scaleIn { 0% { opacity: 0; transform: scale(0.95); } to { opacity: 1; transform: scale(1); } }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+    @keyframes countUp { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
     .bar-gradient-1 { background: linear-gradient(135deg, #6366f1, #818cf8); }
     .bar-gradient-2 { background: linear-gradient(135deg, #8b5cf6, #a78bfa); }
     .bar-gradient-3 { background: linear-gradient(135deg, #3b82f6, #60a5fa); }
@@ -43,6 +45,21 @@
     @keyframes spin { to { transform: rotate(360deg); } }
     .period-btn { transition: all 0.15s ease; }
     html, body { transition: background-color 0.3s ease, color 0.3s ease; }
+
+    /* Live indicator pulse */
+    .live-dot { animation: pulse 2s ease-in-out infinite; }
+
+    /* Tooltip */
+    .chart-tooltip { position: absolute; pointer-events: none; transition: opacity 0.15s ease; }
+
+    /* Smooth chart bars animation */
+    .chart-bar { transition: height 0.8s cubic-bezier(0.4, 0, 0.2, 1); }
+
+    /* Scrollbar styling */
+    .domain-detail-scroll::-webkit-scrollbar { width: 4px; }
+    .domain-detail-scroll::-webkit-scrollbar-track { background: transparent; }
+    .domain-detail-scroll::-webkit-scrollbar-thumb { background: #d1d5db; border-radius: 4px; }
+    .dark .domain-detail-scroll::-webkit-scrollbar-thumb { background: #4b5563; }
   </style>
 </head>
 <body class="min-h-screen bg-gradient-to-br from-gray-50 to-gray-100 dark:from-gray-900 dark:to-gray-950">
@@ -70,19 +87,12 @@
               </svg>
               Download Extension
             </a>
-            <button
-              onclick="dismissInstallBanner()"
-              class="inline-flex items-center px-3 py-2 text-xs font-medium text-amber-700 dark:text-amber-300 bg-amber-100 dark:bg-amber-900/30 hover:bg-amber-200 dark:hover:bg-amber-900/50 rounded-lg transition-all duration-150"
-            >
+            <button onclick="dismissInstallBanner()" class="inline-flex items-center px-3 py-2 text-xs font-medium text-amber-700 dark:text-amber-300 bg-amber-100 dark:bg-amber-900/30 hover:bg-amber-200 dark:hover:bg-amber-900/50 rounded-lg transition-all duration-150">
               I understand, hide this
             </button>
           </div>
         </div>
-        <button
-          onclick="dismissInstallBanner()"
-          class="flex-shrink-0 p-1 text-amber-400 hover:text-amber-600 dark:hover:text-amber-200 transition-colors"
-          title="Dismiss"
-        >
+        <button onclick="dismissInstallBanner()" class="flex-shrink-0 p-1 text-amber-400 hover:text-amber-600 dark:hover:text-amber-200 transition-colors" title="Dismiss">
           <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
             <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
           </svg>
@@ -95,58 +105,39 @@
       <div class="flex items-center justify-between">
         <div>
           <div class="flex items-center gap-3">
-            <h1 class="text-3xl font-bold text-gray-900 dark:text-gray-100 tracking-tight">Screen Time</h1>
+            <div class="flex items-center gap-2">
+              <span class="live-dot w-2.5 h-2.5 rounded-full bg-emerald-500 inline-block"></span>
+              <h1 class="text-3xl font-bold text-gray-900 dark:text-gray-100 tracking-tight">Screen Time</h1>
+            </div>
             <span id="dateBadge" class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-indigo-100 text-indigo-700 dark:bg-indigo-900/50 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800">
               Today
             </span>
           </div>
-          <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">Your browsing activity, summarized. Data resets daily at midnight.</p>
+          <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">Your browsing activity, summarized.</p>
         </div>
         <div class="flex items-center gap-3">
           <span id="lastUpdated" class="text-xs text-gray-400 dark:text-gray-500"></span>
-          <button
-            id="exportBtn"
-            onclick="exportPDF()"
-            class="hidden inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-white bg-emerald-600 dark:bg-emerald-700 rounded-xl hover:bg-emerald-700 dark:hover:bg-emerald-600 transition-all duration-150 shadow-sm"
-            title="Export PDF"
-          >
+          <button id="exportBtn" onclick="exportPDF()" class="hidden inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-white bg-emerald-600 dark:bg-emerald-700 rounded-xl hover:bg-emerald-700 dark:hover:bg-emerald-600 transition-all duration-150 shadow-sm" title="Export PDF">
             <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
               <path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
             </svg>
             Export PDF
           </button>
-          <button
-            id="seedBtn"
-            onclick="seedData()"
-            class="hidden inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-900/30 border border-amber-200 dark:border-amber-800 rounded-xl hover:bg-amber-100 dark:hover:bg-amber-900/50 transition-all duration-150 shadow-sm"
-            title="Generate sample data for testing"
-          >
+          <button id="seedBtn" onclick="seedData()" class="hidden inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-900/30 border border-amber-200 dark:border-amber-800 rounded-xl hover:bg-amber-100 dark:hover:bg-amber-900/50 transition-all duration-150 shadow-sm" title="Generate sample data for testing">
             <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
               <path stroke-linecap="round" stroke-linejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25M9 16.5v.75m3-3v3M15 12v5.25m-4.5-15H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z" />
             </svg>
             Seed Data
           </button>
-          <button
-            id="themeToggle"
-            onclick="toggleTheme()"
-            class="inline-flex items-center justify-center w-9 h-9 text-gray-500 dark:text-gray-400 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl hover:bg-gray-50 dark:hover:bg-gray-700 hover:text-gray-700 dark:hover:text-gray-200 transition-all duration-150 shadow-sm"
-            title="Toggle dark mode"
-            aria-label="Toggle dark mode"
-          >
-            <!-- Sun icon (visible in light mode, hidden in dark) -->
+          <button id="themeToggle" onclick="toggleTheme()" class="inline-flex items-center justify-center w-9 h-9 text-gray-500 dark:text-gray-400 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl hover:bg-gray-50 dark:hover:bg-gray-700 hover:text-gray-700 dark:hover:text-gray-200 transition-all duration-150 shadow-sm" title="Toggle dark mode" aria-label="Toggle dark mode">
             <svg id="sunIcon" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
               <path stroke-linecap="round" stroke-linejoin="round" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z" />
             </svg>
-            <!-- Moon icon (hidden in light mode, visible in dark) -->
             <svg id="moonIcon" class="w-4 h-4 hidden" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
               <path stroke-linecap="round" stroke-linejoin="round" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" />
             </svg>
           </button>
-          <button
-            id="refreshBtn"
-            onclick="fetchData()"
-            class="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-gray-600 dark:text-gray-300 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl hover:bg-gray-50 dark:hover:bg-gray-700 hover:text-gray-900 dark:hover:text-gray-100 transition-all duration-150 shadow-sm"
-          >
+          <button id="refreshBtn" onclick="fetchData()" class="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-gray-600 dark:text-gray-300 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl hover:bg-gray-50 dark:hover:bg-gray-700 hover:text-gray-900 dark:hover:text-gray-100 transition-all duration-150 shadow-sm">
             <svg id="refreshIcon" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
               <path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
             </svg>
@@ -171,65 +162,58 @@
       </div>
       <h3 class="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-1">Unable to Load Data</h3>
       <p class="text-sm text-gray-500 dark:text-gray-400 mb-4" id="errorMessage">Could not connect to the server.</p>
-      <button
-        onclick="fetchData()"
-        class="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-white bg-indigo-600 rounded-xl hover:bg-indigo-700 transition-colors duration-150 shadow-sm"
-      >
-        Try Again
-      </button>
+      <button onclick="fetchData()" class="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-white bg-indigo-600 rounded-xl hover:bg-indigo-700 transition-colors duration-150 shadow-sm">Try Again</button>
     </div>
 
     <!-- Date Navigation Bar with Period Toggle -->
     <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between bg-white dark:bg-gray-800 rounded-2xl px-5 py-3 mb-6 shadow-sm border border-gray-100 dark:border-gray-700 slide-up gap-3" style="animation-delay: 0.05s;">
-
-      <!-- Period Toggle -->
       <div class="flex items-center bg-gray-100 dark:bg-gray-700 rounded-xl p-0.5 order-1 sm:order-1">
         <button onclick="setPeriod('day')"   id="periodDayBtn"   class="period-btn px-3.5 py-1.5 text-xs font-semibold rounded-lg transition-all duration-150 dark:text-gray-400">Day</button>
         <button onclick="setPeriod('week')"  id="periodWeekBtn"  class="period-btn px-3.5 py-1.5 text-xs font-semibold rounded-lg transition-all duration-150 dark:text-gray-400">Week</button>
         <button onclick="setPeriod('month')" id="periodMonthBtn" class="period-btn px-3.5 py-1.5 text-xs font-semibold rounded-lg transition-all duration-150 dark:text-gray-400">Month</button>
         <button onclick="setPeriod('7days')" id="period7daysBtn" class="period-btn px-3.5 py-1.5 text-xs font-semibold rounded-lg transition-all duration-150 dark:text-gray-400">7 Days</button>
       </div>
-
-      <!-- Date Navigation -->
       <div class="flex items-center gap-2 order-3 sm:order-2">
-        <button
-          id="prevBtn"
-          onclick="goToPrev()"
-          class="flex items-center justify-center w-9 h-9 rounded-xl text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 transition-all duration-150"
-          title="Previous"
-        >
-          <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-            <path stroke-linecap="round" stroke-linejoin="round" d="M15 19l-7-7 7-7" />
-          </svg>
+        <button id="prevBtn" onclick="goToPrev()" class="flex items-center justify-center w-9 h-9 rounded-xl text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 transition-all duration-150" title="Previous">
+          <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M15 19l-7-7 7-7" /></svg>
         </button>
         <span id="dateLabel" class="text-sm font-semibold text-gray-900 dark:text-gray-100 min-w-[160px] text-center select-none">Today</span>
-        <button
-          id="nextBtn"
-          onclick="goToNext()"
-          class="flex items-center justify-center w-9 h-9 rounded-xl text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 transition-all duration-150"
-          title="Next"
-        >
-          <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-            <path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7" />
-          </svg>
+        <button id="nextBtn" onclick="goToNext()" class="flex items-center justify-center w-9 h-9 rounded-xl text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 transition-all duration-150" title="Next">
+          <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7" /></svg>
         </button>
       </div>
-
-      <!-- Today / This Week / This Month button -->
-      <button
-        id="todayBtn"
-        onclick="goToCurrent()"
-        class="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-900/30 rounded-lg hover:bg-indigo-100 dark:hover:bg-indigo-900/50 transition-colors duration-150 order-2 sm:order-3"
-      >
-        <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-          <path stroke-linecap="round" stroke-linejoin="round" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
-        </svg>
+      <button id="todayBtn" onclick="goToCurrent()" class="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-900/30 rounded-lg hover:bg-indigo-100 dark:hover:bg-indigo-900/50 transition-colors duration-150 order-2 sm:order-3">
+        <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" /></svg>
         <span id="todayBtnLabel">Today</span>
       </button>
     </div>
 
     <!-- Dashboard Content -->
     <div id="dashboardContent" class="hidden">
+
+      <!-- Daily Activity Chart -->
+      <div id="chartSection" class="bg-white dark:bg-gray-800 rounded-2xl shadow-sm border border-gray-100 dark:border-gray-700 overflow-hidden slide-up mb-6" style="animation-delay: 0.08s;">
+        <div class="px-6 py-4 border-b border-gray-100 dark:border-gray-700 flex items-center justify-between">
+          <div>
+            <h2 class="text-sm font-semibold text-gray-900 dark:text-gray-100">Daily Activity</h2>
+            <p id="chartSubtitle" class="text-xs text-gray-400 dark:text-gray-500 mt-0.5">Screen time per day</p>
+          </div>
+          <span id="chartAvg" class="text-xs font-medium text-gray-400 dark:text-gray-500 bg-gray-50 dark:bg-gray-700 px-2.5 py-1 rounded-full"></span>
+        </div>
+        <div class="px-6 py-5">
+          <div class="relative" id="chartContainer">
+            <canvas id="dailyChart" class="w-full h-48" height="192"></canvas>
+            <div id="chartTooltip" class="chart-tooltip opacity-0 hidden bg-gray-900 dark:bg-gray-100 text-white dark:text-gray-900 text-xs font-medium px-2.5 py-1.5 rounded-lg shadow-lg"></div>
+            <!-- Empty state for chart -->
+            <div id="chartEmpty" class="hidden absolute inset-0 flex flex-col items-center justify-center">
+              <svg class="w-8 h-8 text-gray-300 dark:text-gray-600 mb-2" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 013 19.875v-6.75zM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V8.625zM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v15.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V4.125z" />
+              </svg>
+              <p class="text-xs text-gray-400 dark:text-gray-500">No data for this period</p>
+            </div>
+          </div>
+        </div>
+      </div>
 
       <!-- Summary Metric Grid -->
       <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-8">
@@ -242,9 +226,8 @@
             </div>
             <span class="text-xs font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider">Domains</span>
           </div>
-          <p id="totalDomains" class="text-3xl font-bold text-gray-900 dark:text-gray-100">0</p>
+          <p id="totalDomains" class="text-3xl font-bold text-gray-900 dark:text-gray-100 counter-value" data-target="0">0</p>
         </div>
-
         <div class="metric-card bg-white dark:bg-gray-800 rounded-2xl p-6 shadow-sm border border-gray-100 dark:border-gray-700 slide-up" style="animation-delay: 0.1s;">
           <div class="flex items-center gap-3 mb-3">
             <div class="flex-shrink-0 w-10 h-10 bg-emerald-50 dark:bg-emerald-900/40 rounded-xl flex items-center justify-center">
@@ -254,17 +237,14 @@
             </div>
             <span class="text-xs font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider">Total Time</span>
           </div>
-          <p id="totalMinutes" class="text-3xl font-bold text-gray-900 dark:text-gray-100">0 min</p>
+          <p id="totalMinutes" class="text-3xl font-bold text-gray-900 dark:text-gray-100 counter-value">0 min</p>
         </div>
-
         <div class="metric-card bg-white dark:bg-gray-800 rounded-2xl p-6 shadow-sm border border-gray-100 dark:border-gray-700 slide-up min-w-0" style="animation-delay: 0.15s;">
           <div class="flex items-center gap-3 mb-3">
             <div class="flex-shrink-0 w-10 h-10 rounded-xl flex items-center justify-center overflow-hidden" id="topSiteIcon">
-              <!-- Star icon (shown when no top domain) -->
               <svg id="topSiteStar" class="w-5 h-5 text-amber-600 dark:text-amber-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
                 <path stroke-linecap="round" stroke-linejoin="round" d="M11.48 3.499a.562.562 0 011.04 0l2.125 5.111a.563.563 0 00.475.345l5.518.442c.499.04.701.663.321.988l-4.204 3.602a.563.563 0 00-.182.557l1.285 5.385a.562.562 0 01-.84.61l-4.725-2.885a.563.563 0 00-.586 0L6.982 20.54a.562.562 0 01-.84-.61l1.285-5.386a.562.562 0 00-.182-.557l-4.204-3.602a.563.563 0 01.321-.988l5.518-.442a.563.563 0 00.475-.345L11.48 3.5z" />
               </svg>
-              <!-- Favicon image (shown when top domain is available) -->
               <img id="topSiteFavicon" src="" alt="" class="w-10 h-10 hidden bg-gray-50 dark:bg-gray-700" />
             </div>
             <span class="text-xs font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider">Top Site</span>
@@ -273,13 +253,11 @@
         </div>
       </div>
 
-
-
       <!-- Top Apps / Websites Section -->
       <div class="bg-white dark:bg-gray-800 rounded-2xl shadow-sm border border-gray-100 dark:border-gray-700 overflow-hidden slide-up mb-8" style="animation-delay: 0.2s;">
         <div class="px-6 py-5 border-b border-gray-100 dark:border-gray-700">
           <div class="flex items-center justify-between">
-            <h2 id="topSitesTitle" class="text-lg font-semibold text-gray-900 dark:text-gray-100">Top 10 Websites</h2>
+            <h2 id="topSitesTitle" class="text-lg font-semibold text-gray-900 dark:text-gray-100">Websites</h2>
             <span id="domainCount" class="text-xs font-medium text-gray-400 dark:text-gray-500 bg-gray-50 dark:bg-gray-700 px-2.5 py-1 rounded-full"></span>
           </div>
         </div>
@@ -292,7 +270,7 @@
             </svg>
           </div>
           <h3 class="text-base font-medium text-gray-700 dark:text-gray-300 mb-1">No data yet</h3>
-          <p class="text-sm text-gray-400 dark:text-gray-500">Start browsing with the tracker snippet to see your screen time here.</p>
+          <p class="text-sm text-gray-400 dark:text-gray-500">Start browsing with the extension to see your screen time here.</p>
         </div>
 
         <!-- Domain list -->
@@ -306,101 +284,96 @@
             <h2 class="text-lg font-semibold text-gray-900 dark:text-gray-100">Daily Goals</h2>
           </div>
           <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">Set screen-time budgets for specific sites. You'll get Chrome notifications when approaching the limit.</p>
-          <!-- Goals Summary Strip -->
           <div id="goalsSummary" class="hidden mt-2 text-xs text-gray-400 dark:text-gray-500"></div>
         </div>
 
-        <!-- Add Goal Form -->
         <div class="px-6 py-4 border-b border-gray-50 dark:border-gray-700/50">
           <div class="flex items-end gap-3">
             <div class="flex-1">
-              <label class="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">
-                Domain
-                <span class="text-gray-400 dark:text-gray-500 font-normal">— or click a site below</span>
-              </label>
-              <input
-                type="text"
-                id="goalDomainInput"
-                placeholder="Type a site name..."
-                autocomplete="off"
-                list="trackedDomains"
-                class="w-full px-3 py-2 text-sm border border-gray-200 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none transition-all"
-                onkeydown="if(event.key==='Enter')addGoal()"
-              />
+              <label class="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Domain <span class="text-gray-400 dark:text-gray-500 font-normal">&mdash; or click a site below</span></label>
+              <input type="text" id="goalDomainInput" placeholder="Type a site name..." autocomplete="off" list="trackedDomains" class="w-full px-3 py-2 text-sm border border-gray-200 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none transition-all" onkeydown="if(event.key==='Enter')addGoal()" />
               <datalist id="trackedDomains"></datalist>
             </div>
             <div class="w-28">
               <label class="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Max minutes</label>
-              <input
-                type="number"
-                id="goalMinutesInput"
-                placeholder="30"
-                min="1"
-                class="w-full px-3 py-2 text-sm border border-gray-200 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none transition-all"
-                onkeydown="if(event.key==='Enter')addGoal()"
-              />
+              <input type="number" id="goalMinutesInput" placeholder="30" min="1" class="w-full px-3 py-2 text-sm border border-gray-200 dark:border-gray-600 rounded-xl bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none transition-all" onkeydown="if(event.key==='Enter')addGoal()" />
             </div>
-            <button
-              onclick="addGoal()"
-              class="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-white bg-indigo-600 rounded-xl hover:bg-indigo-700 transition-all duration-150 shadow-sm flex-shrink-0"
-            >
-              <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-                <path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4" />
-              </svg>
+            <button onclick="addGoal()" class="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-white bg-indigo-600 rounded-xl hover:bg-indigo-700 transition-all duration-150 shadow-sm flex-shrink-0">
+              <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4" /></svg>
               Add Goal
             </button>
           </div>
           <p id="goalError" class="hidden mt-2 text-xs text-red-500 dark:text-red-400"></p>
         </div>
 
-        <!-- Goals List -->
         <div id="goalsList" class="divide-y divide-gray-50 dark:divide-gray-700/50"></div>
-
-        <!-- Goals Loading State -->
         <div id="goalsLoading" class="text-center py-10 px-6">
           <div class="loading-spinner w-6 h-6 border-2 border-indigo-200 dark:border-indigo-800 border-t-indigo-600 dark:border-t-indigo-400 rounded-full mx-auto mb-2"></div>
           <p class="text-xs text-gray-400 dark:text-gray-500">Loading goals...</p>
         </div>
-
-        <!-- Goals Empty State -->
         <div id="goalsEmpty" class="hidden text-center py-10 px-6">
           <p class="text-sm text-gray-400 dark:text-gray-500">No goals set yet. Add one above!</p>
         </div>
       </div>
 
-      <!-- Footer note -->
-      <p class="mt-6 text-xs text-gray-400 dark:text-gray-600 text-center">
-        Created by LODD YRB      </p>
+      <!-- Footer -->
+      <p class="mt-6 text-xs text-gray-400 dark:text-gray-600 text-center">Created by LODD YRB</p>
+    </div>
+  </div>
+
+  <!-- Domain Detail Modal -->
+  <div id="domainModal" class="hidden fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm fade-in">
+    <div class="bg-white dark:bg-gray-800 rounded-2xl shadow-xl border border-gray-200 dark:border-gray-700 max-w-lg mx-4 w-full p-6 scale-in">
+      <div class="flex items-center justify-between mb-4">
+        <div class="flex items-center gap-3">
+          <img id="modalFavicon" src="" alt="" class="w-8 h-8 rounded-lg bg-gray-50 dark:bg-gray-700" />
+          <div>
+            <h3 id="modalTitle" class="text-base font-semibold text-gray-900 dark:text-gray-100">Domain</h3>
+            <p id="modalTotal" class="text-xs text-gray-400 dark:text-gray-500">0 min total</p>
+          </div>
+        </div>
+        <button onclick="closeDomainModal()" class="flex-shrink-0 p-1.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-all">
+          <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
+        </button>
+      </div>
+      <div class="bg-gray-50 dark:bg-gray-900/50 rounded-xl p-4 mb-4">
+        <p class="text-xs font-medium text-gray-400 dark:text-gray-500 uppercase tracking-wider mb-2">Daily Breakdown</p>
+        <div id="modalBreakdown" class="space-y-2 domain-detail-scroll max-h-48 overflow-y-auto pr-1">
+          <p class="text-sm text-gray-400 dark:text-gray-500 text-center py-4">Loading breakdown...</p>
+        </div>
+      </div>
+      <div class="flex items-center gap-2">
+        <button onclick="quickAddGoalFromModal()" class="flex-1 inline-flex items-center justify-center gap-1.5 px-4 py-2 text-sm font-medium text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-900/30 rounded-xl hover:bg-indigo-100 dark:hover:bg-indigo-900/50 transition-all duration-150">
+          <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4" /></svg>
+          Set Goal
+        </button>
+        <button onclick="deleteDomainFromModal()" class="flex-1 inline-flex items-center justify-center gap-1.5 px-4 py-2 text-sm font-medium text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/30 rounded-xl hover:bg-red-100 dark:hover:bg-red-900/50 transition-all duration-150">
+          <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+          Delete Data
+        </button>
+        <button onclick="closeDomainModal()" class="flex-shrink-0 px-4 py-2 text-sm font-medium text-gray-600 dark:text-gray-300 bg-gray-100 dark:bg-gray-700 rounded-xl hover:bg-gray-200 dark:hover:bg-gray-600 transition-all duration-150">Close</button>
+      </div>
     </div>
   </div>
 
   <script>
     // ─── Utility Functions ──────────────────────────────────────────────────
 
-    /** Format minutes into a human-readable string (e.g., "2h 34m" or "45m").
-     *  Uses Math.ceil so even a fraction of a minute rounds up —
-     *  the tracker records exact time internally, but the display
-     *  rounds up so you never see "0 min" when you spent real time. */
     function formatTime(totalMinutes) {
       if (totalMinutes == null || totalMinutes <= 0) return "0s";
       const totalSeconds = Math.round(totalMinutes * 60);
-      // Show seconds for anything under 1 minute so the user sees their actual time
       if (totalSeconds < 60) return `${totalSeconds}s`;
       const hours = Math.floor(totalMinutes / 60);
       const mins = Math.ceil(totalMinutes % 60);
-      if (hours > 0 && mins >= 60) {
-        return `${hours + 1}h`;
-      }
+      if (hours > 0 && mins >= 60) return `${hours + 1}h`;
       if (hours > 0) return mins > 0 ? `${hours}h ${mins}m` : `${hours}h`;
       return `${mins}m`;
     }
 
-    /** Get the favicon URL for a given domain using Google's favicon service. */
     function getFaviconUrl(domain) {
       return `https://www.google.com/s2/favicons?domain=${domain}&sz=64`;
     }
 
-    /** Update the Top Site card icon — show the site's favicon when a domain is available. */
     function updateTopSiteFavicon(domain) {
       const star = document.getElementById('topSiteStar');
       const img = document.getElementById('topSiteFavicon');
@@ -410,10 +383,7 @@
         img.classList.remove('hidden');
         img.src = getFaviconUrl(domain);
         img.alt = domain;
-        img.onerror = function() {
-          this.classList.add('hidden');
-          star.classList.remove('hidden');
-        };
+        img.onerror = function() { this.classList.add('hidden'); star.classList.remove('hidden'); };
       } else {
         img.classList.add('hidden');
         star.classList.remove('hidden');
@@ -421,7 +391,6 @@
       }
     }
 
-    /** Get a gradient class from the pool based on index. */
     function getGradientClass(index) {
       const gradients = [
         'bar-gradient-1', 'bar-gradient-2', 'bar-gradient-3', 'bar-gradient-4',
@@ -431,78 +400,220 @@
       return gradients[index % gradients.length];
     }
 
-    /** Extract a clean display name from a domain. Shows subdomain prefix when present
-     *  so different subdomains (e.g. create.kahoot.it vs kahoot.com) are visually distinct. */
     function getDisplayName(domain) {
       if (!domain) return '—';
       const parts = domain.split('.');
-
-      // The primary name is the second-to-last part (e.g. "kahoot" from "kahoot.com")
       const mainName = parts.length >= 2 ? parts[parts.length - 2] : parts[0];
       const formattedMain = mainName.charAt(0).toUpperCase() + mainName.slice(1);
-
-      // Check for subdomains beyond the main name and TLD
       const subdomainParts = parts.slice(0, parts.length - 2).filter(p => p !== 'www');
       if (subdomainParts.length > 0) {
-        const subdomainStr = subdomainParts
-          .map(p => p.charAt(0).toUpperCase() + p.slice(1))
-          .join(' · ');
+        const subdomainStr = subdomainParts.map(p => p.charAt(0).toUpperCase() + p.slice(1)).join(' · ');
         return `${subdomainStr} · ${formattedMain}`;
       }
-
       return formattedMain;
+    }
+
+    // ─── Animated Counter ──────────────────────────────────────────────────
+
+    function animateCounter(el, target, suffix = '') {
+      if (!el) return;
+      const isInt = Number.isInteger(target);
+      const duration = 800;
+      const start = performance.now();
+      const startVal = 0;
+
+      function update(now) {
+        const elapsed = now - start;
+        const progress = Math.min(elapsed / duration, 1);
+        const eased = 1 - Math.pow(1 - progress, 3);
+        const current = startVal + (target - startVal) * eased;
+        if (isInt) {
+          el.textContent = Math.round(current) + suffix;
+        } else {
+          el.textContent = current.toFixed(1) + suffix;
+        }
+        if (progress < 1) requestAnimationFrame(update);
+      }
+      requestAnimationFrame(update);
+    }
+
+    // ─── Daily Chart ──────────────────────────────────────────────────────
+
+    function renderDailyChart(data) {
+      const canvas = document.getElementById('dailyChart');
+      const container = document.getElementById('chartContainer');
+      const tooltip = document.getElementById('chartTooltip');
+      const chartEmpty = document.getElementById('chartEmpty');
+      const chartAvg = document.getElementById('chartAvg');
+      const ctx = canvas.getContext('2d');
+
+      const breakdown = data.dailyBreakdown || [];
+      const section = document.getElementById('chartSection');
+
+      if (!breakdown || breakdown.length === 0) {
+        chartEmpty.classList.remove('hidden');
+        canvas.classList.add('hidden');
+        chartAvg.textContent = '';
+        if (section) section.style.display = 'block';
+        return;
+      }
+
+      chartEmpty.classList.add('hidden');
+      canvas.classList.remove('hidden');
+
+      const dpr = window.devicePixelRatio || 1;
+      const rect = canvas.getBoundingClientRect();
+      const w = rect.width;
+      const h = rect.height;
+      canvas.width = w * dpr;
+      canvas.height = h * dpr;
+      ctx.scale(dpr, dpr);
+
+      const isDark = document.documentElement.classList.contains('dark');
+      const textColor = isDark ? '#9ca3af' : '#6b7280';
+      const gridColor = isDark ? 'rgba(75,85,99,0.3)' : 'rgba(229,231,235,0.8)';
+      const barColor = isDark ? 'rgba(99,102,241,0.7)' : 'rgba(99,102,241,0.6)';
+      const barHoverColor = isDark ? 'rgba(129,140,248,0.9)' : 'rgba(99,102,241,0.85)';
+
+      const padding = { top: 16, bottom: 28, left: 36, right: 12 };
+      const chartW = w - padding.left - padding.right;
+      const chartH = h - padding.top - padding.bottom;
+
+      const maxVal = Math.max(...breakdown.map(d => d.totalMinutes), 1);
+
+      // Clear
+      ctx.clearRect(0, 0, w, h);
+
+      // Grid lines
+      const gridLines = 4;
+      ctx.textAlign = 'right';
+      ctx.textBaseline = 'middle';
+      ctx.font = '10px Inter, sans-serif';
+      for (let i = 0; i <= gridLines; i++) {
+        const y = padding.top + (chartH / gridLines) * i;
+        const val = maxVal - (maxVal / gridLines) * i;
+        ctx.fillStyle = gridColor;
+        ctx.beginPath();
+        ctx.moveTo(padding.left, y);
+        ctx.lineTo(w - padding.right, y);
+        ctx.strokeStyle = gridColor;
+        ctx.lineWidth = 1;
+        ctx.stroke();
+        ctx.fillStyle = textColor;
+        ctx.textAlign = 'right';
+        ctx.fillText(formatTime(val), padding.left - 6, y);
+      }
+
+      // Bars
+      const barCount = breakdown.length;
+      const barGap = 4;
+      const barWidth = Math.min((chartW - barGap * (barCount - 1)) / barCount, 36);
+      const totalBarWidth = barCount * barWidth + (barCount - 1) * barGap;
+      const startX = padding.left + (chartW - totalBarWidth) / 2;
+
+      breakdown.forEach((item, i) => {
+        const barH = (item.totalMinutes / maxVal) * chartH;
+        const x = startX + i * (barWidth + barGap);
+        const y = padding.top + chartH - barH;
+
+        // Bar rounded top
+        const radius = Math.min(3, barWidth / 3);
+        ctx.beginPath();
+        ctx.moveTo(x + radius, y);
+        ctx.lineTo(x + barWidth - radius, y);
+        ctx.quadraticCurveTo(x + barWidth, y, x + barWidth, y + radius);
+        ctx.lineTo(x + barWidth, padding.top + chartH);
+        ctx.lineTo(x, padding.top + chartH);
+        ctx.lineTo(x, y + radius);
+        ctx.quadraticCurveTo(x, y, x + radius, y);
+        ctx.closePath();
+
+        // Color based on value relative to max
+        const ratio = item.totalMinutes / maxVal;
+        let color;
+        if (ratio > 0.8) color = isDark ? 'rgba(239,68,68,0.7)' : 'rgba(239,68,68,0.6)';
+        else if (ratio > 0.5) color = isDark ? 'rgba(245,158,11,0.7)' : 'rgba(245,158,11,0.6)';
+        else if (ratio > 0.2) color = isDark ? 'rgba(16,185,129,0.7)' : 'rgba(16,185,129,0.6)';
+        else color = barColor;
+
+        ctx.fillStyle = color;
+        ctx.fill();
+
+        // Date label
+        ctx.fillStyle = textColor;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'top';
+        const d = new Date(item.date + 'T00:00:00Z');
+        const label = d.toLocaleDateString('en-US', { weekday: item.totalMinutes > 0 ? 'short' : 'narrow' });
+        ctx.fillText(label, x + barWidth / 2, padding.top + chartH + 6);
+      });
+
+      // Average
+      const avg = breakdown.reduce((s, d) => s + d.totalMinutes, 0) / breakdown.length;
+      chartAvg.textContent = `Avg ${formatTime(avg)}/day`;
+
+      // Tooltip hover
+      canvas.onmousemove = function(e) {
+        const rect2 = canvas.getBoundingClientRect();
+        const mx = e.clientX - rect2.left;
+        const my = e.clientY - rect2.top;
+
+        let found = false;
+        breakdown.forEach((item, i) => {
+          const x = startX + i * (barWidth + barGap);
+          const y = padding.top + chartH - (item.totalMinutes / maxVal) * chartH;
+          if (mx >= x && mx <= x + barWidth && my >= y && my <= padding.top + chartH) {
+            const d = new Date(item.date + 'T00:00:00Z');
+            const dateStr = d.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' });
+            tooltip.innerHTML = `${dateStr}<br><strong>${formatTime(item.totalMinutes)}</strong>`;
+            tooltip.style.left = Math.min(Math.max(mx - 50, 0), w - 120) + 'px';
+            tooltip.style.top = (y - 36) + 'px';
+            tooltip.classList.remove('hidden', 'opacity-0');
+            tooltip.classList.add('opacity-100');
+            found = true;
+          }
+        });
+        if (!found) {
+          tooltip.classList.add('opacity-0');
+          setTimeout(() => { if (tooltip.classList.contains('opacity-0')) tooltip.classList.add('hidden'); }, 150);
+        }
+      };
+
+      canvas.onmouseleave = function() {
+        tooltip.classList.add('opacity-0');
+        setTimeout(() => { if (tooltip.classList.contains('opacity-0')) tooltip.classList.add('hidden'); }, 150);
+      };
+
+      // Redraw on theme change
+      canvas._redraw = renderDailyChart;
     }
 
     // ─── State ──────────────────────────────────────────────────────────────
 
-    // Use a relative API base so the dashboard works when served locally
     const API_BASE = '/api';
+    let selectedModalDomain = null;
 
-    /**
-     * Get the current user ID.
-     * - Reads from the ?user= URL query param (set by extension popup)
-     * - Falls back to a persistent token in localStorage (same key tracker.js uses)
-     * - Waits briefly for the content script to sync the authoritative token from chrome.storage
-     * - Creates a new token only if none exists
-     */
     async function getUserId() {
       const params = new URLSearchParams(window.location.search);
       const urlUser = params.get('user');
       if (urlUser) return urlUser;
 
       const TOKEN_KEY = 'lisTrackTrackerToken';
+      try { const local = localStorage.getItem(TOKEN_KEY); if (local) return local; } catch (_) {}
 
-      // First check immediately
-      try {
-        const local = localStorage.getItem(TOKEN_KEY);
-        if (local) return local;
-      } catch (_) {}
-
-      // No token yet — content script may still be syncing from chrome.storage.
-      // Wait a brief moment for the async callback to fire before generating new.
       await new Promise(r => setTimeout(r, 500));
 
-      // Check again after content script had time to sync
-      try {
-        const local = localStorage.getItem(TOKEN_KEY);
-        if (local) return local;
-      } catch (_) {}
+      try { const local = localStorage.getItem(TOKEN_KEY); if (local) return local; } catch (_) {}
 
-      // Still nothing — generate a new persistent token
       try {
         const chars = '0123456789abcdef';
         let token = '';
-        for (let i = 0; i < 32; i++) {
-          token += chars[Math.floor(Math.random() * 16)];
-        }
+        for (let i = 0; i < 32; i++) token += chars[Math.floor(Math.random() * 16)];
         localStorage.setItem(TOKEN_KEY, token);
         return token;
-      } catch (_) {
-        return 'fallback-dev';
-      }
+      } catch (_) { return 'fallback-dev'; }
     }
 
-    /** Build a URL with the user parameter appended. */
     async function apiUrl(path, extraParams = {}) {
       const params = new URLSearchParams();
       params.set('user', await getUserId());
@@ -513,8 +624,8 @@
     }
 
     let isFirstLoad = true;
-    let currentDate = null;          // YYYY-MM-DD reference date, null means today
-    let currentPeriod = 'day';       // 'day' | 'week' | 'month'
+    let currentDate = null;
+    let currentPeriod = 'day';
     let availableDates = [];
 
     // ─── Period Button Styling ──────────────────────────────────────────────
@@ -533,59 +644,43 @@
 
     // ─── Period Helpers ─────────────────────────────────────────────────────
 
-    function getTodayStr() {
-      return new Date().toISOString().slice(0, 10);
-    }
+    function getTodayStr() { return new Date().toISOString().slice(0, 10); }
 
     function setPeriod(period) {
       if (period === currentPeriod) return;
       currentPeriod = period;
-      currentDate = null; // reset to current period
+      currentDate = null;
       updatePeriodButtons();
       fetchData({ silent: false });
     }
 
-    /** Offset a reference date by one period step. */
     function offsetPeriod(dateStr, delta) {
       const d = new Date(dateStr + 'T00:00:00Z');
-      if (currentPeriod === '7days') {
-        d.setUTCDate(d.getUTCDate() + delta * 7);
-      } else if (currentPeriod === 'week') {
-        d.setUTCDate(d.getUTCDate() + delta * 7);
-      } else if (currentPeriod === 'month') {
-        d.setUTCMonth(d.getUTCMonth() + delta);
-      } else {
-        d.setUTCDate(d.getUTCDate() + delta);
-      }
+      if (currentPeriod === '7days' || currentPeriod === 'week') d.setUTCDate(d.getUTCDate() + delta * 7);
+      else if (currentPeriod === 'month') d.setUTCMonth(d.getUTCMonth() + delta);
+      else d.setUTCDate(d.getUTCDate() + delta);
       return d.toISOString().slice(0, 10);
     }
 
-    /** Check whether a reference date is in the current period. */
     function isCurrentPeriod(dateStr) {
       const today = getTodayStr();
       if (currentPeriod === '7days') {
         const d = new Date(today + 'T00:00:00Z');
-        const sevenDaysAgo = new Date(d);
-        sevenDaysAgo.setUTCDate(d.getUTCDate() - 6);
+        const sevenDaysAgo = new Date(d); sevenDaysAgo.setUTCDate(d.getUTCDate() - 6);
         return dateStr >= sevenDaysAgo.toISOString().slice(0, 10);
       }
       if (currentPeriod === 'day') return dateStr === today;
       if (currentPeriod === 'week') {
-        // Get current week start
         const d = new Date(today + 'T00:00:00Z');
         const day = d.getUTCDay();
         const diff = day === 0 ? -6 : 1 - day;
-        const start = new Date(d);
-        start.setUTCDate(d.getUTCDate() + diff);
+        const start = new Date(d); start.setUTCDate(d.getUTCDate() + diff);
         return dateStr >= start.toISOString().slice(0, 10);
       }
-      if (currentPeriod === 'month') {
-        return dateStr.slice(0, 7) === today.slice(0, 7);
-      }
+      if (currentPeriod === 'month') return dateStr.slice(0, 7) === today.slice(0, 7);
       return false;
     }
 
-    /** Format a human-friendly label for the current period view. */
     function formatPeriodLabel(data) {
       if (currentPeriod === '7days') {
         const start = new Date(data.startDate + 'T00:00:00Z');
@@ -593,36 +688,30 @@
         const s = start.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
         const e = end.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
         if (isCurrentPeriod(data.startDate)) return 'Last 7 Days';
-        return `${s} \u2013 ${e}`;
+        return `${s} – ${e}`;
       }
-
       if (currentPeriod === 'day') {
         const dateStr = data.date || getTodayStr();
         const today = getTodayStr();
         if (dateStr === today) return 'Today';
-        const yesterday = new Date();
-        yesterday.setDate(yesterday.getDate() - 1);
+        const yesterday = new Date(); yesterday.setDate(yesterday.getDate() - 1);
         if (dateStr === yesterday.toISOString().slice(0, 10)) return 'Yesterday';
         const d = new Date(dateStr + 'T00:00:00Z');
         return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
       }
-
       if (currentPeriod === 'week') {
         const start = new Date(data.startDate + 'T00:00:00Z');
         const end = new Date(data.endDate + 'T00:00:00Z');
         const s = start.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
         const e = end.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-        // Check if it's the current week
         if (isCurrentPeriod(data.startDate)) return 'This Week';
         return `${s} – ${e}`;
       }
-
       if (currentPeriod === 'month') {
         const d = new Date(data.startDate + 'T00:00:00Z');
         if (isCurrentPeriod(data.startDate)) return 'This Month';
         return d.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
       }
-
       return '';
     }
 
@@ -635,14 +724,10 @@
     }
 
     function goToNext() {
-      if (currentDate === null) return; // Already at current period
+      if (currentDate === null) return;
       const next = offsetPeriod(currentDate, 1);
-      if (isCurrentPeriod(next)) {
-        // Navigating into the current period — reset to "current"
-        currentDate = null;
-      } else {
-        currentDate = next;
-      }
+      if (isCurrentPeriod(next)) currentDate = null;
+      else currentDate = next;
       fetchData({ silent: false });
     }
 
@@ -655,9 +740,9 @@
 
     async function fetchData({ silent = false } = {}) {
       const loadingState = document.getElementById('loadingState');
-      const errorState   = document.getElementById('errorState');
+      const errorState = document.getElementById('errorState');
       const dashboardContent = document.getElementById('dashboardContent');
-      const refreshIcon  = document.getElementById('refreshIcon');
+      const refreshIcon = document.getElementById('refreshIcon');
 
       if (!silent) {
         loadingState.classList.remove('hidden');
@@ -669,8 +754,7 @@
       try {
         let url;
         if (currentPeriod === 'day') {
-          const params = { date: currentDate };
-          url = await apiUrl('/dashboard', params);
+          url = await apiUrl('/dashboard', { date: currentDate });
         } else {
           url = await apiUrl('/summary', { period: currentPeriod, date: currentDate });
         }
@@ -697,19 +781,16 @@
           errorState.classList.remove('hidden');
           document.getElementById('errorMessage').textContent =
             err.message === 'Failed to fetch'
-              ? 'Could not connect to the server. Make sure the server is running on port 3000.'
+              ? 'Could not connect to the server. Make sure the server is running.'
               : err.message;
         }
       } finally {
-        if (!silent) {
-          refreshIcon.classList.remove('loading-spinner');
-        }
+        if (!silent) refreshIcon.classList.remove('loading-spinner');
       }
     }
 
     // ─── Build Domain List Rows ────────────────────────────────────────────
 
-    /** Shared helper to create a domain list row element. Percentage is set after mount. */
     function createDomainRow(item, index) {
       const displayName = getDisplayName(item.domain);
       const gradientClass = getGradientClass(index);
@@ -720,12 +801,7 @@
 
       row.innerHTML = `
         <span class="flex-shrink-0 w-6 text-sm font-semibold text-gray-300 dark:text-gray-600 text-right" data-rank>${index + 1}</span>
-        <img
-          src="${getFaviconUrl(item.domain)}"
-          alt="${item.domain}"
-          class="flex-shrink-0 w-8 h-8 rounded-lg bg-gray-50 dark:bg-gray-700"
-          onerror="this.style.display='none'; this.nextElementSibling.style.display='flex'"
-        />
+        <img src="${getFaviconUrl(item.domain)}" alt="${item.domain}" class="flex-shrink-0 w-8 h-8 rounded-lg bg-gray-50 dark:bg-gray-700" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex'" />
         <div class="flex-shrink-0 w-8 h-8 rounded-lg bg-gray-100 dark:bg-gray-700 items-center justify-center text-xs font-semibold text-gray-400 dark:text-gray-500" style="display:none">${displayName.charAt(0)}</div>
         <div class="flex-1 min-w-0">
           <div class="flex items-center justify-between mb-1">
@@ -733,29 +809,26 @@
             <span class="text-sm font-semibold text-gray-700 dark:text-gray-300 ml-2" data-time>${formatTime(item.totalMinutes)}</span>
           </div>
           <div class="relative w-full h-2 bg-gray-100 dark:bg-gray-700 rounded-full overflow-hidden">
-            <div
-              class="progress-bar absolute inset-y-0 left-0 rounded-full ${gradientClass}"
-              style="width: 0%"
-            ></div>
+            <div class="progress-bar absolute inset-y-0 left-0 rounded-full ${gradientClass}" style="width: 0%"></div>
           </div>
         </div>
-        <button
-          class="add-goal-btn flex-shrink-0 ml-2 px-2.5 py-1.5 text-[11px] font-medium text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-900/30 rounded-lg opacity-0 group-hover:opacity-100 hover:bg-indigo-100 dark:hover:bg-indigo-900/50 transition-all duration-150 whitespace-nowrap"
-          title="Set a daily goal for this site"
-          onclick="event.stopPropagation();quickAddGoal('${item.domain}')"
-        >
-          <svg class="w-3 h-3 inline mr-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4" /></svg>
-          Goal
-        </button>
+        <div class="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity duration-150">
+          <button class="add-goal-btn flex-shrink-0 px-2.5 py-1.5 text-[11px] font-medium text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-900/30 rounded-lg hover:bg-indigo-100 dark:hover:bg-indigo-900/50 transition-all duration-150 whitespace-nowrap" title="Set a daily goal" onclick="event.stopPropagation();quickAddGoal('${item.domain}')">
+            <svg class="w-3 h-3 inline mr-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4" /></svg>
+            Goal
+          </button>
+          <button class="delete-domain-btn flex-shrink-0 p-1.5 text-gray-400 hover:text-red-500 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition-all duration-150" title="Delete tracking data for this domain" onclick="event.stopPropagation();deleteDomainData('${item.domain}')">
+            <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+          </button>
+        </div>
       `;
 
-      // Clicking the row also pre-fills the goal form
-      row.addEventListener('click', () => quickAddGoal(item.domain));
+      // Click row → open domain detail modal
+      row.addEventListener('click', () => openDomainModal(item.domain));
 
       return row;
     }
 
-    /** Animate progress bars in a container after paint. */
     function animateBars(container) {
       requestAnimationFrame(() => {
         requestAnimationFrame(() => {
@@ -767,17 +840,13 @@
       });
     }
 
-    /** Compute the maxMinutes from the domains array (for scaling bars). */
     function getMaxMinutes(domains) {
       return domains.length > 0 ? domains[0].totalMinutes : 0;
     }
 
-    /** Render the shared domain-list section into the given container element. */
     function renderDomainList(data, container) {
       const emptyState = document.getElementById('emptyState');
       container.innerHTML = '';
-
-      // Update the tracked domains datalist for goal autocomplete
       updateTrackedDomainsList(data);
 
       if (!data.domains || data.domains.length === 0) {
@@ -793,10 +862,9 @@
       const top10 = data.domains.slice(0, 10);
 
       top10.forEach((item, index) => {
-        const percentage  = maxMinutes > 0 ? (item.totalMinutes / maxMinutes) * 100 : 0;
+        const percentage = maxMinutes > 0 ? (item.totalMinutes / maxMinutes) * 100 : 0;
         const row = createDomainRow(item, index);
         row.style.animationDelay = `${index * 0.03}s`;
-        // Set the target percentage on the bar
         const bar = row.querySelector('.progress-bar');
         if (bar) bar.setAttribute('data-target', percentage);
         container.appendChild(row);
@@ -805,7 +873,6 @@
       animateBars(container);
     }
 
-    /** Update the domain count badge. */
     function updateDomainCount(data) {
       const totalCount = data.totalDomains;
       const showingCount = Math.min((data.domains || []).length, 10);
@@ -815,12 +882,128 @@
           : `${totalCount} domain${totalCount !== 1 ? 's' : ''}`;
     }
 
+    // ─── Delete Domain Data ────────────────────────────────────────────────
+
+    async function deleteDomainData(domain) {
+      if (!domain) return;
+      if (!confirm(`Delete all tracking data for "${domain}"? This cannot be undone.`)) return;
+
+      try {
+        const url = await apiUrl('/cleanup', { domain });
+        const response = await fetch(url, { method: 'DELETE' });
+        if (!response.ok) throw new Error('Failed to delete data');
+
+        const result = await response.json();
+        console.log(`[cleanup] Deleted ${result.deleted} records for ${domain}`);
+
+        // Refresh the dashboard
+        await fetchData({ silent: false });
+      } catch (err) {
+        console.error('[cleanup] Error:', err);
+        alert('Failed to delete data: ' + err.message);
+      }
+    }
+
+    // ─── Domain Detail Modal ───────────────────────────────────────────────
+
+    function openDomainModal(domain) {
+      selectedModalDomain = domain;
+      document.getElementById('modalTitle').textContent = getDisplayName(domain);
+      document.getElementById('modalFavicon').src = getFaviconUrl(domain);
+      document.getElementById('modalFavicon').onerror = function() {
+        this.style.display = 'none';
+      };
+      document.getElementById('modalFavicon').style.display = '';
+      document.getElementById('modalTotal').textContent = 'Loading...';
+      document.getElementById('modalBreakdown').innerHTML = '<p class="text-sm text-gray-400 dark:text-gray-500 text-center py-4">Loading breakdown...</p>';
+      document.getElementById('domainModal').classList.remove('hidden');
+
+      // Fetch logs for this domain to show daily breakdown
+      loadDomainBreakdown(domain);
+    }
+
+    function closeDomainModal() {
+      document.getElementById('domainModal').classList.add('hidden');
+      selectedModalDomain = null;
+    }
+
+    async function loadDomainBreakdown(domain) {
+      try {
+        const url = await apiUrl('/logs');
+        const response = await fetch(url);
+        if (!response.ok) throw new Error('Failed to fetch logs');
+
+        const data = await response.json();
+        const logs = (data.logs || []).filter(l => l.domain === domain);
+
+        // Group by date
+        const byDate = {};
+        logs.forEach(l => {
+          const date = l.timestamp.slice(0, 10);
+          if (!byDate[date]) byDate[date] = 0;
+          byDate[date] += l.durationSeconds;
+        });
+
+        const dates = Object.keys(byDate).sort().reverse();
+        const totalSeconds = logs.reduce((s, l) => s + l.durationSeconds, 0);
+        const totalMin = totalSeconds / 60;
+
+        document.getElementById('modalTotal').textContent = `${formatTime(totalMin)} total · ${logs.length} visits`;
+
+        if (dates.length === 0) {
+          document.getElementById('modalBreakdown').innerHTML = '<p class="text-sm text-gray-400 dark:text-gray-500 text-center py-4">No detailed data available.</p>';
+          return;
+        }
+
+        const maxVal = Math.max(...dates.map(d => byDate[d]));
+
+        let html = '';
+        dates.slice(0, 14).forEach(date => {
+          const sec = byDate[date];
+          const min = sec / 60;
+          const d = new Date(date + 'T00:00:00Z');
+          const label = d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+          const pct = maxVal > 0 ? (sec / maxVal) * 100 : 0;
+          const barColor = pct > 80 ? 'bg-red-500' : pct > 50 ? 'bg-amber-500' : pct > 20 ? 'bg-emerald-500' : 'bg-indigo-500';
+
+          html += `
+            <div class="flex items-center gap-3">
+              <span class="w-28 text-xs text-gray-500 dark:text-gray-400 flex-shrink-0">${label}</span>
+              <div class="flex-1 h-1.5 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
+                <div class="h-full rounded-full ${barColor}" style="width: ${pct}%"></div>
+              </div>
+              <span class="w-14 text-right text-xs font-medium text-gray-700 dark:text-gray-300 flex-shrink-0">${formatTime(min)}</span>
+            </div>
+          `;
+        });
+
+        if (dates.length > 14) {
+          html += `<p class="text-xs text-gray-400 dark:text-gray-500 text-center pt-2">+ ${dates.length - 14} more days</p>`;
+        }
+
+        document.getElementById('modalBreakdown').innerHTML = html;
+      } catch (err) {
+        console.error('[modal] Error loading breakdown:', err);
+        document.getElementById('modalBreakdown').innerHTML = '<p class="text-sm text-red-400 dark:text-red-400 text-center py-4">Failed to load breakdown.</p>';
+      }
+    }
+
+    function quickAddGoalFromModal() {
+      if (selectedModalDomain) {
+        quickAddGoal(selectedModalDomain);
+        closeDomainModal();
+      }
+    }
+
+    async function deleteDomainFromModal() {
+      if (selectedModalDomain) {
+        closeDomainModal();
+        await deleteDomainData(selectedModalDomain);
+      }
+    }
+
     // ─── Goals ──────────────────────────────────────────────────────────────
 
-    /**
-     * Fetch all goals AND their status (today's usage) from the server.
-     * Merges the two responses so every goal has todayMinutes, percentage, etc.
-     */
     async function fetchGoals() {
       const goalsList = document.getElementById('goalsList');
       const goalsLoading = document.getElementById('goalsLoading');
@@ -831,7 +1014,6 @@
       goalsEmpty.classList.add('hidden');
 
       try {
-        // Fetch both endpoints in parallel
         const [allResp, statusResp] = await Promise.all([
           fetch(await apiUrl('/goals')),
           fetch(await apiUrl('/goals/status')),
@@ -842,17 +1024,12 @@
         const allData = await allResp.json();
         const allGoals = (allData.goals || []);
 
-        // Build a map of status data keyed by domain
         const statusMap = {};
         if (statusResp.ok) {
           const statusData = await statusResp.json();
-          (statusData.goals || []).forEach(s => {
-            statusMap[s.domain] = s;
-          });
+          (statusData.goals || []).forEach(s => { statusMap[s.domain] = s; });
         }
 
-        // Merge: attach status fields (todayMinutes, percentage, exceeded, approaching, remainingMinutes)
-        // to every goal from the full list. Disabled goals get a zero-status.
         const merged = allGoals.map(g => {
           const status = statusMap[g.domain];
           return {
@@ -867,20 +1044,14 @@
 
         renderGoals(merged);
       } catch (err) {
-        console.error('[goals] Error fetching goals:', err);
+        console.error('[goals] Error:', err);
         goalsLoading.classList.add('hidden');
         goalsList.classList.add('hidden');
-        const emptyEl = document.getElementById('goalsEmpty');
-        if (emptyEl) {
-          emptyEl.classList.remove('hidden');
-          emptyEl.querySelector('p').textContent = 'Could not load goals. Is the server running?';
-        }
+        const el = document.getElementById('goalsEmpty');
+        if (el) { el.classList.remove('hidden'); el.querySelector('p').textContent = 'Could not load goals.'; }
       }
     }
 
-    /**
-     * Sort goals by severity: exceeded first, then approaching, then active, then disabled.
-     */
     function sortGoals(goals) {
       const severity = (g) => {
         if (g.exceeded) return 0;
@@ -891,33 +1062,20 @@
       return [...goals].sort((a, b) => severity(a) - severity(b));
     }
 
-    /** Update the goal summary strip (counts of exceeded / approaching / active). */
     function updateGoalsSummary(goals) {
       const el = document.getElementById('goalsSummary');
       if (!el) return;
-
       const total = goals.length;
       const exceeded = goals.filter(g => g.exceeded).length;
       const approaching = goals.filter(g => g.approaching && !g.exceeded).length;
-
-      if (total === 0) {
-        el.innerHTML = '';
-        el.classList.add('hidden');
-        return;
-      }
-
+      if (total === 0) { el.innerHTML = ''; el.classList.add('hidden'); return; }
       el.classList.remove('hidden');
-
       const parts = [`${total} goal${total !== 1 ? 's' : ''}`];
       if (exceeded > 0) parts.push(`<span class="text-red-500 dark:text-red-400 font-semibold">${exceeded} exceeded</span>`);
       if (approaching > 0) parts.push(`<span class="text-amber-500 dark:text-amber-400 font-semibold">${approaching} approaching</span>`);
-
       el.innerHTML = parts.join(' · ');
     }
 
-    /**
-     * Get a status badge HTML for a goal.
-     */
     function getGoalStatusBadge(goal) {
       if (!goal.enabled) return `<span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-gray-100 dark:bg-gray-700 text-gray-400 dark:text-gray-500">Disabled</span>`;
       if (goal.exceeded) return `<span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-red-50 dark:bg-red-900/30 text-red-600 dark:text-red-400">Exceeded</span>`;
@@ -926,84 +1084,45 @@
       return `<span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-gray-50 dark:bg-gray-700 text-gray-400 dark:text-gray-500">0%</span>`;
     }
 
-    /**
-     * Start inline editing of a goal's max_minutes.
-     */
     function startEditGoal(id) {
-      // Hide the time display for this goal, show the edit form
       const display = document.getElementById(`goal-time-${id}`);
       const edit = document.getElementById(`goal-edit-${id}`);
-      if (display && edit) {
-        display.classList.add('hidden');
-        edit.classList.remove('hidden');
-        edit.focus();
-        edit.select();
-      }
+      if (display && edit) { display.classList.add('hidden'); edit.classList.remove('hidden'); edit.focus(); edit.select(); }
     }
 
-    /**
-     * Save the edited max_minutes for a goal.
-     */
     async function saveEditGoal(id) {
       const edit = document.getElementById(`goal-edit-${id}`);
       if (!edit) return;
-
       const newValue = parseInt(edit.value, 10);
-      if (isNaN(newValue) || newValue <= 0) {
-        cancelEditGoal(id);
-        return;
-      }
-
+      if (isNaN(newValue) || newValue <= 0) { cancelEditGoal(id); return; }
       try {
         const response = await fetch(await apiUrl('/goals/' + id), {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ max_minutes: newValue }),
         });
-
         if (!response.ok) throw new Error('Failed to update goal');
-
         await fetchGoals();
-      } catch (err) {
-        console.error('[goals] Error updating goal:', err);
-        cancelEditGoal(id);
-      }
+      } catch (err) { console.error('[goals] Error updating goal:', err); cancelEditGoal(id); }
     }
 
-    /**
-     * Cancel inline editing — restore the display.
-     */
     function cancelEditGoal(id) {
       const display = document.getElementById(`goal-time-${id}`);
       const edit = document.getElementById(`goal-edit-${id}`);
-      if (display && edit) {
-        edit.classList.add('hidden');
-        display.classList.remove('hidden');
-      }
+      if (display && edit) { edit.classList.add('hidden'); display.classList.remove('hidden'); }
     }
 
-    /**
-     * Handle keydown in the inline edit field: Enter to save, Escape to cancel.
-     */
     function onEditKeydown(event, id) {
-      if (event.key === 'Enter') {
-        event.preventDefault();
-        saveEditGoal(id);
-      } else if (event.key === 'Escape') {
-        event.preventDefault();
-        cancelEditGoal(id);
-      }
+      if (event.key === 'Enter') { event.preventDefault(); saveEditGoal(id); }
+      else if (event.key === 'Escape') { event.preventDefault(); cancelEditGoal(id); }
     }
 
-    /** Render the list of goals. */
     function renderGoals(goals) {
       const goalsList = document.getElementById('goalsList');
       const goalsLoading = document.getElementById('goalsLoading');
       const goalsEmpty = document.getElementById('goalsEmpty');
 
       goalsLoading.classList.add('hidden');
-
-      // Update the summary strip
       updateGoalsSummary(goals);
 
       if (goals.length === 0) {
@@ -1017,7 +1136,6 @@
       goalsList.classList.remove('hidden');
       goalsList.innerHTML = '';
 
-      // Sort by severity
       const sorted = sortGoals(goals);
 
       sorted.forEach((goal) => {
@@ -1039,46 +1157,22 @@
           <div class="flex-1 min-w-0">
             <div class="flex items-center justify-between mb-1">
               <div class="flex items-center gap-2 min-w-0">
-                <img
-                  src="${getFaviconUrl(goal.domain)}"
-                  alt="${goal.domain}"
-                  class="flex-shrink-0 w-5 h-5 rounded bg-gray-50 dark:bg-gray-700"
-                  onerror="this.style.display='none'; this.nextElementSibling.style.display='flex'"
-                />
+                <img src="${getFaviconUrl(goal.domain)}" alt="${goal.domain}" class="flex-shrink-0 w-5 h-5 rounded bg-gray-50 dark:bg-gray-700" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex'" />
                 <div class="flex-shrink-0 w-5 h-5 rounded bg-gray-100 dark:bg-gray-700 items-center justify-center text-[10px] font-semibold text-gray-400 dark:text-gray-500" style="display:none">${goal.domain.charAt(0)}</div>
                 <span class="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">${getDisplayName(goal.domain)}</span>
                 ${getGoalStatusBadge(goal)}
               </div>
               <div class="flex items-center gap-1.5 flex-shrink-0 ml-2">
-                <!-- Time display (click to edit) -->
-                <span
-                  id="goal-time-${goal.id}"
-                  class="text-xs font-semibold ${textColor} cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-700 px-1.5 py-0.5 rounded transition-colors"
-                  onclick="startEditGoal(${goal.id})"
-                  title="Click to edit budget"
-                >
-                  ${formatTime(goal.todayMinutes)} / ${goal.max_minutes} min
-                </span>
-                <!-- Inline edit field (hidden by default) -->
+                <span id="goal-time-${goal.id}" class="text-xs font-semibold ${textColor} cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-700 px-1.5 py-0.5 rounded transition-colors" onclick="startEditGoal(${goal.id})" title="Click to edit budget">${formatTime(goal.todayMinutes)} / ${goal.max_minutes} min</span>
                 <span id="goal-edit-${goal.id}" class="hidden items-center gap-1">
                   <span class="text-xs text-gray-400 dark:text-gray-500">${formatTime(goal.todayMinutes)} /</span>
-                  <input
-                    type="number"
-                    value="${goal.max_minutes}"
-                    min="1"
-                    class="w-16 px-1.5 py-0.5 text-xs border border-indigo-300 dark:border-indigo-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none"
-                    onblur="saveEditGoal(${goal.id})"
-                    onkeydown="onEditKeydown(event, ${goal.id})"
-                  />
+                  <input type="number" value="${goal.max_minutes}" min="1" class="w-16 px-1.5 py-0.5 text-xs border border-indigo-300 dark:border-indigo-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none" onblur="saveEditGoal(${goal.id})" onkeydown="onEditKeydown(event, ${goal.id})" />
                   <span class="text-xs text-gray-400 dark:text-gray-500">min</span>
                 </span>
               </div>
             </div>
             <div class="relative w-full h-1.5 bg-gray-100 dark:bg-gray-700 rounded-full overflow-hidden">
-              <div
-                class="progress-bar absolute inset-y-0 left-0 rounded-full ${barColor}"
-                style="width: ${Math.min(pct, 100)}%"
-              ></div>
+              <div class="progress-bar absolute inset-y-0 left-0 rounded-full ${barColor}" style="width: ${Math.min(pct, 100)}%"></div>
             </div>
             ${goal.exceeded
               ? `<p class="text-[11px] text-red-500 dark:text-red-400 mt-1">Exceeded by ${formatTime(goal.todayMinutes - goal.max_minutes)}</p>`
@@ -1090,22 +1184,11 @@
           </div>
           <div class="flex items-center gap-2 flex-shrink-0">
             <label class="relative inline-flex items-center cursor-pointer">
-              <input
-                type="checkbox"
-                class="sr-only peer"
-                ${goal.enabled ? 'checked' : ''}
-                onchange="toggleGoal(${goal.id}, this.checked)"
-              />
+              <input type="checkbox" class="sr-only peer" ${goal.enabled ? 'checked' : ''} onchange="toggleGoal(${goal.id}, this.checked)" />
               <div class="w-8 h-4 bg-gray-200 dark:bg-gray-600 rounded-full peer peer-checked:bg-indigo-500 peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-3 after:w-3 after:transition-all"></div>
             </label>
-            <button
-              onclick="deleteGoal(${goal.id})"
-              class="flex-shrink-0 p-1.5 text-gray-400 hover:text-red-500 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition-all duration-150"
-              title="Delete goal"
-            >
-              <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-                <path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-              </svg>
+            <button onclick="deleteGoal(${goal.id})" class="flex-shrink-0 p-1.5 text-gray-400 hover:text-red-500 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition-all duration-150" title="Delete goal">
+              <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
             </button>
           </div>
         `;
@@ -1114,7 +1197,6 @@
       });
     }
 
-    /** Add a new goal from the form inputs. */
     async function addGoal() {
       const domainInput = document.getElementById('goalDomainInput');
       const minutesInput = document.getElementById('goalMinutesInput');
@@ -1123,17 +1205,8 @@
       const domain = domainInput.value.trim().toLowerCase();
       const maxMinutes = parseInt(minutesInput.value, 10);
 
-      if (!domain) {
-        errorEl.textContent = 'Please enter a domain name.';
-        errorEl.classList.remove('hidden');
-        return;
-      }
-
-      if (isNaN(maxMinutes) || maxMinutes <= 0) {
-        errorEl.textContent = 'Please enter a valid number of minutes.';
-        errorEl.classList.remove('hidden');
-        return;
-      }
+      if (!domain) { errorEl.textContent = 'Please enter a domain name.'; errorEl.classList.remove('hidden'); return; }
+      if (isNaN(maxMinutes) || maxMinutes <= 0) { errorEl.textContent = 'Please enter a valid number of minutes.'; errorEl.classList.remove('hidden'); return; }
 
       errorEl.classList.add('hidden');
 
@@ -1143,40 +1216,21 @@
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ domain, max_minutes: maxMinutes, userToken: await getUserId() }),
         });
-
-        if (!response.ok) {
-          const err = await response.json();
-          throw new Error(err.message || 'Failed to create goal');
-        }
-
-        // Clear the form
+        if (!response.ok) { const err = await response.json(); throw new Error(err.message || 'Failed to create goal'); }
         domainInput.value = '';
         minutesInput.value = '';
-
-        // Refresh the goals list
         await fetchGoals();
-      } catch (err) {
-        errorEl.textContent = err.message;
-        errorEl.classList.remove('hidden');
-      }
+      } catch (err) { errorEl.textContent = err.message; errorEl.classList.remove('hidden'); }
     }
 
-    /** Delete a goal by ID. */
     async function deleteGoal(id) {
       try {
-        const response = await fetch(await apiUrl('/goals/' + id), {
-          method: 'DELETE',
-        });
-
+        const response = await fetch(await apiUrl('/goals/' + id), { method: 'DELETE' });
         if (!response.ok) throw new Error('Failed to delete goal');
-
         await fetchGoals();
-      } catch (err) {
-        console.error('[goals] Error deleting goal:', err);
-      }
+      } catch (err) { console.error('[goals] Error deleting goal:', err); }
     }
 
-    /** Toggle a goal's enabled state. */
     async function toggleGoal(id, enabled) {
       try {
         const response = await fetch(await apiUrl('/goals/' + id), {
@@ -1184,69 +1238,56 @@
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ enabled }),
         });
-
         if (!response.ok) throw new Error('Failed to toggle goal');
-
         await fetchGoals();
-      } catch (err) {
-        console.error('[goals] Error toggling goal:', err);
-      }
+      } catch (err) { console.error('[goals] Error toggling goal:', err); }
     }
 
-    /** Populate the datalist with tracked domains for autocomplete. */
     function updateTrackedDomainsList(data) {
       const datalist = document.getElementById('trackedDomains');
       if (!datalist || !data.domains) return;
-      datalist.innerHTML = data.domains
-        .map(d => `<option value="${d.domain}">`)
-        .join('');
+      datalist.innerHTML = data.domains.map(d => `<option value="${d.domain}">`).join('');
     }
 
-    /** Pre-fill the goal domain input from a clicked site and focus the minutes field. */
     function quickAddGoal(domain) {
       const input = document.getElementById('goalDomainInput');
       const minutesInput = document.getElementById('goalMinutesInput');
       if (!input) return;
       input.value = domain;
-      // Scroll to the goals section
       const goalsSection = document.getElementById('goalsSection');
       if (goalsSection) goalsSection.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      setTimeout(() => {
-        minutesInput?.focus();
-        minutesInput?.select();
-      }, 400);
+      setTimeout(() => { minutesInput?.focus(); minutesInput?.select(); }, 400);
     }
 
     // ─── Silent Update ──────────────────────────────────────────────────────
 
     function silentUpdate(data) {
-      // Update date label if we're on today/this week/this month
       if (isCurrentPeriod(currentDate || getTodayStr())) {
         document.getElementById('dateLabel').textContent = formatPeriodLabel(data);
         document.getElementById('dateBadge').textContent = currentPeriod === 'day' ? 'Today' : formatPeriodLabel(data);
       }
 
-      // Export button visibility (show only for past periods)
       const exportBtn = document.getElementById('exportBtn');
-      if (isCurrentPeriod(currentDate || getTodayStr())) {
-        exportBtn.classList.add('hidden');
-      } else {
-        exportBtn.classList.remove('hidden');
+      if (isCurrentPeriod(currentDate || getTodayStr())) exportBtn.classList.add('hidden');
+      else exportBtn.classList.remove('hidden');
+
+      animateCounter(document.getElementById('totalDomains'), data.totalDomains, '');
+      animateCounter(document.getElementById('totalMinutes'), 0, '');
+      // For totalMinutes, extract number and animate
+      const totalMinEl = document.getElementById('totalMinutes');
+      if (totalMinEl) {
+        const val = data.totalMinutes || 0;
+        const suffix = val >= 60 ? '' : '';
+        // For simplicity, just set it with formatTime
+        totalMinEl.textContent = formatTime(val);
       }
 
-      // Summary metrics
-      document.getElementById('totalDomains').textContent = data.totalDomains;
-      document.getElementById('totalMinutes').textContent = formatTime(data.totalMinutes);
-      document.getElementById('topDomain').textContent   = data.topDomain || '—';
+      document.getElementById('topDomain').textContent = data.topDomain || '—';
       updateTopSiteFavicon(data.topDomain);
       updateDomainCount(data);
 
-      // Update tracked domains datalist (patch in-place for silent updates)
-      if (data && data.domains) {
-        updateTrackedDomainsList(data);
-      }
+      if (data && data.domains) updateTrackedDomainsList(data);
 
-      // Domain list (patch in-place)
       const domainList = document.getElementById('domainList');
       const emptyState = document.getElementById('emptyState');
       const maxMinutes = getMaxMinutes(data.domains);
@@ -1260,7 +1301,6 @@
       emptyState.classList.add('hidden');
       domainList.classList.remove('hidden');
 
-      // Build existing rows map
       const existingRows = {};
       domainList.querySelectorAll('[data-domain]').forEach(row => {
         existingRows[row.getAttribute('data-domain')] = row;
@@ -1268,14 +1308,12 @@
 
       const incomingDomains = data.domains.slice(0, 10).map(d => d.domain);
 
-      // Remove rows no longer in top 10
       Object.keys(existingRows).forEach(domain => {
         if (!incomingDomains.includes(domain)) existingRows[domain].remove();
       });
 
       data.domains.slice(0, 10).forEach((item, index) => {
         const pct = maxMinutes > 0 ? (item.totalMinutes / maxMinutes) * 100 : 0;
-
         if (existingRows[item.domain]) {
           const row = existingRows[item.domain];
           const rankEl = row.querySelector('[data-rank]');
@@ -1284,7 +1322,6 @@
           if (timeEl) timeEl.textContent = formatTime(item.totalMinutes);
           const bar = row.querySelector('.progress-bar');
           if (bar) bar.style.width = pct + '%';
-          // Move to correct position
           domainList.appendChild(row);
         } else {
           const row = createDomainRow(item, index);
@@ -1299,15 +1336,18 @@
           });
         }
       });
+
+      // Update chart silently
+      if (data.dailyBreakdown) {
+        renderDailyChart(data);
+      }
     }
 
     // ─── Full Render ────────────────────────────────────────────────────────
 
     function renderDashboard(data) {
-      // Period toggle state
       updatePeriodButtons();
 
-      // ── Navigation UI ──
       const viewedDate = data.date || getTodayStr();
       const inCurrent = isCurrentPeriod(currentDate || getTodayStr());
 
@@ -1316,74 +1356,65 @@
         ? (currentPeriod === 'day' ? 'Today' : formatPeriodLabel(data))
         : formatPeriodLabel(data);
 
-      // Disable navigation buttons
       const prevBtn = document.getElementById('prevBtn');
       const nextBtn = document.getElementById('nextBtn');
       const todayBtn = document.getElementById('todayBtn');
 
       if (currentPeriod === '7days') {
-        // 7 Days view is static — no prev/next navigation, keep arrows visible but disabled
-        prevBtn.classList.add('opacity-30', 'cursor-not-allowed');
-        prevBtn.disabled = true;
-        nextBtn.classList.add('opacity-30', 'cursor-not-allowed');
-        nextBtn.disabled = true;
+        prevBtn.classList.add('opacity-30', 'cursor-not-allowed'); prevBtn.disabled = true;
+        nextBtn.classList.add('opacity-30', 'cursor-not-allowed'); nextBtn.disabled = true;
         todayBtn.classList.add('hidden');
       } else if (inCurrent) {
-        prevBtn.classList.remove('opacity-30', 'cursor-not-allowed');
-        prevBtn.disabled = false;
-        nextBtn.classList.add('opacity-30', 'cursor-not-allowed');
-        nextBtn.disabled = true;
+        prevBtn.classList.remove('opacity-30', 'cursor-not-allowed'); prevBtn.disabled = false;
+        nextBtn.classList.add('opacity-30', 'cursor-not-allowed'); nextBtn.disabled = true;
         todayBtn.classList.add('hidden');
       } else {
-        prevBtn.classList.remove('opacity-30', 'cursor-not-allowed');
-        prevBtn.disabled = false;
-        nextBtn.classList.remove('opacity-30', 'cursor-not-allowed');
-        nextBtn.disabled = false;
+        prevBtn.classList.remove('opacity-30', 'cursor-not-allowed'); prevBtn.disabled = false;
+        nextBtn.classList.remove('opacity-30', 'cursor-not-allowed'); nextBtn.disabled = false;
         todayBtn.classList.remove('hidden');
       }
 
-      // Update the "Today/This Week/This Month" button label
       document.getElementById('todayBtnLabel').textContent =
         currentPeriod === 'day' ? 'Today' :
         currentPeriod === 'week' ? 'This Week' :
         currentPeriod === '7days' ? 'Last 7 Days' : 'This Month';
 
-      // ── Export Button Visibility (hide for current period) ──
       const exportBtn = document.getElementById('exportBtn');
-      if (inCurrent) {
-        exportBtn.classList.add('hidden');
-      } else {
-        exportBtn.classList.remove('hidden');
-      }
+      if (inCurrent) exportBtn.classList.add('hidden');
+      else exportBtn.classList.remove('hidden');
 
-      // ── Summary Metrics ──
-      document.getElementById('totalDomains').textContent = data.totalDomains;
-      document.getElementById('totalMinutes').textContent = formatTime(data.totalMinutes);
-      document.getElementById('topDomain').textContent   = data.topDomain || '—';
+      // Animated counters
+      animateCounter(document.getElementById('totalDomains'), data.totalDomains, '');
+      const totalMinEl = document.getElementById('totalMinutes');
+      if (totalMinEl) totalMinEl.textContent = formatTime(data.totalMinutes);
+
+      document.getElementById('topDomain').textContent = data.topDomain || '—';
       updateTopSiteFavicon(data.topDomain);
       updateDomainCount(data);
 
-      // ── Seed Button Visibility (only show on local SQLite) ──
       const seedBtn = document.getElementById('seedBtn');
       if (seedBtn) {
-        if (data.allowSeed === true) {
-          seedBtn.classList.remove('hidden');
-        } else {
-          seedBtn.classList.add('hidden');
-        }
+        if (data.allowSeed === true) seedBtn.classList.remove('hidden');
+        else seedBtn.classList.add('hidden');
       }
 
-      // ── Domain List ──
-      renderDomainList(data, document.getElementById('domainList'));
+      // Daily chart (only show for period views that have daily breakdown)
+      const chartSection = document.getElementById('chartSection');
+      if (currentPeriod !== 'day' && data.dailyBreakdown) {
+        chartSection.style.display = 'block';
+        // Slight delay so DOM is ready
+        setTimeout(() => renderDailyChart(data), 100);
+      } else {
+        chartSection.style.display = 'none';
+      }
 
-      // ── Goals ──
+      renderDomainList(data, document.getElementById('domainList'));
       fetchGoals();
     }
 
     function updateLastUpdated() {
       const now = new Date();
-      const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-      document.getElementById('lastUpdated').textContent = `Updated ${timeStr}`;
+      document.getElementById('lastUpdated').textContent = `Updated ${now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
     }
 
     // ─── Dark Mode ─────────────────────────────────────────────────────────
@@ -1392,7 +1423,6 @@
       const root = document.documentElement;
       const sunIcon = document.getElementById('sunIcon');
       const moonIcon = document.getElementById('moonIcon');
-
       if (isDark) {
         root.classList.add('dark');
         sunIcon?.classList.add('hidden');
@@ -1402,31 +1432,23 @@
         sunIcon?.classList.remove('hidden');
         moonIcon?.classList.add('hidden');
       }
-
-      try {
-        localStorage.setItem('lisTrackTheme', isDark ? 'dark' : 'light');
-      } catch (_) {}
+      try { localStorage.setItem('lisTrackTheme', isDark ? 'dark' : 'light'); } catch (_) {}
+      // Re-render chart on theme change
+      if (document.getElementById('dailyChart').width > 0) {
+        const data = window._lastChartData;
+        if (data) renderDailyChart(data);
+      }
     }
 
     function toggleTheme() {
-      const isDark = !document.documentElement.classList.contains('dark');
-      setTheme(isDark);
+      setTheme(!document.documentElement.classList.contains('dark'));
     }
 
     function initTheme() {
-      const saved = (() => {
-        try { return localStorage.getItem('lisTrackTheme'); } catch (_) { return null; }
-      })();
-
-      if (saved === 'dark') {
-        setTheme(true);
-      } else if (saved === 'light') {
-        setTheme(false);
-      } else {
-        // No saved preference — check system preference
-        const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-        setTheme(prefersDark);
-      }
+      const saved = (() => { try { return localStorage.getItem('lisTrackTheme'); } catch (_) { return null; } })();
+      if (saved === 'dark') setTheme(true);
+      else if (saved === 'light') setTheme(false);
+      else setTheme(window.matchMedia('(prefers-color-scheme: dark)').matches);
     }
 
     // ─── Export PDF ─────────────────────────────────────────────────────────
@@ -1435,15 +1457,10 @@
       const exportBtn = document.getElementById('exportBtn');
       const originalHtml = exportBtn.innerHTML;
       exportBtn.disabled = true;
-      exportBtn.innerHTML = `
-        <svg class="w-4 h-4 loading-spinner" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-          <path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-        </svg>
-        Generating...`;
+      exportBtn.innerHTML = `<svg class="w-4 h-4 loading-spinner" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg> Generating...`;
 
       try {
         const element = document.getElementById('dashboardContent');
-        const period = currentPeriod.charAt(0).toUpperCase() + currentPeriod.slice(1);
         const datePart = (currentDate || getTodayStr());
         const filename = `screen-time-${currentPeriod}-${datePart}.pdf`;
 
@@ -1451,17 +1468,8 @@
           margin: [0.4, 0.4, 0.4, 0.4],
           filename,
           image: { type: 'jpeg', quality: 0.95 },
-          html2canvas: {
-            scale: 2,
-            useCORS: true,
-            letterRendering: true,
-            logging: false,
-          },
-          jsPDF: {
-            unit: 'in',
-            format: 'letter',
-            orientation: 'portrait',
-          },
+          html2canvas: { scale: 2, useCORS: true, letterRendering: true, logging: false },
+          jsPDF: { unit: 'in', format: 'letter', orientation: 'portrait' },
         };
 
         await html2pdf().set(opt).from(element).save();
@@ -1474,38 +1482,25 @@
       }
     }
 
-    // ─── Seed Data ────────────────────────────────────────────────────────────
+    // ─── Seed Data ──────────────────────────────────────────────────────────
 
     async function seedData() {
       const btn = document.getElementById('seedBtn');
       const originalHtml = btn.innerHTML;
       btn.disabled = true;
-      btn.innerHTML = `
-        <svg class="w-4 h-4 loading-spinner" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-          <path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-        </svg>
-        Generating...`;
+      btn.innerHTML = `<svg class="w-4 h-4 loading-spinner" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg> Generating...`;
 
       try {
-        const response = await fetch(await apiUrl('/seed'), {
-          method: 'POST',
-        });
-
+        const response = await fetch(await apiUrl('/seed'), { method: 'POST' });
         if (!response.ok) {
           const err = await response.json().catch(() => ({}));
-          if (response.status === 403) {
-            alert('Seed data is only available when running locally (SQLite).\nIt does not work on the production server.');
-          } else {
-            throw new Error(err.message || `Server returned ${response.status}`);
-          }
+          if (response.status === 403) alert('Seed data is only available when running locally (SQLite).\nIt does not work on the production server.');
+          else throw new Error(err.message || `Server returned ${response.status}`);
           return;
         }
-
         const result = await response.json();
         const stats = result.stats;
         alert(`Sample data generated!\n\n${stats.screenTimeRecords} screen-time records\n${stats.goals} goals\n${stats.daysGenerated} days of data`);
-
-        // Refresh the entire dashboard
         await fetchData({ silent: false });
       } catch (err) {
         console.error('[seed] Error:', err);
@@ -1518,21 +1513,14 @@
 
     // ─── Extension Detection ───────────────────────────────────────────────
 
-    /**
-     * Detect if the LisTrack Chrome extension is installed.
-     * tracker.js (content script) sets data-lisTrackInstalled on <html>.
-     * If not detected after 1.5s, show the install banner.
-     */
     var _extensionDetected = false;
 
     function detectExtension() {
-      // Check immediately (content script may have already run)
       if (document.documentElement.dataset.lisTrackInstalled === 'true') {
         _extensionDetected = true;
         return;
       }
 
-      // Listen for the marker (content script might run after page load)
       var observer = new MutationObserver(function () {
         if (document.documentElement.dataset.lisTrackInstalled === 'true') {
           _extensionDetected = true;
@@ -1542,15 +1530,11 @@
       });
       observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-lis-track-installed'] });
 
-      // Timeout — if extension hasn't set the marker, show the banner
-      // (unless user previously dismissed it)
       setTimeout(function () {
         if (!_extensionDetected) {
           let dismissed = false;
           try { dismissed = localStorage.getItem('lisTrackBannerDismissed') === 'true'; } catch (_) {}
-          if (!dismissed) {
-            document.getElementById('installBanner').classList.remove('hidden');
-          }
+          if (!dismissed) document.getElementById('installBanner').classList.remove('hidden');
         }
         observer.disconnect();
       }, 3000);
@@ -1561,35 +1545,32 @@
       try { localStorage.setItem('lisTrackBannerDismissed', 'true'); } catch (_) {}
     }
 
-    // ─── Init & Auto-refresh ─────────────────────────────────────────────────
+    // ─── Init & Auto-refresh ───────────────────────────────────────────────
     document.addEventListener('DOMContentLoaded', () => {
-      // Initialize dark mode from localStorage or system preference
-      initTheme();
-
-      // Listen for system theme changes while the dashboard is open
-      window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', (e) => {
-        const saved = (() => {
-          try { return localStorage.getItem('lisTrackTheme'); } catch (_) { return null; }
-        })();
-        if (!saved) {
-          setTheme(e.matches);
-        }
+      // Close modal on Escape
+      document.addEventListener('keydown', function (e) {
+        if (e.key === 'Escape') closeDomainModal();
       });
 
-      // Read URL params (for server-side PDF export via Puppeteer)
+      // Close modal on backdrop click
+      document.getElementById('domainModal').addEventListener('click', function (e) {
+        if (e.target === this) closeDomainModal();
+      });
+
+      initTheme();
+
+      window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', (e) => {
+        const saved = (() => { try { return localStorage.getItem('lisTrackTheme'); } catch (_) { return null; } })();
+        if (!saved) setTheme(e.matches);
+      });
+
       const params = new URLSearchParams(window.location.search);
       const urlPeriod = params.get('period');
       const urlDate = params.get('date');
-      if (urlPeriod && ['day', 'week', 'month', '7days'].includes(urlPeriod)) {
-        currentPeriod = urlPeriod;
-      }
-      if (urlDate && /^\d{4}-\d{2}-\d{2}$/.test(urlDate)) {
-        currentDate = urlDate;
-      }
+      if (urlPeriod && ['day', 'week', 'month', '7days'].includes(urlPeriod)) currentPeriod = urlPeriod;
+      if (urlDate && /^\d{4}-\d{2}-\d{2}$/.test(urlDate)) currentDate = urlDate;
 
       updatePeriodButtons();
-
-      // Detect if LisTrack extension is installed
       detectExtension();
 
       fetchData({ silent: false });
@@ -1601,4 +1582,4 @@
   </script>
 
 </body>
-</html>
+</html>
