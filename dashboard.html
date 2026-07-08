@@ -475,7 +475,7 @@
       const barColor = isDark ? 'rgba(99,102,241,0.7)' : 'rgba(99,102,241,0.6)';
       const barHoverColor = isDark ? 'rgba(129,140,248,0.9)' : 'rgba(99,102,241,0.85)';
 
-      const padding = { top: 16, bottom: 28, left: 36, right: 12 };
+      const padding = { top: 16, bottom: 36, left: 36, right: 12 };
       const chartW = w - padding.left - padding.right;
       const chartH = h - padding.top - padding.bottom;
 
@@ -544,8 +544,13 @@
         ctx.textAlign = 'center';
         ctx.textBaseline = 'top';
         const d = new Date(item.date + 'T00:00:00Z');
-        const label = d.toLocaleDateString('en-US', { weekday: item.totalMinutes > 0 ? 'short' : 'narrow' });
-        ctx.fillText(label, x + barWidth / 2, padding.top + chartH + 6);
+        const label = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+        // Skip every other label when bars are too close to prevent collision
+        if (barCount > 7 && i % 2 === 1) {
+          ctx.fillText('', x + barWidth / 2, padding.top + chartH + 8);
+        } else {
+          ctx.fillText(label, x + barWidth / 2, padding.top + chartH + 8);
+        }
       });
 
       // Average
