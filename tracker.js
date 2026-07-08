@@ -139,18 +139,26 @@
       return;
     }
 
-    const payload = {
+    const token = getOrCreateFallbackToken();
+
+    // Build payload WITHOUT userToken for the extension path.
+    // The background service worker has the authoritative token (from chrome.storage)
+    // and will use that instead, ensuring all data uses the same token.
+    const extensionPayload = {
       domain,
       path: window.location.pathname,
       durationSeconds: durationSeconds,
       timestamp: new Date().toISOString(),
-      userToken: getOrCreateFallbackToken(),
+      // userToken intentionally omitted — background uses its own authoritative token
     };
+
+    // Full payload with token for direct fallback paths (no extension available)
+    const fallbackPayload = { ...extensionPayload, userToken: token };
 
     // On page unload (isFinal), skip chrome.runtime entirely.
     // Browsers don't wait for async during unload — use sendBeacon which is reliable.
     if (isFinal) {
-      const blob = new Blob([JSON.stringify(payload)], { type: "application/json" });
+      const blob = new Blob([JSON.stringify(fallbackPayload)], { type: "application/json" });
       try {
         navigator.sendBeacon(CONFIG.API_URL, blob);
       } catch (e) {
@@ -158,7 +166,7 @@
           fetch(CONFIG.API_URL, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(payload),
+            body: JSON.stringify(fallbackPayload),
             keepalive: true,
           }).catch(() => {});
         } catch (_) {}
@@ -168,10 +176,12 @@
     }
 
     // For regular intervals, use chrome.runtime to forward via background worker.
-    // Await the response so the background worker stays alive for the fetch.
+    // DO NOT include userToken — the background uses its own authoritative token
+    // from chrome.storage (via getOrCreateToken()). This prevents token drift
+    // between the content script and the service worker.
     if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.sendMessage) {
       try {
-        const response = await chrome.runtime.sendMessage(payload);
+        const response = await chrome.runtime.sendMessage(extensionPayload);
         if (response && response.received) {
           state.activeTimeMs = 0;
           return;
@@ -186,7 +196,7 @@
       await fetch(CONFIG.API_URL, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
+        body: JSON.stringify(fallbackPayload),
       });
     } catch (_) {}
 
@@ -227,19 +237,21 @@
         Date.now() - data.timestamp < 3_600_000 &&
         shouldTrackDomain(data.domain)
       ) {
-        const payload = {
+        const token = getOrCreateFallbackToken();
+        // No userToken for extension path — background uses its own authoritative token
+        const extPayload = {
           domain: data.domain,
           path: data.path,
           durationSeconds: data.activeTimeMs / 1000,
           timestamp: new Date(data.timestamp).toISOString(),
           recovered: true,
-          userToken: getOrCreateFallbackToken(),
         };
+        const fallbackPayload = { ...extPayload, userToken: token };
 
         if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.sendMessage) {
-          try { chrome.runtime.sendMessage(payload); } catch (err) {}
+          try { chrome.runtime.sendMessage(extPayload); } catch (err) {}
         } else {
-          const blob = new Blob([JSON.stringify(payload)], { type: "application/json" });
+          const blob = new Blob([JSON.stringify(fallbackPayload)], { type: "application/json" });
           navigator.sendBeacon(CONFIG.API_URL, blob);
         }
       }
