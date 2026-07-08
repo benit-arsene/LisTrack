@@ -187,6 +187,9 @@
         const response = await chrome.runtime.sendMessage(extensionPayload);
         if (response && response.received) {
           state.activeTimeMs = 0;
+          // Clean up any stale checkpoint so a crash before the next
+          // onCheckpoint() doesn't double-recover the same data.
+          try { localStorage.removeItem(CONFIG.STORAGE_KEY); } catch (_) {}
           return;
         }
       } catch (err) {
@@ -210,6 +213,9 @@
     if (fallbackSucceeded) {
       // Only reset time if data was actually delivered
       state.activeTimeMs = 0;
+      // Clean up any stale checkpoint so a crash before the next
+      // onCheckpoint() doesn't double-recover the same data.
+      try { localStorage.removeItem(CONFIG.STORAGE_KEY); } catch (_) {}
     } else {
       // BOTH the extension path and fallback fetch failed.
       // Don't reset — save the time as a checkpoint so recoverCrashData()
@@ -254,7 +260,7 @@
       const raw = localStorage.getItem(CONFIG.STORAGE_KEY);
       if (!raw) return;
       const data = JSON.parse(raw);
-      
+
       if (
         data.domain === window.location.hostname &&
         Date.now() - data.timestamp < 3_600_000 &&
@@ -271,35 +277,42 @@
         };
         const fallbackPayload = { ...extPayload, userToken: token };
 
-        let sent = false;
-
-        // Try extension path first (await the response to confirm delivery)
+        // Try extension path first (fire-and-forget .then with fallback).
+        // Must NOT use await here — this runs from init() and any yield would
+        // let onCheckpoint() start and overwrite the localStorage checkpoint.
         if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.sendMessage) {
-          try {
-            const resp = await chrome.runtime.sendMessage(extPayload);
-            if (resp && resp.received) sent = true;
-          } catch (err) {}
-        }
-
-        // If extension path didn't deliver, use sendBeacon with fetch fallback
-        if (!sent) {
-          const blob = new Blob([JSON.stringify(fallbackPayload)], { type: "application/json" });
-          try {
-            navigator.sendBeacon(CONFIG.SERVER_URL + CONFIG.API_PATH, blob);
-          } catch (e) {
-            try {
-              fetch(CONFIG.SERVER_URL + CONFIG.API_PATH, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(fallbackPayload),
-                keepalive: true,
-              }).catch(() => {});
-            } catch (_) {}
-          }
+          chrome.runtime.sendMessage(extPayload)
+            .then((resp) => {
+              if (!resp || !resp.received) useFallbackSend(fallbackPayload);
+            })
+            .catch(() => useFallbackSend(fallbackPayload));
+        } else {
+          useFallbackSend(fallbackPayload);
         }
       }
+      // Clean up the checkpoint immediately (synchronous, not inside async chain)
       localStorage.removeItem(CONFIG.STORAGE_KEY);
     } catch (_) {}
+  }
+
+  /**
+   * Fire the fallback payload via sendBeacon with a fetch backup.
+   * Extracted to avoid duplicating the two-layer pattern.
+   */
+  function useFallbackSend(payload) {
+    const blob = new Blob([JSON.stringify(payload)], { type: "application/json" });
+    try {
+      navigator.sendBeacon(CONFIG.SERVER_URL + CONFIG.API_PATH, blob);
+    } catch (e) {
+      try {
+        fetch(CONFIG.SERVER_URL + CONFIG.API_PATH, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+          keepalive: true,
+        }).catch(() => {});
+      } catch (_) {}
+    }
   }
 
   // ─── Bind Events & Initialize ────────────────────────────────────────────
