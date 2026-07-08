@@ -832,6 +832,33 @@ app.get("/api/goals/status", async (req, res) => {
   }
 });
 
+/**
+ * DELETE /api/cleanup
+ * Removes screen-time records for a specific domain and user.
+ */
+app.delete("/api/cleanup", async (req, res) => {
+  try {
+    const userId = req.query.user || '';
+    const domain = req.query.domain || '';
+
+    if (!userId || !domain) {
+      return res.status(400).json({ status: "error", message: "Missing required params: user, domain" });
+    }
+
+    const result = await driver.run(
+      `DELETE FROM screen_time WHERE user_id = ? AND domain = ?`,
+      [userId, domain]
+    );
+
+    console.log(`[cleanup] Deleted ${result.changes} records for user="${userId}" domain="${domain}"`);
+
+    return res.json({ status: "ok", deleted: result.changes });
+  } catch (err) {
+    console.error("[cleanup] Error:", err);
+    return res.status(500).json({ status: "error", message: "Internal server error" });
+  }
+});
+
 app.get("/api/logs", async (req, res) => {
   try {
     const userId = req.query.user || '';
