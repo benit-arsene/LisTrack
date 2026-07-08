@@ -460,27 +460,42 @@
 
     /**
      * Get the current user ID.
-     * - Reads from the ?user= URL query param (set by the extension popup or landing page)
+     * - Reads from the ?user= URL query param (set by extension popup)
      * - Falls back to a persistent token in localStorage (same key tracker.js uses)
-     * - Creates a new token if none exists
+     * - Waits briefly for the content script to sync the authoritative token from chrome.storage
+     * - Creates a new token only if none exists
      */
-    function getUserId() {
+    async function getUserId() {
       const params = new URLSearchParams(window.location.search);
       const urlUser = params.get('user');
       if (urlUser) return urlUser;
 
-      // Use/create a persistent token in localStorage (same key as tracker.js)
       const TOKEN_KEY = 'lisTrackTrackerToken';
+
+      // First check immediately
       try {
-        let token = localStorage.getItem(TOKEN_KEY);
-        if (!token) {
-          const chars = '0123456789abcdef';
-          token = '';
-          for (let i = 0; i < 32; i++) {
-            token += chars[Math.floor(Math.random() * 16)];
-          }
-          localStorage.setItem(TOKEN_KEY, token);
+        const local = localStorage.getItem(TOKEN_KEY);
+        if (local) return local;
+      } catch (_) {}
+
+      // No token yet — content script may still be syncing from chrome.storage.
+      // Wait a brief moment for the async callback to fire before generating new.
+      await new Promise(r => setTimeout(r, 500));
+
+      // Check again after content script had time to sync
+      try {
+        const local = localStorage.getItem(TOKEN_KEY);
+        if (local) return local;
+      } catch (_) {}
+
+      // Still nothing — generate a new persistent token
+      try {
+        const chars = '0123456789abcdef';
+        let token = '';
+        for (let i = 0; i < 32; i++) {
+          token += chars[Math.floor(Math.random() * 16)];
         }
+        localStorage.setItem(TOKEN_KEY, token);
         return token;
       } catch (_) {
         return 'fallback-dev';
@@ -488,9 +503,9 @@
     }
 
     /** Build a URL with the user parameter appended. */
-    function apiUrl(path, extraParams = {}) {
+    async function apiUrl(path, extraParams = {}) {
       const params = new URLSearchParams();
-      params.set('user', getUserId());
+      params.set('user', await getUserId());
       for (const [key, value] of Object.entries(extraParams)) {
         if (value != null) params.set(key, value);
       }
@@ -655,9 +670,9 @@
         let url;
         if (currentPeriod === 'day') {
           const params = { date: currentDate };
-          url = apiUrl('/dashboard', params);
+          url = await apiUrl('/dashboard', params);
         } else {
-          url = apiUrl('/summary', { period: currentPeriod, date: currentDate });
+          url = await apiUrl('/summary', { period: currentPeriod, date: currentDate });
         }
 
         const response = await fetch(url);
@@ -818,8 +833,8 @@
       try {
         // Fetch both endpoints in parallel
         const [allResp, statusResp] = await Promise.all([
-          fetch(apiUrl('/goals')),
-          fetch(apiUrl('/goals/status')),
+          fetch(await apiUrl('/goals')),
+          fetch(await apiUrl('/goals/status')),
         ]);
 
         if (!allResp.ok) throw new Error('Failed to fetch goals');
@@ -940,7 +955,7 @@
       }
 
       try {
-        const response = await fetch(apiUrl('/goals/' + id), {
+        const response = await fetch(await apiUrl('/goals/' + id), {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ max_minutes: newValue }),
@@ -1126,7 +1141,7 @@
         const response = await fetch(API_BASE + '/goals', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ domain, max_minutes: maxMinutes, userToken: getUserId() }),
+          body: JSON.stringify({ domain, max_minutes: maxMinutes, userToken: await getUserId() }),
         });
 
         if (!response.ok) {
@@ -1149,7 +1164,7 @@
     /** Delete a goal by ID. */
     async function deleteGoal(id) {
       try {
-        const response = await fetch(apiUrl('/goals/' + id), {
+        const response = await fetch(await apiUrl('/goals/' + id), {
           method: 'DELETE',
         });
 
@@ -1164,7 +1179,7 @@
     /** Toggle a goal's enabled state. */
     async function toggleGoal(id, enabled) {
       try {
-        const response = await fetch(apiUrl('/goals/' + id), {
+        const response = await fetch(await apiUrl('/goals/' + id), {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ enabled }),
@@ -1472,7 +1487,7 @@
         Generating...`;
 
       try {
-        const response = await fetch(apiUrl('/seed'), {
+        const response = await fetch(await apiUrl('/seed'), {
           method: 'POST',
         });
 

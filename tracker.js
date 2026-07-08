@@ -286,10 +286,9 @@
       chrome.storage.local.get([CONFIG.USER_TOKEN_KEY], function (result) {
         if (result[CONFIG.USER_TOKEN_KEY]) {
           try {
-            // Only set if localStorage is empty — don't overwrite a page-created token
-            if (!localStorage.getItem(CONFIG.USER_TOKEN_KEY)) {
-              localStorage.setItem(CONFIG.USER_TOKEN_KEY, result[CONFIG.USER_TOKEN_KEY]);
-            }
+            // Always overwrite localStorage with chrome.storage's token
+            // because chrome.storage has the authoritative extension token.
+            localStorage.setItem(CONFIG.USER_TOKEN_KEY, result[CONFIG.USER_TOKEN_KEY]);
           } catch (_) {}
         }
       });
