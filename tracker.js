@@ -10,8 +10,6 @@
 
   // ─── Configuration ───────────────────────────────────────────────────────
   const CONFIG = {
-    // Use relative path so the snippet posts to the same origin when testing locally.
-    API_URL: '/api/screen-time',
     // Absolute URL for fallback when the extension's service worker is dead.
     // When chrome.runtime.sendMessage fails (MV3 killed the worker), data is
     // sent directly to SERVER_URL + API_PATH so it's never lost.
