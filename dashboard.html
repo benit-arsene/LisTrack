@@ -996,13 +996,6 @@
       }
     }
 
-    async function deleteDomainFromModal() {
-      if (selectedModalDomain) {
-        closeDomainModal();
-        await deleteDomainData(selectedModalDomain);
-      }
-    }
-
     // ─── Goals ──────────────────────────────────────────────────────────────
 
     async function fetchGoals() {
