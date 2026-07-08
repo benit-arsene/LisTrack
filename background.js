@@ -4,7 +4,7 @@
 
 // ─── Configuration ──────────────────────────────────────────────────────────
 
-const SERVER_URL = "https://listrack-2.onrender.com";
+const SERVER_URL = "https://listrack.onrender.com";
 
 // Domains to block from being forwarded to the server (defense-in-depth).
 // Should stay in sync with the IGNORED_DOMAIN_PATTERNS in tracker.js.
@@ -13,7 +13,6 @@ const SERVER_URL = "https://listrack-2.onrender.com";
 const BLOCKED_DOMAINS = [
   "localhost",
   "listrack.onrender.com",
-  "listrack-2.onrender.com",
 ];
 
 const GOAL_CHECK_INTERVAL_MINUTES = 5;

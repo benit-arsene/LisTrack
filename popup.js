@@ -1,4 +1,4 @@
-const SERVER_URL = "https://listrack-2.onrender.com";
+const SERVER_URL = "https://listrack.onrender.com";
 
 (async function () {
   const app = document.getElementById("app");

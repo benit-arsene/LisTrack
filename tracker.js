@@ -21,7 +21,7 @@
   // Domains to exclude from tracking (suffix matching).
   // LisTrack dashboard domains are blocked to avoid self-tracking.
   // Other render.com subdomains are NOT blocked.
-  const IGNORED_DOMAIN_PATTERNS = ["localhost", "listrack.onrender.com", "listrack-2.onrender.com"];
+  const IGNORED_DOMAIN_PATTERNS = ["localhost", "listrack.onrender.com"];
 
   function shouldTrackDomain(domain) {
     return (
