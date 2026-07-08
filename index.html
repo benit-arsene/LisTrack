@@ -53,15 +53,15 @@
               <path stroke-linecap="round" stroke-linejoin="round" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" />
             </svg>
           </button>
-          <a
-            href="/dashboard"
+          <button
+            onclick="openDashboard()"
             class="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-white bg-indigo-600 rounded-xl hover:bg-indigo-700 transition-all duration-150 shadow-sm"
           >
             <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
               <path stroke-linecap="round" stroke-linejoin="round" d="M13.5 6H5.25A2.25 2.25 0 003 8.25v10.5A2.25 2.25 0 005.25 21h10.5A2.25 2.25 0 0018 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25" />
             </svg>
             Dashboard
-          </a>
+          </button>
         </div>
       </div>
     </header>
@@ -91,15 +91,15 @@
           </svg>
           Download Extension
         </a>
-        <a
-          href="/dashboard"
+        <button
+          onclick="openDashboard()"
           class="inline-flex items-center gap-2 px-6 py-3 text-base font-semibold text-gray-700 dark:text-gray-300 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl hover:bg-gray-50 dark:hover:bg-gray-700 transition-all duration-150 shadow-sm"
         >
           <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
             <path stroke-linecap="round" stroke-linejoin="round" d="M13.5 6H5.25A2.25 2.25 0 003 8.25v10.5A2.25 2.25 0 005.25 21h10.5A2.25 2.25 0 0018 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25" />
           </svg>
           Open Dashboard
-        </a>
+        </button>
       </div>
     </section>
 
@@ -205,7 +205,83 @@
     </p>
   </div>
 
+  <!-- Install Prompt Modal (hidden by default) -->
+  <div id="installModal" class="hidden fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm fade-in">
+    <div class="bg-white dark:bg-gray-800 rounded-2xl shadow-xl border border-gray-200 dark:border-gray-700 max-w-sm mx-4 p-6 text-center">
+      <div class="inline-flex items-center justify-center w-14 h-14 bg-amber-100 dark:bg-amber-900/40 rounded-2xl mb-4">
+        <svg class="w-7 h-7 text-amber-600 dark:text-amber-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z" />
+        </svg>
+      </div>
+      <h3 class="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-2">Extension Required</h3>
+      <p class="text-sm text-gray-500 dark:text-gray-400 mb-6">
+        The LisTrack Chrome extension is not installed. Please download and install it first to view your dashboard.
+      </p>
+      <div class="flex flex-col gap-3">
+        <a
+          href="/lisTrack-extension.zip"
+          download
+          class="inline-flex items-center justify-center gap-2 px-5 py-2.5 text-sm font-semibold text-white bg-indigo-600 rounded-xl hover:bg-indigo-700 transition-all duration-150 shadow-sm"
+          onclick="closeInstallModal()"
+        >
+          <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
+          </svg>
+          Download Extension
+        </a>
+        <button
+          onclick="closeInstallModal()"
+          class="text-sm font-medium text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 transition-colors"
+        >
+          I'll do this later
+        </button>
+      </div>
+    </div>
+  </div>
+
   <script>
+    // ─── Dashboard Access with Extension Detection ──────────────────────────
+
+    /**
+     * Check if the LisTrack extension is installed and navigate accordingly.
+     * - If extension IS installed → get token from localStorage and go to dashboard
+     * - If extension is NOT installed → show a modal prompting installation
+     */
+    function openDashboard() {
+      // Check for the DOM marker set by tracker.js content script at document_end
+      var isInstalled = document.documentElement.dataset.lisTrackInstalled === 'true';
+
+      if (isInstalled) {
+        // Extension is running — get the token and navigate
+        var token = '';
+        try { token = localStorage.getItem('lisTrackTrackerToken') || ''; } catch (e) {}
+        var url = token ? '/dashboard?user=' + encodeURIComponent(token) : '/dashboard';
+        window.location.href = url;
+      } else {
+        // Extension not detected — show install prompt
+        document.getElementById('installModal').classList.remove('hidden');
+      }
+    }
+
+    function closeInstallModal() {
+      document.getElementById('installModal').classList.add('hidden');
+    }
+
+    // Close modal on Escape key
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape') closeInstallModal();
+    });
+
+    // Close modal on backdrop click
+    document.addEventListener('DOMContentLoaded', function () {
+      var modal = document.getElementById('installModal');
+      if (modal) {
+        modal.addEventListener('click', function (e) {
+          if (e.target === modal) closeInstallModal();
+        });
+      }
+    });
+
     // ─── Dark Mode ──────────────────────────────────────────────────────────
 
     function setTheme(isDark) {
