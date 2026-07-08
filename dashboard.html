@@ -191,30 +191,6 @@
     <!-- Dashboard Content -->
     <div id="dashboardContent" class="hidden">
 
-      <!-- Daily Activity Chart -->
-      <div id="chartSection" class="bg-white dark:bg-gray-800 rounded-2xl shadow-sm border border-gray-100 dark:border-gray-700 overflow-hidden slide-up mb-6" style="animation-delay: 0.08s;">
-        <div class="px-6 py-4 border-b border-gray-100 dark:border-gray-700 flex items-center justify-between">
-          <div>
-            <h2 class="text-sm font-semibold text-gray-900 dark:text-gray-100">Daily Activity</h2>
-            <p id="chartSubtitle" class="text-xs text-gray-400 dark:text-gray-500 mt-0.5">Screen time per day</p>
-          </div>
-          <span id="chartAvg" class="text-xs font-medium text-gray-400 dark:text-gray-500 bg-gray-50 dark:bg-gray-700 px-2.5 py-1 rounded-full"></span>
-        </div>
-        <div class="px-6 py-5">
-          <div class="relative" id="chartContainer">
-            <canvas id="dailyChart" class="w-full h-48" height="192"></canvas>
-            <div id="chartTooltip" class="chart-tooltip opacity-0 hidden bg-gray-900 dark:bg-gray-100 text-white dark:text-gray-900 text-xs font-medium px-2.5 py-1.5 rounded-lg shadow-lg"></div>
-            <!-- Empty state for chart -->
-            <div id="chartEmpty" class="hidden absolute inset-0 flex flex-col items-center justify-center">
-              <svg class="w-8 h-8 text-gray-300 dark:text-gray-600 mb-2" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
-                <path stroke-linecap="round" stroke-linejoin="round" d="M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 013 19.875v-6.75zM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V8.625zM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v15.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V4.125z" />
-              </svg>
-              <p class="text-xs text-gray-400 dark:text-gray-500">No data for this period</p>
-            </div>
-          </div>
-        </div>
-      </div>
-
       <!-- Summary Metric Grid -->
       <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-8">
         <div class="metric-card bg-white dark:bg-gray-800 rounded-2xl p-6 shadow-sm border border-gray-100 dark:border-gray-700 slide-up" style="animation-delay: 0.05s;">
@@ -313,6 +289,30 @@
         </div>
         <div id="goalsEmpty" class="hidden text-center py-10 px-6">
           <p class="text-sm text-gray-400 dark:text-gray-500">No goals set yet. Add one above!</p>
+        </div>
+      </div>
+
+      <!-- Daily Activity Chart (moved to bottom) -->
+      <div id="chartSection" class="bg-white dark:bg-gray-800 rounded-2xl shadow-sm border border-gray-100 dark:border-gray-700 overflow-hidden slide-up mb-6" style="animation-delay: 0.28s;">
+        <div class="px-6 py-4 border-b border-gray-100 dark:border-gray-700 flex items-center justify-between">
+          <div>
+            <h2 class="text-sm font-semibold text-gray-900 dark:text-gray-100">Daily Activity</h2>
+            <p id="chartSubtitle" class="text-xs text-gray-400 dark:text-gray-500 mt-0.5">Screen time per day</p>
+          </div>
+          <span id="chartAvg" class="text-xs font-medium text-gray-400 dark:text-gray-500 bg-gray-50 dark:bg-gray-700 px-2.5 py-1 rounded-full"></span>
+        </div>
+        <div class="px-6 py-5">
+          <div class="relative" id="chartContainer">
+            <canvas id="dailyChart" class="w-full h-48" height="192"></canvas>
+            <div id="chartTooltip" class="chart-tooltip opacity-0 hidden bg-gray-900 dark:bg-gray-100 text-white dark:text-gray-900 text-xs font-medium px-2.5 py-1.5 rounded-lg shadow-lg"></div>
+            <!-- Empty state for chart -->
+            <div id="chartEmpty" class="hidden absolute inset-0 flex flex-col items-center justify-center">
+              <svg class="w-8 h-8 text-gray-300 dark:text-gray-600 mb-2" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 013 19.875v-6.75zM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V8.625zM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v15.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V4.125z" />
+              </svg>
+              <p class="text-xs text-gray-400 dark:text-gray-500">No data for this period</p>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -1406,7 +1406,15 @@
       }
 
       renderDomainList(data, document.getElementById('domainList'));
-      fetchGoals();
+
+      // Show goals only on Day view
+      const goalsSection = document.getElementById('goalsSection');
+      if (currentPeriod === 'day') {
+        goalsSection.style.display = 'block';
+        fetchGoals();
+      } else {
+        goalsSection.style.display = 'none';
+      }
     }
 
     function updateLastUpdated() {
