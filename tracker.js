@@ -53,6 +53,10 @@
         token = generateFallbackToken();
         localStorage.setItem(CONFIG.USER_TOKEN_KEY, token);
       }
+      // Sync to chrome.storage so the extension popup sees the same token
+      if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) {
+        chrome.storage.local.set({ [CONFIG.USER_TOKEN_KEY]: token }).catch(function () {});
+      }
       return token;
     } catch (_) {
       return null;
@@ -225,6 +229,11 @@
   // ─── Bind Events & Initialize ────────────────────────────────────────────
 
   function init() {
+    // Pre-load any existing token from chrome.storage into localStorage
+    // so existing extension users keep the same identity after upgrade.
+    // This runs well before sendScreenTime() is ever called (10s+ delay).
+    trySyncTokenFromStorage();
+
     recoverCrashData();
 
     if (!document.hidden) {
@@ -262,6 +271,29 @@
         resumeTimer();
       }
     }, 10_000);
+
+    // Signal to the dashboard that the LisTrack extension is installed
+    document.documentElement.dataset.lisTrackInstalled = 'true';
+  }
+
+  /**
+   * Async pre-load: copy any existing token from chrome.storage into localStorage
+   * so the tracker (and dashboard) use the extension's original token.
+   * This runs early in init(), long before sendScreenTime() fires.
+   */
+  function trySyncTokenFromStorage() {
+    if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) {
+      chrome.storage.local.get([CONFIG.USER_TOKEN_KEY], function (result) {
+        if (result[CONFIG.USER_TOKEN_KEY]) {
+          try {
+            // Only set if localStorage is empty — don't overwrite a page-created token
+            if (!localStorage.getItem(CONFIG.USER_TOKEN_KEY)) {
+              localStorage.setItem(CONFIG.USER_TOKEN_KEY, result[CONFIG.USER_TOKEN_KEY]);
+            }
+          } catch (_) {}
+        }
+      });
+    }
   }
 
   // FIX: Enabled running on localhost so you can actually test your extension locally!

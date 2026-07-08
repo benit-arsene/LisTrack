@@ -4,8 +4,8 @@ const SERVER_URL = "https://listrack-2.onrender.com";
   const app = document.getElementById("app");
 
   try {
-    const result = await chrome.storage.local.get(["lisTrackUserToken"]);
-    let token = result.lisTrackUserToken;
+    const result = await chrome.storage.local.get(["lisTrackTrackerToken"]);
+    let token = result.lisTrackTrackerToken;
 
     if (!token) {
       // No token yet — generate one via the background script

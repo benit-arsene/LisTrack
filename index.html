@@ -206,7 +206,34 @@
   </div>
 
   <script>
-    // ─── Dark Mode ─────────────────────────────────────────────────────────
+    // ─── Token & Dark Mode ──────────────────────────────────────────────────
+
+    // Create or retrieve a persistent user token so Dashboard links
+    // always pass the same identity — even before the extension is installed.
+    (function() {
+      var TOKEN_KEY = 'lisTrackTrackerToken';
+      var token;
+      try {
+        token = localStorage.getItem(TOKEN_KEY);
+        if (!token) {
+          var chars = '0123456789abcdef';
+          token = '';
+          for (var i = 0; i < 32; i++) {
+            token += chars[Math.floor(Math.random() * 16)];
+          }
+          localStorage.setItem(TOKEN_KEY, token);
+        }
+      } catch(e) {
+        token = '';
+      }
+      if (token) {
+        // Update all Dashboard links to include the user token
+        var links = document.querySelectorAll('a[href="/dashboard"]');
+        for (var j = 0; j < links.length; j++) {
+          links[j].href = '/dashboard?user=' + encodeURIComponent(token);
+        }
+      }
+    })();
 
     function setTheme(isDark) {
       const root = document.documentElement;

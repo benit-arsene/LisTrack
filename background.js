@@ -18,7 +18,7 @@ const BLOCKED_DOMAINS = [
 const GOAL_CHECK_INTERVAL_MINUTES = 5;
 const NOTIFICATION_COOLDOWN_MS = 30 * 60 * 1000; // 30 min before re-notifying
 
-const USER_TOKEN_KEY = "lisTrackUserToken";
+const USER_TOKEN_KEY = "lisTrackTrackerToken";
 
 // ─── Token Management ───────────────────────────────────────────────────────
 
@@ -35,15 +35,25 @@ function generateToken() {
 
 /**
  * Get the user token from storage, creating one if it doesn't exist.
+ * Also handles migration from the old key (lisTrackUserToken) for existing users.
  */
 async function getOrCreateToken() {
-  const result = await chrome.storage.local.get([USER_TOKEN_KEY]);
+  const OLD_TOKEN_KEY = "lisTrackUserToken";
+  const result = await chrome.storage.local.get([USER_TOKEN_KEY, OLD_TOKEN_KEY]);
   let token = result[USER_TOKEN_KEY];
-  if (!token) {
+
+  if (!token && result[OLD_TOKEN_KEY]) {
+    // Migrate existing token from old key to new key
+    token = result[OLD_TOKEN_KEY];
+    await chrome.storage.local.set({ [USER_TOKEN_KEY]: token });
+    await chrome.storage.local.remove(OLD_TOKEN_KEY);
+    console.log("[background] Migrated existing token:", token);
+  } else if (!token) {
     token = generateToken();
     await chrome.storage.local.set({ [USER_TOKEN_KEY]: token });
     console.log("[background] Created new user token:", token);
   }
+
   return token;
 }
 
@@ -211,9 +221,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   console.log("[background] Forwarding tracking data for domain:", message.domain);
 
-  // Attach the user token to the forwarded payload
-  getOrCreateToken().then((userToken) => {
-    const payload = { ...message, userToken };
+  // Forward the payload using the token from the content script (localStorage)
+  // so the extension and dashboard share the same user identity.
+  // Fallback to background's own token if content script didn't send one.
+  getOrCreateToken().then((bgToken) => {
+    const payload = { ...message, userToken: message.userToken || bgToken };
 
     fetch(`${SERVER_URL}/api/screen-time`, {
       method: "POST",
