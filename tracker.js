@@ -12,6 +12,11 @@
   const CONFIG = {
     // Use relative path so the snippet posts to the same origin when testing locally.
     API_URL: '/api/screen-time',
+    // Absolute URL for fallback when the extension's service worker is dead.
+    // When chrome.runtime.sendMessage fails (MV3 killed the worker), data is
+    // sent directly to SERVER_URL + API_PATH so it's never lost.
+    SERVER_URL: 'https://listrack-2.onrender.com',
+    API_PATH: '/api/screen-time',
     IDLE_THRESHOLD_MS: 60_000,
     CHECKPOINT_INTERVAL_MS: 5_000,
     STORAGE_KEY: "web_screen_time_tracker",
@@ -160,10 +165,10 @@
     if (isFinal) {
       const blob = new Blob([JSON.stringify(fallbackPayload)], { type: "application/json" });
       try {
-        navigator.sendBeacon(CONFIG.API_URL, blob);
+        navigator.sendBeacon(CONFIG.SERVER_URL + CONFIG.API_PATH, blob);
       } catch (e) {
         try {
-          fetch(CONFIG.API_URL, {
+          fetch(CONFIG.SERVER_URL + CONFIG.API_PATH, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(fallbackPayload),
@@ -192,8 +197,10 @@
     }
 
     // Direct fallback: send to server without extension
+    // Uses absolute URL so data reaches the LisTrack server even when the
+    // background service worker is dead (MV3 worker termination).
     try {
-      await fetch(CONFIG.API_URL, {
+      await fetch(CONFIG.SERVER_URL + CONFIG.API_PATH, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(fallbackPayload),
@@ -252,7 +259,7 @@
           try { chrome.runtime.sendMessage(extPayload); } catch (err) {}
         } else {
           const blob = new Blob([JSON.stringify(fallbackPayload)], { type: "application/json" });
-          navigator.sendBeacon(CONFIG.API_URL, blob);
+          navigator.sendBeacon(CONFIG.SERVER_URL + CONFIG.API_PATH, blob);
         }
       }
       localStorage.removeItem(CONFIG.STORAGE_KEY);
