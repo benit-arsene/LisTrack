@@ -1335,6 +1335,9 @@
         window._lastChartData = data;
         renderDailyChart(data);
       }
+
+      // Silently update goals only on Day view
+      if (currentPeriod === 'day') fetchGoals();
     }
 
     // ─── Full Render ────────────────────────────────────────────────────────
