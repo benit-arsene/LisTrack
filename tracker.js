@@ -197,16 +197,34 @@
     // Direct fallback: send to server without extension
     // Uses absolute URL so data reaches the LisTrack server even when the
     // background service worker is dead (MV3 worker termination).
+    let fallbackSucceeded = false;
     try {
-      await fetch(CONFIG.SERVER_URL + CONFIG.API_PATH, {
+      const resp = await fetch(CONFIG.SERVER_URL + CONFIG.API_PATH, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(fallbackPayload),
       });
+      fallbackSucceeded = resp.ok;
     } catch (_) {}
 
-    // Reset accumulated time — the exact amount was already sent
-    state.activeTimeMs = 0;
+    if (fallbackSucceeded) {
+      // Only reset time if data was actually delivered
+      state.activeTimeMs = 0;
+    } else {
+      // BOTH the extension path and fallback fetch failed.
+      // Don't reset — save the time as a checkpoint so recoverCrashData()
+      // can pick it up on the next page load to this domain.
+      try {
+        const checkpoint = {
+          activeTimeMs: state.activeTimeMs,
+          lastActivity: state.lastActivity,
+          domain: window.location.hostname,
+          path: window.location.pathname,
+          timestamp: Date.now(),
+        };
+        localStorage.setItem(CONFIG.STORAGE_KEY, JSON.stringify(checkpoint));
+      } catch (_) {}
+    }
   }
 
   function onCheckpoint() {
@@ -253,11 +271,31 @@
         };
         const fallbackPayload = { ...extPayload, userToken: token };
 
+        let sent = false;
+
+        // Try extension path first (await the response to confirm delivery)
         if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.sendMessage) {
-          try { chrome.runtime.sendMessage(extPayload); } catch (err) {}
-        } else {
+          try {
+            const resp = await chrome.runtime.sendMessage(extPayload);
+            if (resp && resp.received) sent = true;
+          } catch (err) {}
+        }
+
+        // If extension path didn't deliver, use sendBeacon with fetch fallback
+        if (!sent) {
           const blob = new Blob([JSON.stringify(fallbackPayload)], { type: "application/json" });
-          navigator.sendBeacon(CONFIG.SERVER_URL + CONFIG.API_PATH, blob);
+          try {
+            navigator.sendBeacon(CONFIG.SERVER_URL + CONFIG.API_PATH, blob);
+          } catch (e) {
+            try {
+              fetch(CONFIG.SERVER_URL + CONFIG.API_PATH, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(fallbackPayload),
+                keepalive: true,
+              }).catch(() => {});
+            } catch (_) {}
+          }
         }
       }
       localStorage.removeItem(CONFIG.STORAGE_KEY);
