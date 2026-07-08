@@ -225,25 +225,29 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   // Forward the payload using the token from the content script (localStorage)
   // so the extension and dashboard share the same user identity.
   // Fallback to background's own token if content script didn't send one.
-  getOrCreateToken().then((bgToken) => {
-    const payload = { ...message, userToken: message.userToken || bgToken };
-
-    fetch(`${SERVER_URL}/api/screen-time`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(payload),
-    })
-      .then((response) => {
-        if (!response.ok) {
-          console.warn("[background] Server returned non-OK status:", response.status);
-        }
-      })
-      .catch((err) => {
-        console.error("[background] Failed to connect to server:", err);
+  getOrCreateToken()
+    .then((bgToken) => {
+      const payload = { ...message, userToken: message.userToken || bgToken };
+      return fetch(`${SERVER_URL}/api/screen-time`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(payload),
       });
-  });
+    })
+    .then((response) => {
+      if (response.ok) {
+        console.log("[background] Tracking data sent:", message.domain, response.status);
+      } else {
+        console.warn("[background] Server returned non-OK status:", response.status);
+      }
+      sendResponse({ received: true, status: response.status });
+    })
+    .catch((err) => {
+      console.error("[background] Failed to connect to server:", err);
+      sendResponse({ received: false, error: err.message });
+    });
 
-  return true;
+  return true; // Keep service worker alive until sendResponse is called
 });

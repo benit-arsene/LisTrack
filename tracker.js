@@ -124,7 +124,7 @@
     }
   }
 
-  function sendScreenTime(isFinal) {
+  async function sendScreenTime(isFinal) {
     pauseTimer();
 
     // Send the exact time tracked as a decimal (e.g. 1.4 for 1400ms).
@@ -147,28 +147,48 @@
       userToken: getOrCreateFallbackToken(),
     };
 
+    // On page unload (isFinal), skip chrome.runtime entirely.
+    // Browsers don't wait for async during unload — use sendBeacon which is reliable.
+    if (isFinal) {
+      const blob = new Blob([JSON.stringify(payload)], { type: "application/json" });
+      try {
+        navigator.sendBeacon(CONFIG.API_URL, blob);
+      } catch (e) {
+        try {
+          fetch(CONFIG.API_URL, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+            keepalive: true,
+          }).catch(() => {});
+        } catch (_) {}
+      }
+      state.activeTimeMs = 0;
+      return;
+    }
+
+    // For regular intervals, use chrome.runtime to forward via background worker.
+    // Await the response so the background worker stays alive for the fetch.
     if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.sendMessage) {
       try {
-        chrome.runtime.sendMessage(payload);
-        state.activeTimeMs = 0;
-        return;
-      } catch (err) {}
+        const response = await chrome.runtime.sendMessage(payload);
+        if (response && response.received) {
+          state.activeTimeMs = 0;
+          return;
+        }
+      } catch (err) {
+        // Extension context invalidated or background dead — fall through to direct fetch
+      }
     }
 
-    const blob = new Blob([JSON.stringify(payload)], { type: "application/json" });
-
+    // Direct fallback: send to server without extension
     try {
-      navigator.sendBeacon(CONFIG.API_URL, blob);
-    } catch (e) {
-      try {
-        fetch(CONFIG.API_URL, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
-          keepalive: true,
-        }).catch(() => {});
-      } catch (_) {}
-    }
+      await fetch(CONFIG.API_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+    } catch (_) {}
 
     // Reset accumulated time — the exact amount was already sent
     state.activeTimeMs = 0;
@@ -264,9 +284,9 @@
     state.checkpointInterval = setInterval(onCheckpoint, CONFIG.CHECKPOINT_INTERVAL_MS);
 
     // Handles rolling intervals — every 10s, send accumulated time if ≥5s
-    setInterval(function () {
+    setInterval(async function () {
       if (state.activeTimeMs >= 5_000) {
-        sendScreenTime(false);
+        await sendScreenTime(false);
       }
       if (state.isTabVisible) {
         resumeTimer();
