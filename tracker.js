@@ -54,10 +54,10 @@
         token = generateFallbackToken();
         localStorage.setItem(CONFIG.USER_TOKEN_KEY, token);
       }
-      // Sync to chrome.storage so the extension popup sees the same token
-      if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) {
-        chrome.storage.local.set({ [CONFIG.USER_TOKEN_KEY]: token }).catch(function () {});
-      }
+      // NOTE: Do NOT write to chrome.storage here. The background service worker
+      // is the sole owner of the token in chrome.storage (via getOrCreateToken()).
+      // If we write here, we race with the background and cause token fragmentation
+      // where different data gets stored under different user_ids.
       return token;
     } catch (_) {
       return null;
@@ -312,15 +312,17 @@
   /**
    * Async pre-load: copy any existing token from chrome.storage into localStorage
    * so the tracker (and dashboard) use the extension's original token.
-   * This runs early in init(), long before sendScreenTime() fires.
+   * This runs early in init(), and the 10s delay before sendScreenTime() fires
+   * gives this async call time to complete.
    */
   function trySyncTokenFromStorage() {
     if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) {
       chrome.storage.local.get([CONFIG.USER_TOKEN_KEY], function (result) {
         if (result[CONFIG.USER_TOKEN_KEY]) {
           try {
-            // Always overwrite localStorage with chrome.storage's token
-            // because chrome.storage has the authoritative extension token.
+            // Overwrite localStorage with chrome.storage's authoritative token.
+            // This ensures the fallback token in localStorage matches the
+            // background's token used for the extension path.
             localStorage.setItem(CONFIG.USER_TOKEN_KEY, result[CONFIG.USER_TOKEN_KEY]);
           } catch (_) {}
         }
