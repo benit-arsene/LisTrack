@@ -46,14 +46,18 @@ app.use((req, res, next) => {
   next();
 });
 
+app.use(express.static(path.join(__dirname, "public")));
 app.use(express.static(__dirname));
 
 // Serve dashboard at the clean /dashboard URL
 app.get("/dashboard", (req, res) => {
-  res.sendFile(path.join(__dirname, "dashboard.html"));
+  res.sendFile(path.join(__dirname, "public", "html", "dashboard.html"));
 });
 
-// Root route — express.static automatically serves index.html
+// Root route — serve index.html from public/html/
+app.get("/", (req, res) => {
+  res.sendFile(path.join(__dirname, "public", "html", "index.html"));
+});
 
 // ─── Database Abstraction ───────────────────────────────────────────────────
 // Two drivers: PostgreSQL (production) and SQLite (local dev)
@@ -914,7 +918,7 @@ app.post("/api/seed", async (req, res) => {
 
     // Clear existing data for this user
     await driver.run(`DELETE FROM screen_time WHERE user_id = ?`, [userId]);
-    await driver.run(`DELETE FROM daily_goals`);
+    await driver.run(`DELETE FROM daily_goals WHERE user_id = ?`, [userId]);
 
     let screenTimeCount = 0;
 

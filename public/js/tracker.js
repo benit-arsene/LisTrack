@@ -130,9 +130,6 @@
   async function sendScreenTime(isFinal) {
     pauseTimer();
 
-    // Send the exact time tracked as a decimal (e.g. 1.4 for 1400ms).
-    // The server stores it as a REAL value so precision is preserved.
-    // This guarantees NO time is ever lost — even a 400ms visit is recorded.
     const durationSeconds = state.activeTimeMs / 1000;
     if (durationSeconds <= 0) return;
 
@@ -142,20 +139,33 @@
       return;
     }
 
+    // ─── CRITICAL FIX: Eliminate the time gap ────────────────────────────
+    //
+    // BUG: Previously, state.activeTimeMs was reset AFTER the async send
+    // (server round-trip ~50-300ms). During that gap, pauseTimer() had
+    // set sessionStart = null, so NO time was tracked. Every 10-second
+    // cycle lost ~150ms → ~7 minutes per 8-hour day.
+    //
+    // FIX: Reset activeTimeMs and resume the timer IMMEDIATELY after
+    // capturing the time, before any async operations. Now the timer
+    // never stops — the async send happens while tracking continues.
+    // If the send fails, we add the sent time back + new time.
+    // ─────────────────────────────────────────────────────────────────────
+    const sentMs = state.activeTimeMs;
+    state.activeTimeMs = 0;
+    if (state.isTabVisible) {
+      resumeTimer();
+    }
+
     const token = getOrCreateFallbackToken();
 
-    // Build payload WITHOUT userToken for the extension path.
-    // The background service worker has the authoritative token (from chrome.storage)
-    // and will use that instead, ensuring all data uses the same token.
     const extensionPayload = {
       domain,
       path: window.location.pathname,
       durationSeconds: durationSeconds,
       timestamp: new Date().toISOString(),
-      // userToken intentionally omitted — background uses its own authoritative token
     };
 
-    // Full payload with token for direct fallback paths (no extension available)
     const fallbackPayload = { ...extensionPayload, userToken: token };
 
     // On page unload (isFinal), skip chrome.runtime entirely.
@@ -174,22 +184,16 @@
           }).catch(() => {});
         } catch (_) {}
       }
-      state.activeTimeMs = 0;
       return;
     }
 
     // For regular intervals, use chrome.runtime to forward via background worker.
-    // DO NOT include userToken — the background uses its own authoritative token
-    // from chrome.storage (via getOrCreateToken()). This prevents token drift
-    // between the content script and the service worker.
     if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.sendMessage) {
       try {
         const response = await chrome.runtime.sendMessage(extensionPayload);
         if (response && response.received) {
-          state.activeTimeMs = 0;
-          // Clean up any stale checkpoint so a crash before the next
-          // onCheckpoint() doesn't double-recover the same data.
-          try { localStorage.removeItem(CONFIG.STORAGE_KEY); } catch (_) {}
+          // Send succeeded — sentMs was already subtracted, timer is running
+          try { sessionStorage.removeItem(CONFIG.STORAGE_KEY); } catch (_) {}
           return;
         }
       } catch (err) {
@@ -198,8 +202,6 @@
     }
 
     // Direct fallback: send to server without extension
-    // Uses absolute URL so data reaches the LisTrack server even when the
-    // background service worker is dead (MV3 worker termination).
     let fallbackSucceeded = false;
     try {
       const resp = await fetch(CONFIG.SERVER_URL + CONFIG.API_PATH, {
@@ -211,15 +213,12 @@
     } catch (_) {}
 
     if (fallbackSucceeded) {
-      // Only reset time if data was actually delivered
-      state.activeTimeMs = 0;
-      // Clean up any stale checkpoint so a crash before the next
-      // onCheckpoint() doesn't double-recover the same data.
-      try { localStorage.removeItem(CONFIG.STORAGE_KEY); } catch (_) {}
+      // Send succeeded — sentMs was already subtracted, timer is running
+      try { sessionStorage.removeItem(CONFIG.STORAGE_KEY); } catch (_) {}
     } else {
-      // BOTH the extension path and fallback fetch failed.
-      // Don't reset — save the time as a checkpoint so recoverCrashData()
-      // can pick it up on the next page load to this domain.
+      // BOTH paths failed — restore the sent time plus any new time that
+      // accumulated during the async send (timer was running the whole time)
+      state.activeTimeMs += sentMs;
       try {
         const checkpoint = {
           activeTimeMs: state.activeTimeMs,
@@ -228,7 +227,7 @@
           path: window.location.pathname,
           timestamp: Date.now(),
         };
-        localStorage.setItem(CONFIG.STORAGE_KEY, JSON.stringify(checkpoint));
+        sessionStorage.setItem(CONFIG.STORAGE_KEY, JSON.stringify(checkpoint));
       } catch (_) {}
     }
   }
@@ -251,13 +250,22 @@
         path: window.location.pathname,
         timestamp: Date.now(),
       };
-      localStorage.setItem(CONFIG.STORAGE_KEY, JSON.stringify(data));
+      // Use sessionStorage (per-tab) to prevent cross-tab checkpoint theft.
+      // Two tabs on the same domain (e.g. youtube.com) each get their own
+      // sessionStorage, so they can't steal and re-send each other's data.
+      sessionStorage.setItem(CONFIG.STORAGE_KEY, JSON.stringify(data));
     } catch (_) {}
   }
 
   function recoverCrashData() {
+    // Only check sessionStorage (per-tab). This prevents cross-tab
+    // checkpoint theft that was happening with shared localStorage.
+    let raw = null;
     try {
-      const raw = localStorage.getItem(CONFIG.STORAGE_KEY);
+      raw = sessionStorage.getItem(CONFIG.STORAGE_KEY);
+    } catch (_) {}
+
+    try {
       if (!raw) return;
       const data = JSON.parse(raw);
 
@@ -279,7 +287,7 @@
 
         // Try extension path first (fire-and-forget .then with fallback).
         // Must NOT use await here — this runs from init() and any yield would
-        // let onCheckpoint() start and overwrite the localStorage checkpoint.
+        // let onCheckpoint() start and overwrite the sessionStorage checkpoint.
         if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.sendMessage) {
           chrome.runtime.sendMessage(extPayload)
             .then((resp) => {
@@ -290,9 +298,11 @@
           useFallbackSend(fallbackPayload);
         }
       }
-      // Clean up the checkpoint immediately (synchronous, not inside async chain)
-      localStorage.removeItem(CONFIG.STORAGE_KEY);
     } catch (_) {}
+
+    // Clean up BOTH storages
+    try { sessionStorage.removeItem(CONFIG.STORAGE_KEY); } catch (_) {}
+    try { localStorage.removeItem(CONFIG.STORAGE_KEY); } catch (_) {}
   }
 
   /**
@@ -317,11 +327,11 @@
 
   // ─── Bind Events & Initialize ────────────────────────────────────────────
 
-  function init() {
-    // Pre-load any existing token from chrome.storage into localStorage
-    // so existing extension users keep the same identity after upgrade.
-    // This runs well before sendScreenTime() is ever called (10s+ delay).
-    trySyncTokenFromStorage();
+  async function init() {
+    // Sync the token BEFORE anything else. This ensures the content script
+    // uses the SAME token as the background (chrome.storage), preventing
+    // data from being split across two different user_ids.
+    await trySyncTokenFromStorage();
 
     recoverCrashData();
 
@@ -337,12 +347,13 @@
 
     document.addEventListener("visibilitychange", onVisibilityChange);
 
-    // FIX: Send final metrics AND clear out localStorage to wipe out "ghost backups"
+    // FIX: Send final metrics AND clear out storage to wipe out "ghost backups"
     function onPageUnload() {
       if (state._finalSent) return;
       state._finalSent = true;
       sendScreenTime(true);
       try {
+        sessionStorage.removeItem(CONFIG.STORAGE_KEY);
         localStorage.removeItem(CONFIG.STORAGE_KEY);
       } catch (_) {}
     }
@@ -366,24 +377,58 @@
   }
 
   /**
-   * Async pre-load: copy any existing token from chrome.storage into localStorage
-   * so the tracker (and dashboard) use the extension's original token.
-   * This runs early in init(), and the 10s delay before sendScreenTime() fires
-   * gives this async call time to complete.
+   * Sync the user token from the background (chrome.storage) into localStorage
+   * so the content script, background, and dashboard all use the SAME token.
+   *
+   * Strategy (tried in order):
+   *   1. Read existing token from chrome.storage (if already set)
+   *   2. If not found, request one from the background via getUserToken message
+   *   3. If both fail, generate a random fallback token
+   *
+   * This fixes token fragmentation where data was stored under two different
+   * user_ids — one from chrome.storage (extension path) and one from a
+   * random localStorage fallback generated before the background had created
+   * its token.
    */
-  function trySyncTokenFromStorage() {
+  async function trySyncTokenFromStorage() {
+    let token = null;
+
+    // 1. Try chrome.storage first (background may have already created a token)
     if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) {
-      chrome.storage.local.get([CONFIG.USER_TOKEN_KEY], function (result) {
-        if (result[CONFIG.USER_TOKEN_KEY]) {
-          try {
-            // Overwrite localStorage with chrome.storage's authoritative token.
-            // This ensures the fallback token in localStorage matches the
-            // background's token used for the extension path.
-            localStorage.setItem(CONFIG.USER_TOKEN_KEY, result[CONFIG.USER_TOKEN_KEY]);
-          } catch (_) {}
-        }
-      });
+      try {
+        const result = await chrome.storage.local.get([CONFIG.USER_TOKEN_KEY]);
+        token = result[CONFIG.USER_TOKEN_KEY];
+      } catch (_) {}
     }
+
+    // 2. If no token yet, explicitly request one from the background
+    //    This forces the background to create its token (via getOrCreateToken())
+    //    and returns it to us, keeping both in sync.
+    //    Uses a 2-second timeout so a dead service worker doesn't block init().
+    if (!token && typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.sendMessage) {
+      try {
+        const timeout = new Promise((_, reject) =>
+          setTimeout(() => reject(new Error('timeout')), 2000)
+        );
+        const response = await Promise.race([
+          chrome.runtime.sendMessage("getUserToken"),
+          timeout
+        ]);
+        if (response && response.token) {
+          token = response.token;
+        }
+      } catch (_) {}
+    }
+
+    // 3. Store the token in localStorage (or generate a fallback if all failed)
+    try {
+      if (token) {
+        localStorage.setItem(CONFIG.USER_TOKEN_KEY, token);
+      } else {
+        // Ensure a fallback exists as last resort
+        getOrCreateFallbackToken();
+      }
+    } catch (_) {}
   }
 
   // FIX: Enabled running on localhost so you can actually test your extension locally!

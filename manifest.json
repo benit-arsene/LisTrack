@@ -18,7 +18,7 @@
   },
   "action": {
     "default_title": "LisTrack - Open Dashboard",
-    "default_popup": "popup.html",
+    "default_popup": "public/html/popup.html",
     "default_icon": {
       "16": "icon.png",
       "48": "icon.png",
@@ -26,12 +26,17 @@
     }
   },
   "background": {
-    "service_worker": "background.js"
+    "service_worker": "public/js/background.js"
   },
   "content_scripts": [
     {
-      "matches": ["http://*/*", "https://*/*"],
-      "js": ["tracker.js"],
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ],
+      "js": [
+        "public/js/tracker.js"
+      ],
       "run_at": "document_end"
     }
   ]
