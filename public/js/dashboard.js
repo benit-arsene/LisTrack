@@ -632,6 +632,7 @@
 
     function openDomainModal(domain) {
       selectedModalDomain = domain;
+      const domainUrl = 'https://' + domain;
       document.getElementById('modalTitle').textContent = getDisplayName(domain);
       document.getElementById('modalFavicon').src = getFaviconUrl(domain);
       document.getElementById('modalFavicon').onerror = function() {
@@ -639,6 +640,11 @@
       };
       document.getElementById('modalFavicon').style.display = '';
       document.getElementById('modalTotal').textContent = 'Loading...';
+      // Set clickable links to open the website in a new tab
+      const faviconLink = document.getElementById('modalFaviconLink');
+      const titleLink = document.getElementById('modalTitleLink');
+      if (faviconLink) { faviconLink.href = domainUrl; faviconLink.title = 'Open ' + domain; }
+      if (titleLink) { titleLink.href = domainUrl; titleLink.title = 'Open ' + domain; }
       document.getElementById('modalBreakdown').innerHTML = '<p class="text-sm text-gray-400 dark:text-gray-500 text-center py-4">Loading breakdown...</p>';
       document.getElementById('domainModal').classList.remove('hidden');
 

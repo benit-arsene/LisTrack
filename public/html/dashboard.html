@@ -350,10 +350,14 @@
   <div id="domainModal" class="hidden fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm fade-in">
     <div class="bg-white dark:bg-gray-800 rounded-2xl shadow-xl border border-gray-200 dark:border-gray-700 max-w-lg mx-4 w-full p-6 scale-in">
       <div class="flex items-center justify-between mb-4">
-        <div class="flex items-center gap-3">
-          <img id="modalFavicon" src="" alt="" class="w-8 h-8 rounded-lg bg-gray-50 dark:bg-gray-700" />
-          <div>
-            <h3 id="modalTitle" class="text-base font-semibold text-gray-900 dark:text-gray-100">Domain</h3>
+        <div class="flex items-center gap-3 min-w-0">
+          <a id="modalFaviconLink" href="#" target="_blank" rel="noopener noreferrer" class="flex-shrink-0" title="Open website">
+            <img id="modalFavicon" src="" alt="" class="w-8 h-8 rounded-lg bg-gray-50 dark:bg-gray-700 hover:opacity-80 transition-opacity cursor-pointer" />
+          </a>
+          <div class="min-w-0">
+            <a id="modalTitleLink" href="#" target="_blank" rel="noopener noreferrer" class="hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors" title="Open website">
+              <h3 id="modalTitle" class="text-base font-semibold text-gray-900 dark:text-gray-100 truncate">Domain</h3>
+            </a>
             <p id="modalTotal" class="text-xs text-gray-400 dark:text-gray-500">0 min total</p>
           </div>
         </div>
