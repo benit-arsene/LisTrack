@@ -289,6 +289,7 @@
     let availableDates = [];
     let customStartDate = null;
     let customEndDate = null;
+    let visibleDomainCount = 10;
 
     // ─── Period Button Styling ──────────────────────────────────────────────
 
@@ -573,12 +574,14 @@
 
     function renderDomainList(data, container) {
       const emptyState = document.getElementById('emptyState');
+      const showMoreContainer = document.getElementById('showMoreContainer');
       container.innerHTML = '';
       updateTrackedDomainsList(data);
 
       if (!data.domains || data.domains.length === 0) {
         emptyState.classList.remove('hidden');
         container.classList.add('hidden');
+        if (showMoreContainer) showMoreContainer.classList.add('hidden');
         return;
       }
 
@@ -586,9 +589,9 @@
       container.classList.remove('hidden');
 
       const maxMinutes = getMaxMinutes(data.domains);
-      const top10 = data.domains.slice(0, 10);
+      const visibleDomains = data.domains.slice(0, visibleDomainCount);
 
-      top10.forEach((item, index) => {
+      visibleDomains.forEach((item, index) => {
         const percentage = maxMinutes > 0 ? (item.totalMinutes / maxMinutes) * 100 : 0;
         const row = createDomainRow(item, index);
         row.style.animationDelay = `${index * 0.03}s`;
@@ -598,14 +601,34 @@
       });
 
       animateBars(container);
+
+      // Show/hide the show-more button
+      if (showMoreContainer) {
+        if (visibleDomainCount < data.domains.length) {
+          showMoreContainer.classList.remove('hidden');
+          const remaining = data.domains.length - visibleDomainCount;
+          document.getElementById('showMoreText').textContent = `Show ${Math.min(remaining, 10)} more (${visibleDomainCount + Math.min(remaining, 10)} of ${data.domains.length})`;
+        } else {
+          showMoreContainer.classList.add('hidden');
+        }
+      }
+    }
+
+    function showMoreDomains() {
+      visibleDomainCount += 10;
+      const container = document.getElementById('domainList');
+      const data = window._lastDashboardData;
+      if (data && data.domains) {
+        renderDomainList(data, container);
+      }
     }
 
     function updateDomainCount(data) {
       const totalCount = data.totalDomains;
-      const showingCount = Math.min((data.domains || []).length, 10);
+      const showingCount = Math.min(visibleDomainCount, data.domains ? data.domains.length : 0);
       document.getElementById('domainCount').textContent =
         totalCount > 10
-          ? `${totalCount} total · showing top ${showingCount}`
+          ? `${totalCount} total · showing ${showingCount} of ${totalCount}`
           : `${totalCount} domain${totalCount !== 1 ? 's' : ''}`;
     }
 
@@ -1046,18 +1069,21 @@
         existingRows[row.getAttribute('data-domain')] = row;
       });
 
-      const incomingDomains = data.domains.slice(0, 10).map(d => d.domain);
+      const incomingDomains = data.domains.slice(0, visibleDomainCount).map(d => d.domain);
 
       Object.keys(existingRows).forEach(domain => {
         if (!incomingDomains.includes(domain)) existingRows[domain].remove();
       });
 
-      data.domains.slice(0, 10).forEach((item, index) => {
+      data.domains.slice(0, visibleDomainCount).forEach((item, index) => {
         const pct = maxMinutes > 0 ? (item.totalMinutes / maxMinutes) * 100 : 0;
         if (existingRows[item.domain]) {
           const row = existingRows[item.domain];
-          const rankEl = row.querySelector('[data-rank]');
-          if (rankEl) rankEl.textContent = index + 1;
+          if (row.getAttribute('data-render-index') !== String(index)) {
+            const rankEl = row.querySelector('[data-rank]');
+            if (rankEl) rankEl.textContent = index + 1;
+            row.setAttribute('data-render-index', index);
+          }
           const timeEl = row.querySelector('[data-time]');
           if (timeEl) timeEl.textContent = formatTime(item.totalMinutes);
           const bar = row.querySelector('.progress-bar');
@@ -1065,6 +1091,7 @@
           domainList.appendChild(row);
         } else {
           const row = createDomainRow(item, index);
+          row.setAttribute('data-render-index', index);
           const bar = row.querySelector('.progress-bar');
           if (bar) bar.setAttribute('data-target', pct);
           domainList.appendChild(row);
@@ -1076,6 +1103,18 @@
           });
         }
       });
+
+      // Update show-more button in silent update
+      const showMoreContainer = document.getElementById('showMoreContainer');
+      if (showMoreContainer) {
+        if (visibleDomainCount < data.domains.length) {
+          showMoreContainer.classList.remove('hidden');
+          const remaining = data.domains.length - visibleDomainCount;
+          document.getElementById('showMoreText').textContent = `Show ${Math.min(remaining, 10)} more (${visibleDomainCount + Math.min(remaining, 10)} of ${data.domains.length})`;
+        } else {
+          showMoreContainer.classList.add('hidden');
+        }
+      }
 
       // Update chart silently (only for period views with breakdown data)
       if (currentPeriod !== 'day' && data.dailyBreakdown) {
@@ -1148,6 +1187,11 @@
       document.getElementById('topDomain').textContent = data.topDomain || '—';
       updateTopSiteFavicon(data.topDomain);
       updateDomainCount(data);
+
+      // Store data for show-more button access
+      window._lastDashboardData = data;
+      // Reset visible count on full render
+      visibleDomainCount = 10;
 
       const seedBtn = document.getElementById('seedBtn');
       if (seedBtn) {
