@@ -274,6 +274,8 @@
     let currentDate = null;
     let currentPeriod = 'day';
     let availableDates = [];
+    let customStartDate = null;
+    let customEndDate = null;
 
     // ─── Period Button Styling ──────────────────────────────────────────────
 
@@ -282,10 +284,16 @@
         btn.classList.remove('bg-white', 'dark:bg-gray-600', 'text-gray-900', 'dark:text-gray-100', 'shadow-sm');
         btn.classList.add('text-gray-500', 'dark:text-gray-400');
       });
+      // Highlight standard period buttons (Day, Week, Month)
       const activeBtn = document.getElementById('period' + currentPeriod.charAt(0).toUpperCase() + currentPeriod.slice(1) + 'Btn');
       if (activeBtn) {
         activeBtn.classList.remove('text-gray-500', 'dark:text-gray-400');
         activeBtn.classList.add('bg-white', 'dark:bg-gray-600', 'text-gray-900', 'dark:text-gray-100', 'shadow-sm');
+      }
+      // Sync range dropdown value
+      const rangeSelect = document.getElementById('periodRangeSelect');
+      if (rangeSelect && ['7days', '30days', 'custom'].includes(currentPeriod)) {
+        rangeSelect.value = currentPeriod;
       }
     }
 
@@ -297,13 +305,37 @@
       if (period === currentPeriod) return;
       currentPeriod = period;
       currentDate = null;
+      customStartDate = null;
+      customEndDate = null;
       updatePeriodButtons();
-      fetchData({ silent: false });
+
+      // Show/hide custom range UI
+      const customRange = document.getElementById('customRangeContainer');
+      if (customRange) {
+        if (period === 'custom') {
+          customRange.classList.remove('hidden');
+          customRange.classList.add('flex');
+          // Set max to today so users can't pick future dates
+          const today = getTodayStr();
+          ['customStartDate', 'customEndDate'].forEach(id => {
+            const el = document.getElementById(id);
+            if (el) el.max = today;
+          });
+        } else {
+          customRange.classList.add('hidden');
+          customRange.classList.remove('flex');
+        }
+      }
+
+      if (period !== 'custom') {
+        fetchData({ silent: false });
+      }
     }
 
     function offsetPeriod(dateStr, delta) {
       const d = new Date(dateStr + 'T00:00:00Z');
-      if (currentPeriod === '7days' || currentPeriod === 'week') d.setUTCDate(d.getUTCDate() + delta * 7);
+      if (currentPeriod === '30days') d.setUTCDate(d.getUTCDate() + delta * 30);
+      else if (currentPeriod === '7days' || currentPeriod === 'week') d.setUTCDate(d.getUTCDate() + delta * 7);
       else if (currentPeriod === 'month') d.setUTCMonth(d.getUTCMonth() + delta);
       else d.setUTCDate(d.getUTCDate() + delta);
       return d.toISOString().slice(0, 10);
@@ -311,11 +343,17 @@
 
     function isCurrentPeriod(dateStr) {
       const today = getTodayStr();
+      if (currentPeriod === '30days') {
+        const d = new Date(today + 'T00:00:00Z');
+        const thirtyDaysAgo = new Date(d); thirtyDaysAgo.setUTCDate(d.getUTCDate() - 29);
+        return dateStr >= thirtyDaysAgo.toISOString().slice(0, 10);
+      }
       if (currentPeriod === '7days') {
         const d = new Date(today + 'T00:00:00Z');
         const sevenDaysAgo = new Date(d); sevenDaysAgo.setUTCDate(d.getUTCDate() - 6);
         return dateStr >= sevenDaysAgo.toISOString().slice(0, 10);
       }
+      if (currentPeriod === 'custom') return false;
       if (currentPeriod === 'day') return dateStr === today;
       if (currentPeriod === 'week') {
         const d = new Date(today + 'T00:00:00Z');
@@ -329,6 +367,14 @@
     }
 
     function formatPeriodLabel(data) {
+      if (currentPeriod === '30days') {
+        const start = new Date(data.startDate + 'T00:00:00Z');
+        const end = new Date(data.endDate + 'T00:00:00Z');
+        const s = start.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+        const e = end.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+        if (isCurrentPeriod(data.startDate)) return 'Last 30 Days';
+        return `${s} – ${e}`;
+      }
       if (currentPeriod === '7days') {
         const start = new Date(data.startDate + 'T00:00:00Z');
         const end = new Date(data.endDate + 'T00:00:00Z');
@@ -345,6 +391,13 @@
         if (dateStr === yesterday.toISOString().slice(0, 10)) return 'Yesterday';
         const d = new Date(dateStr + 'T00:00:00Z');
         return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+      }
+      if (currentPeriod === 'custom') {
+        const start = new Date(data.startDate + 'T00:00:00Z');
+        const end = new Date(data.endDate + 'T00:00:00Z');
+        const s = start.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+        const e = end.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+        return `${s} – ${e}`;
       }
       if (currentPeriod === 'week') {
         const start = new Date(data.startDate + 'T00:00:00Z');
@@ -379,7 +432,15 @@
     }
 
     function goToCurrent() {
+      if (currentPeriod === 'custom') {
+        currentPeriod = 'day';
+        updatePeriodButtons();
+        const customRange = document.getElementById('customRangeContainer');
+        if (customRange) { customRange.classList.add('hidden'); customRange.classList.remove('flex'); }
+      }
       currentDate = null;
+      customStartDate = null;
+      customEndDate = null;
       fetchData({ silent: false });
     }
 
@@ -410,6 +471,14 @@
         let url;
         if (currentPeriod === 'day') {
           url = await apiUrl('/dashboard', { date: currentDate });
+        } else if (currentPeriod === 'custom') {
+          // Build custom range URL with start/end dates
+          const params = new URLSearchParams();
+          params.set('user', await getUserId());
+          params.set('period', 'custom');
+          if (customStartDate) params.set('startDate', customStartDate);
+          if (customEndDate) params.set('endDate', customEndDate);
+          url = API_BASE + '/summary?' + params.toString();
         } else {
           url = await apiUrl('/summary', { period: currentPeriod, date: currentDate });
         }
@@ -897,6 +966,18 @@
       datalist.innerHTML = data.domains.map(d => `<option value="${d.domain}">`).join('');
     }
 
+    // ─── Custom Range ──────────────────────────────────────────────────────
+
+    function applyCustomRange() {
+      const start = document.getElementById('customStartDate').value;
+      const end = document.getElementById('customEndDate').value;
+      if (!start || !end) return;
+      if (start > end) { alert('Start date must be before end date.'); return; }
+      customStartDate = start;
+      customEndDate = end;
+      fetchData({ silent: false });
+    }
+
     function quickAddGoal(domain) {
       const input = document.getElementById('goalDomainInput');
       const minutesInput = document.getElementById('goalMinutesInput');
@@ -1015,10 +1096,14 @@
       const nextBtn = document.getElementById('nextBtn');
       const todayBtn = document.getElementById('todayBtn');
 
-      if (currentPeriod === '7days') {
+      if (currentPeriod === '7days' || currentPeriod === '30days') {
         prevBtn.classList.add('opacity-30', 'cursor-not-allowed'); prevBtn.disabled = true;
         nextBtn.classList.add('opacity-30', 'cursor-not-allowed'); nextBtn.disabled = true;
         todayBtn.classList.add('hidden');
+      } else if (currentPeriod === 'custom') {
+        prevBtn.classList.add('opacity-30', 'cursor-not-allowed'); prevBtn.disabled = true;
+        nextBtn.classList.add('opacity-30', 'cursor-not-allowed'); nextBtn.disabled = true;
+        todayBtn.classList.remove('hidden');
       } else if (inCurrent) {
         prevBtn.classList.remove('opacity-30', 'cursor-not-allowed'); prevBtn.disabled = false;
         nextBtn.classList.add('opacity-30', 'cursor-not-allowed'); nextBtn.disabled = true;
@@ -1030,9 +1115,11 @@
       }
 
       document.getElementById('todayBtnLabel').textContent =
+        currentPeriod === '7days' ? 'Last 7 Days' :
+        currentPeriod === '30days' ? 'Last 30 Days' :
         currentPeriod === 'day' ? 'Today' :
-        currentPeriod === 'week' ? 'This Week' :
-        currentPeriod === '7days' ? 'Last 7 Days' : 'This Month';
+        currentPeriod === 'custom' ? 'Today' :
+        currentPeriod === 'week' ? 'This Week' : 'This Month';
 
       const exportBtn = document.getElementById('exportBtn');
       if (inCurrent) exportBtn.classList.add('hidden');
@@ -1062,7 +1149,7 @@
 
       // Daily chart (only show for period views that have daily breakdown)
       const chartSection = document.getElementById('chartSection');
-      if (currentPeriod !== 'day' && data.dailyBreakdown) {
+      if (currentPeriod !== 'day' && data.dailyBreakdown && data.dailyBreakdown.length > 0) {
         chartSection.style.display = 'block';
         // Store data for theme-change re-render
         window._lastChartData = data;
@@ -1240,7 +1327,7 @@
       const params = new URLSearchParams(window.location.search);
       const urlPeriod = params.get('period');
       const urlDate = params.get('date');
-      if (urlPeriod && ['day', 'week', 'month', '7days'].includes(urlPeriod)) currentPeriod = urlPeriod;
+      if (urlPeriod && ['day', 'week', 'month', '7days', '30days', 'custom'].includes(urlPeriod)) currentPeriod = urlPeriod;
       if (urlDate && /^\d{4}-\d{2}-\d{2}$/.test(urlDate)) currentDate = urlDate;
 
       updatePeriodButtons();

@@ -431,6 +431,15 @@ function getPeriodRange(dateStr, period) {
     };
   }
 
+  if (period === "30days") {
+    const start = new Date(d);
+    start.setUTCDate(d.getUTCDate() - 29);
+    return {
+      start: start.toISOString().slice(0, 10),
+      end: dateStr,
+    };
+  }
+
   return { start: dateStr, end: dateStr };
 }
 
@@ -711,15 +720,28 @@ app.get("/api/summary", async (req, res) => {
     const period = req.query.period || "week";
     const referenceDate = req.query.date || new Date().toISOString().slice(0, 10);
 
-    if (!["week", "month", "7days"].includes(period)) {
-      return res.status(400).json({ status: "error", message: "Invalid period. Use 'week', 'month', or '7days'." });
+    if (!["week", "month", "7days", "30days", "custom"].includes(period)) {
+      return res.status(400).json({ status: "error", message: "Invalid period. Use 'week', 'month', '7days', '30days', or 'custom'." });
     }
 
-    if (referenceDate && !/^\d{4}-\d{2}-\d{2}$/.test(referenceDate)) {
-      return res.status(400).json({ status: "error", message: "Invalid date format. Use YYYY-MM-DD." });
+    let start, end;
+    if (period === "custom") {
+      start = req.query.startDate;
+      end = req.query.endDate;
+      if (!start || !end) {
+        return res.status(400).json({ status: "error", message: "startDate and endDate are required for custom period" });
+      }
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(start) || !/^\d{4}-\d{2}-\d{2}$/.test(end)) {
+        return res.status(400).json({ status: "error", message: "Invalid date format. Use YYYY-MM-DD." });
+      }
+    } else {
+      if (referenceDate && !/^\d{4}-\d{2}-\d{2}$/.test(referenceDate)) {
+        return res.status(400).json({ status: "error", message: "Invalid date format. Use YYYY-MM-DD." });
+      }
+      const range = getPeriodRange(referenceDate, period);
+      start = range.start;
+      end = range.end;
     }
-
-    const { start, end } = getPeriodRange(referenceDate, period);
     const userId = req.query.user || '';
 
     const domains = await getAggregatedByDomainForPeriod(start, end, userId);
