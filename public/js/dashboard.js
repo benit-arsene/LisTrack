@@ -1,6 +1,21 @@
 
     // ─── Utility Functions ──────────────────────────────────────────────────
 
+    function safeParseDate(dateStr) {
+      if (!dateStr || typeof dateStr !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+        return null;
+      }
+      const d = new Date(dateStr + 'T00:00:00Z');
+      if (isNaN(d.getTime())) return null;
+      return d;
+    }
+
+    function safeFormatDate(dateStr, options) {
+      const d = safeParseDate(dateStr);
+      if (!d) return dateStr || '—';
+      return d.toLocaleDateString('en-US', options);
+    }
+
     function formatTime(totalMinutes) {
       if (totalMinutes == null || totalMinutes <= 0) return "0s";
       const totalSeconds = Math.round(totalMinutes * 60);
@@ -181,12 +196,11 @@
         ctx.fillStyle = color;
         ctx.fill();
 
-        // Date label
+        // Date label — use safeParseDate to prevent 'Invalid Date' on chart
         ctx.fillStyle = textColor;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'top';
-        const d = new Date(item.date + 'T00:00:00Z');
-        const label = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+        const label = safeFormatDate(item.date, { month: 'short', day: 'numeric' });
         // Skip every other label when bars are too close to prevent collision
         if (barCount > 7 && i % 2 === 1) {
           ctx.fillText('', x + barWidth / 2, padding.top + chartH + 8);
@@ -210,8 +224,7 @@
           const x = startX + i * (barWidth + barGap);
           const y = padding.top + chartH - (item.totalMinutes / maxVal) * chartH;
           if (mx >= x && mx <= x + barWidth && my >= y && my <= padding.top + chartH) {
-            const d = new Date(item.date + 'T00:00:00Z');
-            const dateStr = d.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' });
+            const dateStr = safeFormatDate(item.date, { weekday: 'long', month: 'short', day: 'numeric' });
             tooltip.innerHTML = `${dateStr}<br><strong>${formatTime(item.totalMinutes)}</strong>`;
             tooltip.style.left = Math.min(Math.max(mx - 50, 0), w - 120) + 'px';
             tooltip.style.top = (y - 36) + 'px';
@@ -368,18 +381,14 @@
 
     function formatPeriodLabel(data) {
       if (currentPeriod === '30days') {
-        const start = new Date(data.startDate + 'T00:00:00Z');
-        const end = new Date(data.endDate + 'T00:00:00Z');
-        const s = start.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-        const e = end.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+        const s = safeFormatDate(data.startDate, { month: 'short', day: 'numeric' });
+        const e = safeFormatDate(data.endDate, { month: 'short', day: 'numeric', year: 'numeric' });
         if (isCurrentPeriod(data.startDate)) return 'Last 30 Days';
         return `${s} – ${e}`;
       }
       if (currentPeriod === '7days') {
-        const start = new Date(data.startDate + 'T00:00:00Z');
-        const end = new Date(data.endDate + 'T00:00:00Z');
-        const s = start.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-        const e = end.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+        const s = safeFormatDate(data.startDate, { month: 'short', day: 'numeric' });
+        const e = safeFormatDate(data.endDate, { month: 'short', day: 'numeric', year: 'numeric' });
         if (isCurrentPeriod(data.startDate)) return 'Last 7 Days';
         return `${s} – ${e}`;
       }
@@ -389,28 +398,22 @@
         if (dateStr === today) return 'Today';
         const yesterday = new Date(); yesterday.setDate(yesterday.getDate() - 1);
         if (dateStr === yesterday.toISOString().slice(0, 10)) return 'Yesterday';
-        const d = new Date(dateStr + 'T00:00:00Z');
-        return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+        return safeFormatDate(dateStr, { month: 'short', day: 'numeric', year: 'numeric' });
       }
       if (currentPeriod === 'custom') {
-        const start = new Date(data.startDate + 'T00:00:00Z');
-        const end = new Date(data.endDate + 'T00:00:00Z');
-        const s = start.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-        const e = end.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+        const s = safeFormatDate(data.startDate, { month: 'short', day: 'numeric' });
+        const e = safeFormatDate(data.endDate, { month: 'short', day: 'numeric', year: 'numeric' });
         return `${s} – ${e}`;
       }
       if (currentPeriod === 'week') {
-        const start = new Date(data.startDate + 'T00:00:00Z');
-        const end = new Date(data.endDate + 'T00:00:00Z');
-        const s = start.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-        const e = end.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+        const s = safeFormatDate(data.startDate, { month: 'short', day: 'numeric' });
+        const e = safeFormatDate(data.endDate, { month: 'short', day: 'numeric', year: 'numeric' });
         if (isCurrentPeriod(data.startDate)) return 'This Week';
         return `${s} – ${e}`;
       }
       if (currentPeriod === 'month') {
-        const d = new Date(data.startDate + 'T00:00:00Z');
         if (isCurrentPeriod(data.startDate)) return 'This Month';
-        return d.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+        return safeFormatDate(data.startDate, { month: 'long', year: 'numeric' });
       }
       return '';
     }
@@ -691,8 +694,7 @@
         dates.slice(0, 14).forEach(date => {
           const sec = byDate[date];
           const min = sec / 60;
-          const d = new Date(date + 'T00:00:00Z');
-          const label = d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+          const label = safeFormatDate(date, { weekday: 'short', month: 'short', day: 'numeric' });
           const pct = maxVal > 0 ? (sec / maxVal) * 100 : 0;
           const barColor = pct > 80 ? 'bg-red-500' : pct > 50 ? 'bg-amber-500' : pct > 20 ? 'bg-emerald-500' : 'bg-indigo-500';
 

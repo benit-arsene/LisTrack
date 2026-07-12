@@ -386,7 +386,7 @@ async function getAvailableDates(userId) {
   const rows = await driver.all(
     `SELECT DISTINCT date("timestamp") AS d
      FROM screen_time
-     WHERE user_id = ?
+     WHERE date("timestamp") IS NOT NULL AND user_id = ?
      ORDER BY d DESC`,
     [userId || ''],
   );
@@ -399,6 +399,7 @@ async function getAvailableDates(userId) {
  */
 function getPeriodRange(dateStr, period) {
   const d = new Date(dateStr + "T00:00:00Z");
+  if (isNaN(d.getTime())) return { start: dateStr, end: dateStr };
 
   if (period === "week") {
     const day = d.getUTCDay();
@@ -468,7 +469,7 @@ async function getDailyBreakdownForPeriod(startDate, endDate, userId) {
   const rows = await driver.all(
     `SELECT date("timestamp") AS d, ROUND(CAST(SUM("durationSeconds") / 60.0 AS NUMERIC), 2) AS "totalMinutes"
      FROM screen_time
-     WHERE date("timestamp") >= ? AND date("timestamp") <= ? AND user_id = ?
+     WHERE date("timestamp") IS NOT NULL AND date("timestamp") >= ? AND date("timestamp") <= ? AND user_id = ?
      GROUP BY date("timestamp")
      ORDER BY d ASC`,
     [startDate, endDate, userId || ''],
