@@ -383,6 +383,14 @@
       fetchData({ silent: false });
     }
 
+    function goToDate(dateStr) {
+      if (!dateStr) return;
+      currentDate = dateStr;
+      currentPeriod = 'day';
+      updatePeriodButtons();
+      fetchData({ silent: false });
+    }
+
     // ─── Data Fetching ──────────────────────────────────────────────────────
 
     async function fetchData({ silent = false } = {}) {
@@ -927,6 +935,10 @@
 
       if (data && data.domains) updateTrackedDomainsList(data);
 
+      // Sync date picker value with current view
+      const dpInput = document.getElementById('datePickerInput');
+      if (dpInput) dpInput.value = currentDate || getTodayStr();
+
       const domainList = document.getElementById('domainList');
       const emptyState = document.getElementById('emptyState');
       const maxMinutes = getMaxMinutes(data.domains);
@@ -1025,6 +1037,13 @@
       const exportBtn = document.getElementById('exportBtn');
       if (inCurrent) exportBtn.classList.add('hidden');
       else exportBtn.classList.remove('hidden');
+
+      // Sync date picker with current viewed date
+      const datePickerInput = document.getElementById('datePickerInput');
+      if (datePickerInput) {
+        datePickerInput.max = getTodayStr();
+        datePickerInput.value = currentDate || getTodayStr();
+      }
 
       // Animated counters
       animateCounter(document.getElementById('totalDomains'), data.totalDomains, '');
@@ -1226,6 +1245,23 @@
 
       updatePeriodButtons();
       detectExtension();
+
+      // Date picker: open native picker on button click
+      document.getElementById('datePickerBtn').addEventListener('click', function() {
+        const input = document.getElementById('datePickerInput');
+        if (input.showPicker) {
+          input.showPicker();
+        } else {
+          input.click();
+        }
+      });
+
+      // Date picker: jump to selected date
+      document.getElementById('datePickerInput').addEventListener('change', function(e) {
+        if (e.target.value) {
+          goToDate(e.target.value);
+        }
+      });
 
       fetchData({ silent: false });
       setInterval(() => fetchData({ silent: true }), 15_000);
