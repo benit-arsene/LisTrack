@@ -43,6 +43,60 @@
     .bar-gradient-10 { background: linear-gradient(135deg, #6b7280, #9ca3af); }
     .loading-spinner { animation: spin 1s linear infinite; }
     @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* Skeleton shimmer animation */
+    @keyframes shimmer {
+      0% { background-position: -200% 0; }
+      100% { background-position: 200% 0; }
+    }
+    .skeleton-box {
+      background: linear-gradient(90deg, #e5e7eb 25%, #f3f4f6 50%, #e5e7eb 75%);
+      background-size: 200% 100%;
+      animation: shimmer 1.4s ease-in-out infinite;
+      border-radius: 0.5rem;
+    }
+    .dark .skeleton-box {
+      background: linear-gradient(90deg, #374151 25%, #4b5563 50%, #374151 75%);
+      background-size: 200% 100%;
+    }
+    .skeleton-card {
+      background: #ffffff;
+      border: 1px solid #e5e7eb;
+      border-radius: 1rem;
+    }
+    .dark .skeleton-card {
+      background: #1f2937;
+      border-color: #374151;
+    }
+    .skeleton-icon {
+      width: 2.5rem;
+      height: 2.5rem;
+      border-radius: 0.75rem;
+    }
+    .skeleton-text-sm {
+      height: 0.75rem;
+      width: 4rem;
+      border-radius: 0.25rem;
+    }
+    .skeleton-text-lg {
+      height: 1.75rem;
+      width: 6rem;
+      border-radius: 0.375rem;
+    }
+    .skeleton-text-xl {
+      height: 2rem;
+      width: 8rem;
+      border-radius: 0.375rem;
+    }
+    .skeleton-bar {
+      height: 0.5rem;
+      border-radius: 9999px;
+    }
+    .skeleton-avatar {
+      width: 2rem;
+      height: 2rem;
+      border-radius: 0.5rem;
+    }
     .period-btn { transition: all 0.15s ease; }
     html, body { transition: background-color 0.3s ease, color 0.3s ease; }
 
@@ -147,10 +201,172 @@
       </div>
     </header>
 
-    <!-- Loading State -->
-    <div id="loadingState" class="flex flex-col items-center justify-center py-24">
-      <div class="loading-spinner w-10 h-10 border-4 border-indigo-200 dark:border-indigo-800 border-t-indigo-600 dark:border-t-indigo-400 rounded-full mb-4"></div>
-      <p class="text-sm text-gray-400 dark:text-gray-500">Loading your screen time data...</p>
+    <!-- Skeleton Loading State (replaces spinner) -->
+    <div id="loadingState">
+      <!-- Header skeleton -->
+      <div class="mb-8">
+        <div class="flex items-center justify-between">
+          <div>
+            <div class="flex items-center gap-3 mb-2">
+              <div class="skeleton-box w-40 h-8"></div>
+              <div class="skeleton-box w-20 h-6 rounded-full"></div>
+            </div>
+            <div class="skeleton-box w-52 h-4"></div>
+          </div>
+          <div class="flex items-center gap-3">
+            <div class="skeleton-box w-16 h-4 hidden sm:block"></div>
+            <div class="skeleton-box w-9 h-9 rounded-xl"></div>
+            <div class="skeleton-box w-20 h-9 rounded-xl"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Metric Cards skeleton -->
+      <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-8">
+        <div class="skeleton-card p-6">
+          <div class="flex items-center gap-3 mb-4">
+            <div class="skeleton-box skeleton-icon"></div>
+            <div class="skeleton-box skeleton-text-sm"></div>
+          </div>
+          <div class="skeleton-box skeleton-text-lg"></div>
+        </div>
+        <div class="skeleton-card p-6">
+          <div class="flex items-center gap-3 mb-4">
+            <div class="skeleton-box skeleton-icon"></div>
+            <div class="skeleton-box skeleton-text-sm"></div>
+          </div>
+          <div class="skeleton-box skeleton-text-lg"></div>
+        </div>
+        <div class="skeleton-card p-6">
+          <div class="flex items-center gap-3 mb-4">
+            <div class="skeleton-box skeleton-icon"></div>
+            <div class="skeleton-box skeleton-text-sm"></div>
+          </div>
+          <div class="skeleton-box skeleton-text-xl"></div>
+        </div>
+      </div>
+
+      <!-- Websites Section skeleton -->
+      <div class="rounded-2xl overflow-hidden mb-8 skeleton-card">
+        <div class="px-6 py-5 border-b border-gray-100 dark:border-gray-700">
+          <div class="flex items-center justify-between">
+            <div class="skeleton-box w-24 h-5"></div>
+            <div class="skeleton-box w-28 h-5 rounded-full"></div>
+          </div>
+        </div>
+        <div class="divide-y divide-gray-50 dark:divide-gray-700/50">
+          <!-- 8 skeleton rows -->
+          <div class="px-6 py-4 flex items-center gap-4 skeleton-row">
+            <div class="skeleton-box w-5 h-4"></div>
+            <div class="skeleton-box skeleton-avatar"></div>
+            <div class="flex-1 min-w-0">
+              <div class="flex items-center justify-between mb-2">
+                <div class="skeleton-box w-32 h-4"></div>
+                <div class="skeleton-box w-12 h-4"></div>
+              </div>
+              <div class="skeleton-box skeleton-bar w-full"></div>
+            </div>
+          </div>
+          <div class="px-6 py-4 flex items-center gap-4 skeleton-row">
+            <div class="skeleton-box w-5 h-4"></div>
+            <div class="skeleton-box skeleton-avatar"></div>
+            <div class="flex-1 min-w-0">
+              <div class="flex items-center justify-between mb-2">
+                <div class="skeleton-box w-40 h-4"></div>
+                <div class="skeleton-box w-14 h-4"></div>
+              </div>
+              <div class="skeleton-box skeleton-bar w-4/5"></div>
+            </div>
+          </div>
+          <div class="px-6 py-4 flex items-center gap-4 skeleton-row">
+            <div class="skeleton-box w-5 h-4"></div>
+            <div class="skeleton-box skeleton-avatar"></div>
+            <div class="flex-1 min-w-0">
+              <div class="flex items-center justify-between mb-2">
+                <div class="skeleton-box w-36 h-4"></div>
+                <div class="skeleton-box w-10 h-4"></div>
+              </div>
+              <div class="skeleton-box skeleton-bar w-3/5"></div>
+            </div>
+          </div>
+          <div class="px-6 py-4 flex items-center gap-4 skeleton-row">
+            <div class="skeleton-box w-5 h-4"></div>
+            <div class="skeleton-box skeleton-avatar"></div>
+            <div class="flex-1 min-w-0">
+              <div class="flex items-center justify-between mb-2">
+                <div class="skeleton-box w-28 h-4"></div>
+                <div class="skeleton-box w-12 h-4"></div>
+              </div>
+              <div class="skeleton-box skeleton-bar w-2/5"></div>
+            </div>
+          </div>
+          <div class="px-6 py-4 flex items-center gap-4 skeleton-row">
+            <div class="skeleton-box w-5 h-4"></div>
+            <div class="skeleton-box skeleton-avatar"></div>
+            <div class="flex-1 min-w-0">
+              <div class="flex items-center justify-between mb-2">
+                <div class="skeleton-box w-44 h-4"></div>
+                <div class="skeleton-box w-14 h-4"></div>
+              </div>
+              <div class="skeleton-box skeleton-bar w-1/2"></div>
+            </div>
+          </div>
+          <div class="px-6 py-4 flex items-center gap-4 skeleton-row">
+            <div class="skeleton-box w-5 h-4"></div>
+            <div class="skeleton-box skeleton-avatar"></div>
+            <div class="flex-1 min-w-0">
+              <div class="flex items-center justify-between mb-2">
+                <div class="skeleton-box w-32 h-4"></div>
+                <div class="skeleton-box w-10 h-4"></div>
+              </div>
+              <div class="skeleton-box skeleton-bar w-3/4"></div>
+            </div>
+          </div>
+          <div class="px-6 py-4 flex items-center gap-4 skeleton-row">
+            <div class="skeleton-box w-5 h-4"></div>
+            <div class="skeleton-box skeleton-avatar"></div>
+            <div class="flex-1 min-w-0">
+              <div class="flex items-center justify-between mb-2">
+                <div class="skeleton-box w-36 h-4"></div>
+                <div class="skeleton-box w-12 h-4"></div>
+              </div>
+              <div class="skeleton-box skeleton-bar w-3/5"></div>
+            </div>
+          </div>
+          <div class="px-6 py-4 flex items-center gap-4 skeleton-row">
+            <div class="skeleton-box w-5 h-4"></div>
+            <div class="skeleton-box skeleton-avatar"></div>
+            <div class="flex-1 min-w-0">
+              <div class="flex items-center justify-between mb-2">
+                <div class="skeleton-box w-28 h-4"></div>
+                <div class="skeleton-box w-14 h-4"></div>
+              </div>
+              <div class="skeleton-box skeleton-bar w-1/3"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Daily Activity Chart skeleton -->
+      <div class="rounded-2xl overflow-hidden mb-6 skeleton-card">
+        <div class="px-6 py-4 border-b border-gray-100 dark:border-gray-700">
+          <div class="flex items-center justify-between">
+            <div class="skeleton-box w-28 h-5"></div>
+            <div class="skeleton-box w-28 h-5 rounded-full"></div>
+          </div>
+        </div>
+        <div class="px-6 py-5">
+          <div class="flex items-end gap-3 h-40">
+            <div class="skeleton-box flex-1" style="height: 60%"></div>
+            <div class="skeleton-box flex-1" style="height: 85%"></div>
+            <div class="skeleton-box flex-1" style="height: 45%"></div>
+            <div class="skeleton-box flex-1" style="height: 70%"></div>
+            <div class="skeleton-box flex-1" style="height: 90%"></div>
+            <div class="skeleton-box flex-1" style="height: 55%"></div>
+            <div class="skeleton-box flex-1" style="height: 75%"></div>
+          </div>
+        </div>
+      </div>
     </div>
 
     <!-- Error State -->
