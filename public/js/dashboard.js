@@ -1022,6 +1022,10 @@
     // ─── Silent Update ──────────────────────────────────────────────────────
 
     function silentUpdate(data) {
+      // Keep backing data in sync so "Show More" uses latest data
+      window._lastDashboardData = data;
+      window._lastChartData = data;
+
       if (isCurrentPeriod(currentDate || getTodayStr())) {
         document.getElementById('dateLabel').textContent = formatPeriodLabel(data);
         document.getElementById('dateBadge').textContent = currentPeriod === 'day' ? 'Today' : formatPeriodLabel(data);
