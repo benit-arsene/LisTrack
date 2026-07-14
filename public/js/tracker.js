@@ -76,6 +76,7 @@
     hasEverInteracted: false,
     checkpointInterval: null,
     _finalSent: false,
+    paused: false,
   };
 
   // ─── Core Timer Logic ────────────────────────────────────────────────────
@@ -98,7 +99,8 @@
     state.lastActivity = Date.now();
     state.hasEverInteracted = true;
 
-    if (state.sessionStart === null && state.isTabVisible) {
+    // Don't resume if tracking is paused
+    if (!state.paused && state.sessionStart === null && state.isTabVisible) {
       resumeTimer();
     }
   }
@@ -325,6 +327,34 @@
     }
   }
 
+  // ─── Pause / Resume ────────────────────────────────────────────────────
+
+  async function checkPausedState() {
+    if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
+      try {
+        const result = await chrome.storage.local.get(['lisTrackPaused']);
+        state.paused = !!result.lisTrackPaused;
+        if (state.paused) {
+          pauseTimer();
+        }
+      } catch (_) {}
+    }
+  }
+
+  function handleTrackingStateChange(changes, area) {
+    if (area === 'local' && changes.lisTrackPaused) {
+      state.paused = !!changes.lisTrackPaused.newValue;
+      if (state.paused) {
+        pauseTimer();
+      } else if (state.isTabVisible) {
+        const elapsed = Date.now() - state.lastActivity;
+        if (elapsed < CONFIG.IDLE_THRESHOLD_MS) {
+          resumeTimer();
+        }
+      }
+    }
+  }
+
   // ─── Bind Events & Initialize ────────────────────────────────────────────
 
   async function init() {
@@ -332,6 +362,14 @@
     // uses the SAME token as the background (chrome.storage), preventing
     // data from being split across two different user_ids.
     await trySyncTokenFromStorage();
+
+    // Check if tracking is paused
+    await checkPausedState();
+
+    // Listen for pause/resume changes via chrome.storage (reliable in MV3)
+    if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.onChanged) {
+      chrome.storage.onChanged.addListener(handleTrackingStateChange);
+    }
 
     recoverCrashData();
 
@@ -364,6 +402,9 @@
 
     // Handles rolling intervals — every 10s, send accumulated time if ≥5s
     setInterval(async function () {
+      // Don't send or resume if paused
+      if (state.paused) return;
+
       if (state.activeTimeMs >= 5_000) {
         await sendScreenTime(false);
       }
