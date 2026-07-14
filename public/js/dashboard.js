@@ -57,6 +57,22 @@
       return gradients[index % gradients.length];
     }
 
+    // ─── Trend Display Helpers ────────────────────────────────────────
+
+    function getTrendHtml(domain) {
+      const trends = window._lastTrendData;
+      if (!trends || !trends.trends) return '';
+      const t = trends.trends.find(d => d.domain === domain);
+      if (!t || t.direction === 'flat') return '';
+      const isUp = t.direction === 'up';
+      const color = isUp ? 'text-red-500 dark:text-red-400' : 'text-emerald-500 dark:text-emerald-400';
+      const arrow = isUp ? '▲' : '▼';
+      const pct = Math.abs(t.changePercent);
+      return `<span class="${color} text-[10px] font-semibold ml-1.5" title="${isUp ? 'Up' : 'Down'} ${pct}% vs previous period">${arrow}${pct > 0 ? pct : ''}</span>`;
+    }
+
+
+
     function getDisplayName(domain) {
       if (!domain) return '—';
       const parts = domain.split('.');
@@ -487,11 +503,26 @@
           url = await apiUrl('/summary', { period: currentPeriod, date: currentDate });
         }
 
-        const response = await fetch(url);
+        // Also fetch trends for period views (not day or custom)
+        let trendsPromise = null;
+        if (currentPeriod !== 'day' && currentPeriod !== 'custom') {
+          trendsPromise = fetch(await apiUrl('/trends', { period: currentPeriod, date: currentDate }))
+            .then(r => r.ok ? r.json() : null)
+            .catch(() => null);
+        }
+
+        const [response, trendsData] = await Promise.all([
+          fetch(url),
+          trendsPromise,
+        ]);
+
         if (!response.ok) throw new Error(`Server returned ${response.status}`);
         const data = await response.json();
 
         availableDates = data.availableDates || [];
+
+        // Store trends globally for createDomainRow to access
+        window._lastTrendData = trendsData;
 
         if (silent) {
           silentUpdate(data);
@@ -522,6 +553,7 @@
     function createDomainRow(item, index) {
       const displayName = getDisplayName(item.domain);
       const gradientClass = getGradientClass(index);
+      const trendHtml = getTrendHtml(item.domain);
 
       const row = document.createElement('div');
       row.className = 'group rank-item px-6 py-4 flex items-center gap-4 cursor-pointer dark:hover:bg-gray-700/30';
@@ -533,7 +565,10 @@
         <div class="flex-shrink-0 w-8 h-8 rounded-lg bg-gray-100 dark:bg-gray-700 items-center justify-center text-xs font-semibold text-gray-400 dark:text-gray-500" style="display:none">${displayName.charAt(0)}</div>
         <div class="flex-1 min-w-0">
           <div class="flex items-center justify-between mb-1">
-            <span class="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">${displayName}</span>
+            <span class="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">
+              ${displayName}
+              <span data-trend class="inline-flex items-center">${trendHtml}</span>
+            </span>
             <span class="text-sm font-semibold text-gray-700 dark:text-gray-300 ml-2" data-time>${formatTime(item.totalMinutes)}</span>
           </div>
           <div class="relative w-full h-2 bg-gray-100 dark:bg-gray-700 rounded-full overflow-hidden">
@@ -1196,6 +1231,27 @@
       window._lastDashboardData = data;
       // Reset visible count on full render
       visibleDomainCount = 10;
+
+      // Update trends badge
+      const trendBadge = document.getElementById('trendBadge');
+      const trendContainer = document.getElementById('trendContainer');
+      if (trendBadge && trendContainer) {
+        if (currentPeriod !== 'day' && currentPeriod !== 'custom' && window._lastTrendData) {
+          const td = window._lastTrendData;
+          trendContainer.classList.remove('hidden');
+          const pct = td.totalChangePercent;
+          if (pct === 0) {
+            trendBadge.innerHTML = '→ 0% vs last period';
+            trendBadge.className = 'text-xs font-medium text-gray-400 dark:text-gray-500';
+          } else {
+            const isUp = td.totalDirection === 'up';
+            trendBadge.className = 'text-xs font-semibold ' + (isUp ? 'text-red-500 dark:text-red-400' : 'text-emerald-500 dark:text-emerald-400');
+            trendBadge.innerHTML = (isUp ? '▲' : '▼') + ' ' + Math.abs(pct) + '% vs last period';
+          }
+        } else {
+          trendContainer.classList.add('hidden');
+        }
+      }
 
       const seedBtn = document.getElementById('seedBtn');
       if (seedBtn) {

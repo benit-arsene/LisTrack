@@ -897,6 +897,115 @@ app.get("/api/logs", async (req, res) => {
   }
 });
 
+/**
+ * GET /api/trends
+ * Compares screen-time between the current period and the previous period
+ * of the same length, returning per-domain percentage changes.
+ *
+ * Query params:
+ *   period — '7days', '30days', 'week', 'month' (default: '7days')
+ *   date   — reference date (default: today)
+ *   user   — user token
+ */
+app.get("/api/trends", async (req, res) => {
+  try {
+    const period = req.query.period || "7days";
+    const referenceDate = req.query.date || new Date().toISOString().slice(0, 10);
+
+    if (!["week", "month", "7days", "30days"].includes(period)) {
+      return res.status(400).json({ status: "error", message: "Invalid period. Use 'week', 'month', '7days', or '30days'." });
+    }
+    if (referenceDate && !/^\d{4}-\d{2}-\d{2}$/.test(referenceDate)) {
+      return res.status(400).json({ status: "error", message: "Invalid date format. Use YYYY-MM-DD." });
+    }
+
+    const userId = req.query.user || '';
+
+    // Get current period range
+    const currentRange = getPeriodRange(referenceDate, period);
+
+    // Calculate previous period (same length, going back)
+    const prevEnd = new Date(currentRange.start + "T00:00:00Z");
+    prevEnd.setUTCDate(prevEnd.getUTCDate() - 1);
+    const prevEndStr = prevEnd.toISOString().slice(0, 10);
+
+    const periodLengths = { "7days": 7, "30days": 30, "week": 7, "month": 30 };
+    const length = periodLengths[period] || 7;
+    const prevStart = new Date(prevEnd);
+    prevStart.setUTCDate(prevStart.getUTCDate() - length + 1);
+    const prevStartStr = prevStart.toISOString().slice(0, 10);
+
+    // Fetch both periods in parallel
+    const [currentDomains, previousDomains] = await Promise.all([
+      getAggregatedByDomainForPeriod(currentRange.start, currentRange.end, userId),
+      getAggregatedByDomainForPeriod(prevStartStr, prevEndStr, userId),
+    ]);
+
+    // Build a map of previous period data for quick lookup
+    const prevMap = {};
+    for (const d of previousDomains) {
+      prevMap[d.domain] = d.totalMinutes;
+    }
+    let prevTotal = previousDomains.reduce((s, d) => s + d.totalMinutes, 0);
+    const currTotal = currentDomains.reduce((s, d) => s + d.totalMinutes, 0);
+
+    // Merge current domains with previous data and calculate trends
+    const allDomains = new Set();
+    for (const d of currentDomains) allDomains.add(d.domain);
+    for (const d of previousDomains) allDomains.add(d.domain);
+
+    const trends = [];
+    for (const domain of allDomains) {
+      const currMinutes = currentDomains.find(d => d.domain === domain)?.totalMinutes || 0;
+      const prevMinutes = prevMap[domain] || 0;
+
+      let change = 0;
+      let changePercent = 0;
+      if (prevMinutes > 0) {
+        change = currMinutes - prevMinutes;
+        changePercent = Math.round((change / prevMinutes) * 100);
+      } else if (currMinutes > 0) {
+        change = currMinutes;
+        changePercent = 100; // New domain, +100%
+      }
+
+      // Merge current + previous domain entries
+      const currEntry = currentDomains.find(d => d.domain === domain);
+
+      trends.push({
+        domain,
+        currentMinutes: currMinutes,
+        previousMinutes: prevMinutes,
+        change: Math.round(change * 100) / 100,
+        changePercent,
+        direction: change > 0 ? 'up' : change < 0 ? 'down' : 'flat',
+      });
+    }
+
+    // Sort by current minutes descending
+    trends.sort((a, b) => b.currentMinutes - a.currentMinutes);
+
+    // Total trend
+    const totalChange = currTotal - prevTotal;
+    const totalChangePercent = prevTotal > 0 ? Math.round((totalChange / prevTotal) * 100) : (currTotal > 0 ? 100 : 0);
+
+    return res.json({
+      period,
+      currentPeriod: { start: currentRange.start, end: currentRange.end },
+      previousPeriod: { start: prevStartStr, end: prevEndStr },
+      totalCurrent: Math.round(currTotal * 100) / 100,
+      totalPrevious: Math.round(prevTotal * 100) / 100,
+      totalChange: Math.round(totalChange * 100) / 100,
+      totalChangePercent,
+      totalDirection: totalChange > 0 ? 'up' : totalChange < 0 ? 'down' : 'flat',
+      trends,
+    });
+  } catch (err) {
+    console.error("[trends] Error:", err);
+    return res.status(500).json({ status: "error", message: "Internal server error" });
+  }
+});
+
 
 // ─── Seed Data Route ─────────────────────────────────────────────────────────
 // ONLY available when using SQLite (local dev). Never available on PostgreSQL (production).
