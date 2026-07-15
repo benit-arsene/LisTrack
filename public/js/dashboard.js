@@ -258,7 +258,7 @@
       const avg = breakdown.reduce((s, d) => s + d.totalMinutes, 0) / breakdown.length;
       chartAvg.textContent = `Avg ${formatTime(avg)}/day`;
 
-      // Tooltip hover
+      // Tooltip hover + pointer cursor on bars
       canvas.onmousemove = function(e) {
         const rect2 = canvas.getBoundingClientRect();
         const mx = e.clientX - rect2.left;
@@ -278,6 +278,7 @@
             found = true;
           }
         });
+        canvas.style.cursor = found ? 'pointer' : 'default';
         if (!found) {
           tooltip.classList.add('opacity-0');
           setTimeout(() => { if (tooltip.classList.contains('opacity-0')) tooltip.classList.add('hidden'); }, 150);
@@ -285,8 +286,28 @@
       };
 
       canvas.onmouseleave = function() {
+        canvas.style.cursor = 'default';
         tooltip.classList.add('opacity-0');
         setTimeout(() => { if (tooltip.classList.contains('opacity-0')) tooltip.classList.add('hidden'); }, 150);
+      };
+
+      // Click on a bar to jump to that day's detailed view
+      canvas.onclick = function(e) {
+        const rect2 = canvas.getBoundingClientRect();
+        const mx = e.clientX - rect2.left;
+        const my = e.clientY - rect2.top;
+
+        breakdown.forEach((item, i) => {
+          const x = startX + i * (barWidth + barGap);
+          const y = padding.top + chartH - (item.totalMinutes / maxVal) * chartH;
+          if (mx >= x && mx <= x + barWidth && my >= y && my <= padding.top + chartH) {
+            // Extract clean YYYY-MM-DD from the bar's date
+            const clickedDate = item.date ? item.date.slice(0, 10) : null;
+            if (clickedDate) {
+              goToDate(clickedDate);
+            }
+          }
+        });
       };
 
       // Redraw on theme change
