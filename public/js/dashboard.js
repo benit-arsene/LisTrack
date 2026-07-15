@@ -2,10 +2,12 @@
     // ─── Utility Functions ──────────────────────────────────────────────────
 
     function safeParseDate(dateStr) {
-      if (!dateStr || typeof dateStr !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
-        return null;
-      }
-      const d = new Date(dateStr + 'T00:00:00Z');
+      if (!dateStr || typeof dateStr !== 'string') return null;
+      // Extract YYYY-MM-DD from the start — handles both "2026-07-11"
+      // and full ISO timestamps like "2026-07-11T00:00:00.000Z"
+      const match = dateStr.match(/^(\d{4}-\d{2}-\d{2})/);
+      if (!match) return null;
+      const d = new Date(match[1] + 'T00:00:00Z');
       if (isNaN(d.getTime())) return null;
       return d;
     }
@@ -212,16 +214,43 @@
         ctx.fillStyle = color;
         ctx.fill();
 
-        // Date label — use safeParseDate to prevent 'Invalid Date' on chart
+        // Date label — pick the best format based on available space
+        ctx.font = '9px Inter, sans-serif';
         ctx.fillStyle = textColor;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'top';
-        const label = safeFormatDate(item.date, { month: 'short', day: 'numeric' });
-        // Skip every other label when bars are too close to prevent collision
-        if (barCount > 7 && i % 2 === 1) {
+
+        // Measure a reference label to decide on formatting & rotation
+        const labelWide = safeFormatDate(item.date, { month: 'short', day: 'numeric' }); // "Jul 11"
+        const labelShort = safeFormatDate(item.date, { weekday: 'short' });              // "Mon"
+        const availablePx = barWidth + barGap;
+        const wideWidth = ctx.measureText(labelWide).width;
+        const shortWidth = ctx.measureText(labelShort).width;
+
+        // Decide whether to draw this label (skip logic)
+        // Threshold: if even the short label doesn't fit or we'd overlap, skip
+        const tooManyBars = barCount > 9;
+        const skipThis = tooManyBars && i % 2 === 1;
+
+        // Choose label format and rotation based on available space per bar
+        const drawRotated = availablePx < wideWidth && availablePx < shortWidth + 6;
+        const useShortLabel = availablePx < wideWidth;
+        const finalLabel = (drawRotated || useShortLabel) ? labelShort : labelWide;
+
+        if (drawRotated) {
+          // Rotated labels absorb the space — draw every label without skipping
+          ctx.save();
+          ctx.translate(x + barWidth / 2, padding.top + chartH + 6);
+          ctx.rotate(-45 * Math.PI / 180);
+          ctx.textAlign = 'right';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(finalLabel, 0, 0);
+          ctx.restore();
+        } else if (skipThis) {
+          // Skip odd labels when there are many bars and we're not rotating
           ctx.fillText('', x + barWidth / 2, padding.top + chartH + 8);
         } else {
-          ctx.fillText(label, x + barWidth / 2, padding.top + chartH + 8);
+          ctx.fillText(finalLabel, x + barWidth / 2, padding.top + chartH + 8);
         }
       });
 
