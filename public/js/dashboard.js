@@ -1400,41 +1400,13 @@
 
     // ─── Share / Export (CSV + PDF) ────────────────────────────────────────
 
-    function toggleShareMenu() {
-      const dropdown = document.getElementById('shareDropdown');
-      if (!dropdown) return;
-      const isOpen = dropdown.classList.contains('open');
-      dropdown.classList.toggle('open');
-
-      if (!isOpen) {
-        // Close on click outside
-        const closeHandler = function(e) {
-          const container = document.getElementById('shareContainer');
-          if (container && !container.contains(e.target)) {
-            dropdown.classList.remove('open');
-            document.removeEventListener('click', closeHandler);
-          }
-        };
-        // Delay adding listener so this click doesn't close it immediately
-        setTimeout(() => {
-          document.addEventListener('click', closeHandler);
-        }, 10);
-      }
-    }
-
     /**
-     * Export dashboard data in the specified format ('csv' or 'pdf').
+     * Export both CSV and PDF files on one click.
+     * CSV downloads immediately; PDF follows after generation.
      */
-    async function exportData(type) {
-      // Close the dropdown
-      const dropdown = document.getElementById('shareDropdown');
-      if (dropdown) dropdown.classList.remove('open');
-
-      if (type === 'csv') {
-        exportCSV();
-      } else if (type === 'pdf') {
-        exportPDF();
-      }
+    async function exportBoth() {
+      exportCSV();
+      await exportPDF();
     }
 
     /**
