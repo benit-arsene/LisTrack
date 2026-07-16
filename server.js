@@ -886,6 +886,165 @@ app.delete("/api/cleanup", async (req, res) => {
   }
 });
 
+// ─── Donation (Intouch) Routes ────────────────────────────────────────
+//
+// These routes integrate with IntouchPay (Rwanda mobile money) to accept
+// donations via MTN MoMo and Airtel Money.
+//
+// To enable live payments, set these environment variables:
+//   INTOUCH_USERNAME          — Your IntouchPay API username
+//   INTOUCH_ACCOUNT_NO         — Your IntouchPay account number
+//   INTOUCH_PARTNER_PASSWORD   — Your IntouchPay partner password
+//   INTOUCH_API_URL            — Intouch API base URL (default: https://api.intouchpay.co.rw)
+//   DONATION_CALLBACK_URL      — Public URL for Intouch to send callbacks
+//
+// When credentials are NOT set, the donation runs in "demo mode" — the UI
+// shows a confirmation without actually charging anyone.
+
+const INTOUCH_USERNAME = process.env.INTOUCH_USERNAME || '';
+const INTOUCH_ACCOUNT_NO = process.env.INTOUCH_ACCOUNT_NO || '';
+const INTOUCH_PARTNER_PASSWORD = process.env.INTOUCH_PARTNER_PASSWORD || '';
+const INTOUCH_API_URL = process.env.INTOUCH_API_URL || 'https://api.intouchpay.co.rw';
+const DONATION_IS_LIVE = !!(INTOUCH_USERNAME && INTOUCH_ACCOUNT_NO && INTOUCH_PARTNER_PASSWORD);
+
+/**
+ * Generate a unique transaction reference.
+ */
+function generateTxRef() {
+  const prefix = 'LIS';
+  const ts = Date.now().toString(36).toUpperCase();
+  const rand = Math.random().toString(36).substring(2, 8).toUpperCase();
+  return `${prefix}-${ts}-${rand}`;
+}
+
+/**
+ * POST /api/donate/initiate
+ * Initiates a mobile money payment via Intouch.
+ * Body: { phone, amount, name?, note? }
+ *   phone  — Rwandan phone number (e.g., 0788123456)
+ *   amount — Amount in Rwandan Francs (positive integer)
+ *   name   — Optional donor name
+ *   note   — Optional donation note
+ *
+ * Response:
+ *   { success: true, txRef, message: "USSD push sent to your phone..." }
+ *   or
+ *   { success: false, error: "..." }
+ */
+app.post("/api/donate/initiate", async (req, res) => {
+  try {
+    const { phone, amount, name, note } = req.body;
+
+    // ─── Validation ──────────────────────────────────────────────────
+    if (!phone || !amount) {
+      return res.status(400).json({
+        success: false,
+        error: "Please provide both phone number and amount.",
+      });
+    }
+
+    // Clean phone number: remove spaces, dashes, leading + or 00
+    const cleanedPhone = String(phone).replace(/[\s\-]/g, '').replace(/^(\+|00)/, '');
+    if (!/^07\d{8}$/.test(cleanedPhone) && !/^2507\d{8}$/.test(cleanedPhone)) {
+      return res.status(400).json({
+        success: false,
+        error: "Please enter a valid Rwandan phone number (e.g., 0788123456).",
+      });
+    }
+
+    const donationAmount = parseInt(amount, 10);
+    if (isNaN(donationAmount) || donationAmount < 100 || donationAmount > 1000000) {
+      return res.status(400).json({
+        success: false,
+        error: "Amount must be between 100 RWF and 1,000,000 RWF.",
+      });
+    }
+
+    const txRef = generateTxRef();
+
+    // ─── Demo Mode (no credentials) ──────────────────────────────────
+    if (!DONATION_IS_LIVE) {
+      console.log(`[donate] DEMO: Would send ${donationAmount} RWF from ${cleanedPhone} (ref: ${txRef})`);
+      return res.json({
+        success: true,
+        demo: true,
+        txRef,
+        message: "🎉 Demo mode! In production, a MoMo USSD push would be sent to your phone. Ready to go live once IntouchPay credentials are configured.",
+      });
+    }
+
+    // ─── Live Mode — Call Intouch API ────────────────────────────────
+    const intouchPayload = {
+      username: INTOUCH_USERNAME,
+      account_no: INTOUCH_ACCOUNT_NO,
+      partner_password: INTOUCH_PARTNER_PASSWORD,
+      action: "1", // 1 = request payment (collect money)
+      amount: String(donationAmount),
+      phone: cleanedPhone,
+      external_id: txRef,
+    };
+
+    console.log(`[donate] Initiating payment: ${donationAmount} RWF to ${cleanedPhone} (ref: ${txRef})`);
+
+    const intouchResponse = await fetch(`${INTOUCH_API_URL}/request`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(intouchPayload),
+    });
+
+    const intouchResult = await intouchResponse.json();
+
+    if (intouchResponse.ok && intouchResult?.status === "success") {
+      console.log(`[donate] Payment initiated successfully: ${txRef}`);
+      return res.json({
+        success: true,
+        txRef,
+        message: "✅ MoMo USSD push sent! Check your phone and enter your PIN to complete the donation.",
+      });
+    } else {
+      console.error(`[donate] Intouch API error:`, intouchResult);
+      return res.status(502).json({
+        success: false,
+        error: intouchResult?.message || "Payment gateway error. Please try again later.",
+      });
+    }
+  } catch (err) {
+    console.error("[donate] Error initiating payment:", err);
+    return res.status(500).json({
+      success: false,
+      error: "Server error. Please try again later.",
+    });
+  }
+});
+
+/**
+ * POST /api/donate/callback
+ * Webhook endpoint for Intouch to send payment status updates.
+ */
+app.post("/api/donate/callback", (req, res) => {
+  const payload = req.body;
+  console.log("[donate] Callback received:", JSON.stringify(payload));
+
+  // Intouch will send payment status here — log it for now
+  // In production: verify signature, update database, send thank-you, etc.
+
+  // Always respond 200 OK to acknowledge receipt
+  return res.status(200).json({ status: "ok" });
+});
+
+/**
+ * GET /api/donate/status
+ * Returns whether live donations are configured.
+ */
+app.get("/api/donate/status", (req, res) => {
+  return res.json({
+    live: DONATION_IS_LIVE,
+    currency: "RWF",
+    methods: ["MTN MoMo", "Airtel Money"],
+  });
+});
+
+
 app.get("/api/logs", async (req, res) => {
   try {
     const userId = req.query.user || '';

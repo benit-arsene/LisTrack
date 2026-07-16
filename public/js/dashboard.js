@@ -1362,6 +1362,100 @@
       }
     }
 
+    // ─── Donation — USSD Push (Direct MoMo) ────────────────────────────────────
+    const MODAL_MERCHANT_CODE = '657174';
+    let selectedModalUssdAmt = 2000;
+
+    function openDonateModal() {
+      document.getElementById('donateModal').classList.remove('hidden');
+      document.getElementById('modalUssdResult').classList.add('hidden');
+    }
+
+    function closeDonateModal() {
+      document.getElementById('donateModal').classList.add('hidden');
+    }
+
+    function selectModalUssdAmt(amount, btn) {
+      selectedModalUssdAmt = amount;
+      document.getElementById('modalUssdCustom').value = '';
+      document.querySelectorAll('#modalUssdAmounts .mussd-amt-btn').forEach(b => {
+        b.classList.remove('bg-emerald-500', 'text-white', 'border-emerald-400', 'shadow-sm');
+        b.classList.add('text-emerald-700', 'dark:text-emerald-300', 'bg-white', 'dark:bg-gray-800', 'border-emerald-200', 'dark:border-emerald-800', 'hover:bg-emerald-50', 'dark:hover:bg-emerald-900/20');
+        b.removeAttribute('data-selected');
+      });
+      btn.classList.remove('text-emerald-700', 'dark:text-emerald-300', 'bg-white', 'dark:bg-gray-800', 'border-emerald-200', 'dark:border-emerald-800', 'hover:bg-emerald-50', 'dark:hover:bg-emerald-900/20');
+      btn.classList.add('bg-emerald-500', 'text-white', 'border-emerald-400', 'shadow-sm');
+      btn.setAttribute('data-selected', '');
+      document.getElementById('modalUssdResult').classList.add('hidden');
+    }
+
+    function clearModalUssdAmts() {
+      document.querySelectorAll('#modalUssdAmounts .mussd-amt-btn').forEach(b => {
+        b.classList.remove('bg-emerald-500', 'text-white', 'border-emerald-400', 'shadow-sm');
+        b.classList.add('text-emerald-700', 'dark:text-emerald-300', 'bg-white', 'dark:bg-gray-800', 'border-emerald-200', 'dark:border-emerald-800', 'hover:bg-emerald-50', 'dark:hover:bg-emerald-900/20');
+        b.removeAttribute('data-selected');
+      });
+      selectedModalUssdAmt = null;
+      document.getElementById('modalUssdResult').classList.add('hidden');
+    }
+
+    function payModalUssd() {
+      const resultEl = document.getElementById('modalUssdResult');
+      const phoneInput = document.getElementById('modalUssdPhone');
+      const customInput = document.getElementById('modalUssdCustom');
+
+      let amount = selectedModalUssdAmt;
+      const customVal = parseInt(customInput.value, 10);
+      if (customVal && customVal >= 100) {
+        amount = customVal;
+      }
+
+      if (!amount || amount < 100) {
+        alert('Please select or enter an amount (min 100 RWF).');
+        return;
+      }
+
+      if (!phoneInput.value.trim()) {
+        alert('Please enter your MoMo phone number.');
+        phoneInput.focus();
+        return;
+      }
+
+      const ussdCode = `*182*8*1*${MODAL_MERCHANT_CODE}*${amount}#`;
+
+      const isMobile = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+
+      if (isMobile) {
+        resultEl.innerHTML = `
+          <p class="text-[9px] text-gray-400 dark:text-gray-500 mb-1">📱 Tap to open dialer:</p>
+          <a href="tel:${encodeURI(ussdCode)}" class="block w-full text-center font-mono text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg py-2 mb-1.5 transition-all">
+            ${ussdCode}
+          </a>
+          <p class="text-[8px] text-gray-400 dark:text-gray-500">Press <strong class="text-gray-600 dark:text-gray-300">Call</strong> → enter <strong class="text-gray-600 dark:text-gray-300">PIN</strong> ✅</p>
+        `;
+      } else {
+        resultEl.innerHTML = `
+          <p class="text-[9px] text-gray-400 dark:text-gray-500 mb-1">📱 Dial on your phone:</p>
+          <div class="flex items-center gap-1.5">
+            <code class="flex-1 text-center font-mono text-xs font-bold text-emerald-600 dark:text-emerald-400 select-all">${ussdCode}</code>
+            <button onclick="var b=this; navigator.clipboard.writeText('${ussdCode}').then(()=>{b.textContent='Copied!';setTimeout(()=>{b.textContent='Copy'},2000)})" class="flex-shrink-0 px-2 py-1 text-[9px] font-semibold text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-900/30 border border-emerald-200 dark:border-emerald-800 rounded-lg hover:bg-emerald-100 dark:hover:bg-emerald-900/50 transition-all">Copy</button>
+          </div>
+          <p class="text-[8px] text-gray-400 dark:text-gray-500 mt-1">Dial code → press <strong class="text-gray-600 dark:text-gray-300">Call</strong> → enter <strong class="text-gray-600 dark:text-gray-300">PIN</strong> ✅</p>
+        `;
+      }
+
+      resultEl.classList.remove('hidden');
+    }
+
+    // Close donate modal on Escape and backdrop click
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape') closeDonateModal();
+    });
+    document.addEventListener('click', function (e) {
+      const modal = document.getElementById('donateModal');
+      if (e.target === modal) closeDonateModal();
+    });
+
     function toggleTheme() {
       setTheme(!document.documentElement.classList.contains('dark'));
     }
