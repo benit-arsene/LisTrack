@@ -837,14 +837,16 @@
 
     // ─── Goals ──────────────────────────────────────────────────────────────
 
-    async function fetchGoals() {
+    async function fetchGoals({ silent = false } = {}) {
       const goalsList = document.getElementById('goalsList');
       const goalsLoading = document.getElementById('goalsLoading');
       const goalsEmpty = document.getElementById('goalsEmpty');
 
-      goalsLoading.classList.remove('hidden');
-      goalsList.classList.add('hidden');
-      goalsEmpty.classList.add('hidden');
+      if (!silent) {
+        goalsLoading.classList.remove('hidden');
+        goalsList.classList.add('hidden');
+        goalsEmpty.classList.add('hidden');
+      }
 
       try {
         const [allResp, statusResp] = await Promise.all([
@@ -878,6 +880,7 @@
         renderGoals(merged);
       } catch (err) {
         console.error('[goals] Error:', err);
+        if (silent) return; // don't touch the DOM on silent failures
         goalsLoading.classList.add('hidden');
         goalsList.classList.add('hidden');
         const el = document.getElementById('goalsEmpty');
@@ -1211,8 +1214,8 @@
         renderDailyChart(data);
       }
 
-      // Silently update goals only on Day view
-      if (currentPeriod === 'day') fetchGoals();
+      // Silently update goals only on Day view (no loading flicker)
+      if (currentPeriod === 'day') fetchGoals({ silent: true });
     }
 
     // ─── Full Render ────────────────────────────────────────────────────────
@@ -1328,7 +1331,7 @@
       const goalsSection = document.getElementById('goalsSection');
       if (currentPeriod === 'day') {
         goalsSection.style.display = 'block';
-        fetchGoals();
+        fetchGoals({ silent: true });
       } else {
         goalsSection.style.display = 'none';
       }
