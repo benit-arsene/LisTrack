@@ -682,7 +682,10 @@
 
           <!-- QR Code Wrapper -->
           <div class="inline-flex items-center justify-center p-3 bg-white dark:bg-gray-800 rounded-xl border-2 border-yellow-400 dark:border-yellow-500 shadow-sm mb-2.5">
-            <img src="https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=*182*8*1*657174*&bgcolor=ffffff&color=1f2937" alt="Scan to Pay via MoMo" class="w-44 h-44 rounded-lg" />
+            <img src="https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=tel:%2A182%2A8%2A1%2A657174%23&bgcolor=ffffff&color=1f2937" alt="Scan to Pay via MoMo — opens your dialer" class="w-44 h-44 rounded-lg" onerror="this.style.display='none'; this.nextElementSibling.classList.remove('hidden')" />
+            <div class="hidden w-44 h-44 rounded-lg bg-gray-100 dark:bg-gray-700 flex items-center justify-center text-center p-4">
+              <span class="text-[10px] text-gray-400 dark:text-gray-500">📱 Dial<br/><strong class="text-gray-600 dark:text-gray-300">*182*8*1*657174#</strong><br/>on your phone</span>
+            </div>
           </div>
 
           <!-- Caption -->
