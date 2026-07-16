@@ -1119,9 +1119,11 @@
         document.getElementById('dateBadge').textContent = currentPeriod === 'day' ? 'Today' : formatPeriodLabel(data);
       }
 
-      const exportBtn = document.getElementById('exportBtn');
-      if (isCurrentPeriod(currentDate || getTodayStr())) exportBtn.classList.add('hidden');
-      else exportBtn.classList.remove('hidden');
+      const shareContainer = document.getElementById('shareContainer');
+      if (shareContainer) {
+        if (isCurrentPeriod(currentDate || getTodayStr())) shareContainer.classList.add('hidden');
+        else shareContainer.classList.remove('hidden');
+      }
 
       // Only animate if value changed — skips flicker when same value re-fetched
       var _tdEl = document.getElementById('totalDomains');
@@ -1260,9 +1262,11 @@
         currentPeriod === 'custom' ? 'Today' :
         currentPeriod === 'week' ? 'This Week' : 'This Month';
 
-      const exportBtn = document.getElementById('exportBtn');
-      if (inCurrent) exportBtn.classList.add('hidden');
-      else exportBtn.classList.remove('hidden');
+      const shareContainer = document.getElementById('shareContainer');
+      if (shareContainer) {
+        if (inCurrent) shareContainer.classList.add('hidden');
+        else shareContainer.classList.remove('hidden');
+      }
 
       // Sync date picker with current viewed date
       const datePickerInput = document.getElementById('datePickerInput');
@@ -1394,13 +1398,124 @@
       else setTheme(window.matchMedia('(prefers-color-scheme: dark)').matches);
     }
 
-    // ─── Export PDF ─────────────────────────────────────────────────────────
+    // ─── Share / Export (CSV + PDF) ────────────────────────────────────────
 
+    function toggleShareMenu() {
+      const dropdown = document.getElementById('shareDropdown');
+      if (!dropdown) return;
+      const isOpen = dropdown.classList.contains('open');
+      dropdown.classList.toggle('open');
+
+      if (!isOpen) {
+        // Close on click outside
+        const closeHandler = function(e) {
+          const container = document.getElementById('shareContainer');
+          if (container && !container.contains(e.target)) {
+            dropdown.classList.remove('open');
+            document.removeEventListener('click', closeHandler);
+          }
+        };
+        // Delay adding listener so this click doesn't close it immediately
+        setTimeout(() => {
+          document.addEventListener('click', closeHandler);
+        }, 10);
+      }
+    }
+
+    /**
+     * Export dashboard data in the specified format ('csv' or 'pdf').
+     */
+    async function exportData(type) {
+      // Close the dropdown
+      const dropdown = document.getElementById('shareDropdown');
+      if (dropdown) dropdown.classList.remove('open');
+
+      if (type === 'csv') {
+        exportCSV();
+      } else if (type === 'pdf') {
+        exportPDF();
+      }
+    }
+
+    /**
+     * Export the current dashboard data as a CSV file.
+     */
+    function exportCSV() {
+      const data = window._lastDashboardData;
+      if (!data || !data.domains || data.domains.length === 0) {
+        alert('No data available to export.');
+        return;
+      }
+
+      const datePart = (currentDate || getTodayStr());
+      const periodLabel = currentPeriod === 'day' ? datePart
+        : currentPeriod === 'custom'
+          ? `${customStartDate || datePart}_to_${customEndDate || datePart}`
+          : currentPeriod;
+
+      // Build CSV rows
+      const rows = [
+        ['Domain', 'Total Minutes', 'Formatted Time'],
+      ];
+
+      for (const d of data.domains) {
+        rows.push([
+          d.domain,
+          d.totalMinutes.toFixed(2),
+          formatTime(d.totalMinutes),
+        ]);
+      }
+
+      // Add total row
+      rows.push(['']);
+      rows.push(['TOTAL', data.totalMinutes.toFixed(2), formatTime(data.totalMinutes)]);
+
+      // Add summary info at the bottom
+      rows.push(['']);
+      rows.push(['Report', periodLabel]);
+      rows.push(['Period', currentPeriod]);
+      rows.push(['Total Domains', String(data.totalDomains || 0)]);
+      rows.push(['Top Site', data.topDomain || '—']);
+      if (data.startDate && data.endDate) {
+        rows.push(['Date Range', `${data.startDate} to ${data.endDate}`]);
+      }
+
+      // Convert to CSV string
+      const csvContent = rows.map(row =>
+        row.map(cell => {
+          if (cell == null) return '';
+          const str = String(cell);
+          // Escape quotes and wrap in quotes if contains comma, quote, or newline
+          if (str.includes(',') || str.includes('"') || str.includes('\n')) {
+            return '"' + str.replace(/"/g, '""') + '"';
+          }
+          return str;
+        }).join(',')
+      ).join('\n');
+
+      // Create and trigger download
+      const filename = `screen-time-${periodLabel}.csv`;
+      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+    }
+
+    /**
+     * Export the current dashboard view as a PDF using html2pdf library.
+     */
     async function exportPDF() {
-      const exportBtn = document.getElementById('exportBtn');
-      const originalHtml = exportBtn.innerHTML;
-      exportBtn.disabled = true;
-      exportBtn.innerHTML = `<svg class="w-4 h-4 loading-spinner" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg> Generating...`;
+      const shareBtn = document.getElementById('shareBtn');
+      const originalHtml = shareBtn ? shareBtn.innerHTML : '';
+      if (shareBtn) {
+        shareBtn.disabled = true;
+        shareBtn.innerHTML = `<svg class="w-4 h-4 loading-spinner" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>`;
+      }
 
       try {
         const element = document.getElementById('dashboardContent');
@@ -1420,8 +1535,10 @@
         console.error('PDF export failed:', err);
         alert('Failed to export PDF. Please try again.');
       } finally {
-        exportBtn.disabled = false;
-        exportBtn.innerHTML = originalHtml;
+        if (shareBtn) {
+          shareBtn.disabled = false;
+          shareBtn.innerHTML = originalHtml;
+        }
       }
     }
 
