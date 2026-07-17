@@ -82,9 +82,9 @@
 
       // Rank change: + = moved up (worse), - = moved down (better)
       const isUp = t.status === 'up';
-      // Moved up in rank = more screen time = red
-      // Moved down in rank = less screen time = green
-      const color = isUp ? 'text-red-500 dark:text-red-400' : 'text-emerald-500 dark:text-emerald-400';
+      // Moved up in rank = more screen time = green
+      // Moved down in rank = less screen time = red
+      const color = isUp ? 'text-emerald-500 dark:text-emerald-400' : 'text-red-500 dark:text-red-400';
       const arrow = isUp ? '▲' : '▼';
       const change = Math.abs(t.rankChange);
       const directionLabel = isUp ? 'Moved up' : 'Moved down';
@@ -1321,7 +1321,7 @@
             trendBadge.className = 'text-xs font-medium text-gray-400 dark:text-gray-500';
           } else {
             const isUp = td.totalDirection === 'up';
-            trendBadge.className = 'text-xs font-semibold ' + (isUp ? 'text-red-500 dark:text-red-400' : 'text-emerald-500 dark:text-emerald-400');
+            trendBadge.className = 'text-xs font-semibold ' + (isUp ? 'text-emerald-500 dark:text-emerald-400' : 'text-red-500 dark:text-red-400');
             trendBadge.innerHTML = (isUp ? '▲' : '▼') + ' ' + Math.abs(pct) + '% vs last period';
           }
         } else {
