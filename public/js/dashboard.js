@@ -60,17 +60,36 @@
     }
 
     // ─── Trend Display Helpers ────────────────────────────────────────
+    //
+    // UPDATED: Now displays rank-based position changes instead of minute-based
+    // percentage changes. Newly tracked domains show a "NEW" badge instead
+    // of a broken arrow with a massive fallback number.
+    //
+    // rankChange > 0  → moved UP in rank (higher position = more screen time)
+    // rankChange < 0  → moved DOWN in rank (lower position = less screen time)
+    // ─────────────────────────────────────────────────────────────────────────
 
     function getTrendHtml(domain) {
       const trends = window._lastTrendData;
       if (!trends || !trends.trends) return '';
       const t = trends.trends.find(d => d.domain === domain);
-      if (!t || t.direction === 'flat') return '';
-      const isUp = t.direction === 'up';
+      if (!t || t.status === 'same' || t.status === 'dropped') return '';
+
+      // Newly tracked domain — show a clean "NEW" badge
+      if (t.status === 'new') {
+        return `<span class="text-[10px] font-semibold ml-1.5 text-indigo-500 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-900/30 px-1.5 py-0.5 rounded" title="Newly tracked — no previous period data">NEW</span>`;
+      }
+
+      // Rank change: + = moved up (worse), - = moved down (better)
+      const isUp = t.status === 'up';
+      // Moved up in rank = more screen time = red
+      // Moved down in rank = less screen time = green
       const color = isUp ? 'text-red-500 dark:text-red-400' : 'text-emerald-500 dark:text-emerald-400';
       const arrow = isUp ? '▲' : '▼';
-      const pct = Math.abs(t.changePercent);
-      return `<span class="${color} text-[10px] font-semibold ml-1.5" title="${isUp ? 'Up' : 'Down'} ${pct}% vs previous period">${arrow}${pct > 0 ? pct : ''}</span>`;
+      const change = Math.abs(t.rankChange);
+      const directionLabel = isUp ? 'Moved up' : 'Moved down';
+      const positionWord = change !== 1 ? 'positions' : 'position';
+      return `<span class="${color} text-[10px] font-semibold ml-1.5" title="${directionLabel} ${change} ${positionWord}">${arrow}${change}</span>`;
     }
 
 

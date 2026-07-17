@@ -1100,53 +1100,114 @@ app.get("/api/trends", async (req, res) => {
       getAggregatedByDomainForPeriod(prevStartStr, prevEndStr, userId),
     ]);
 
-    // Build a map of previous period data for quick lookup
-    const prevMap = {};
-    for (const d of previousDomains) {
-      prevMap[d.domain] = d.totalMinutes;
+    // ─── RANK-BASED TREND CALCULATION ────────────────────────────────────
+    //
+    // BUG FIX: Previous implementation calculated trends as minute-based
+    // percentage change (e.g., "▲ 919%"). This produced absurd percentages
+    // when a domain had a tiny previous baseline but grew modestly.
+    //
+    // FIX: Compare domain POSITIONS (ranks) between the two periods:
+    //   - Build ranked leaderboards for each period by totalMinutes DESC
+    //   - rankChange = PreviousRank - CurrentRank
+    //     (positive = moved up in rank, negative = moved down)
+    //   - New domains (no previous data) get status: 'new' instead of a fake %
+    // ───────────────────────────────────────────────────────────────────────
+
+    // 1. Build ranked leaderboards (1-based index, sorted by time DESC)
+    function buildRankedList(domains) {
+      // Shallow copy before sort to avoid mutating the original array
+      return [...domains]
+        .sort((a, b) => b.totalMinutes - a.totalMinutes)
+        .map((d, i) => ({
+          domain: d.domain,
+          totalMinutes: d.totalMinutes,
+          rank: i + 1,
+        }));
     }
+
+    const currentRanked = buildRankedList(currentDomains);
+    const previousRanked = buildRankedList(previousDomains);
+
+    // 2. Build fast lookup maps: domain -> { totalMinutes, rank }
+    const currentMap = {};
+    for (const entry of currentRanked) {
+      currentMap[entry.domain] = entry;
+    }
+    const previousMap = {};
+    for (const entry of previousRanked) {
+      previousMap[entry.domain] = entry;
+    }
+
     let prevTotal = previousDomains.reduce((s, d) => s + d.totalMinutes, 0);
     const currTotal = currentDomains.reduce((s, d) => s + d.totalMinutes, 0);
 
-    // Merge current domains with previous data and calculate trends
-    const allDomains = new Set();
-    for (const d of currentDomains) allDomains.add(d.domain);
-    for (const d of previousDomains) allDomains.add(d.domain);
-
+    // 3. Calculate rank-based trend for every domain that exists in
+    //    EITHER period (we track from current perspective, but also
+    //    include domains that dropped off entirely)
     const trends = [];
+    const allDomains = new Set([
+      ...currentDomains.map(d => d.domain),
+      ...previousDomains.map(d => d.domain),
+    ]);
+
     for (const domain of allDomains) {
-      const currMinutes = currentDomains.find(d => d.domain === domain)?.totalMinutes || 0;
-      const prevMinutes = prevMap[domain] || 0;
+      const curr = currentMap[domain];
+      const prev = previousMap[domain];
 
-      let change = 0;
-      let changePercent = 0;
-      if (prevMinutes > 0) {
-        change = currMinutes - prevMinutes;
-        changePercent = Math.round((change / prevMinutes) * 100);
-      } else if (currMinutes > 0) {
-        change = currMinutes;
-        changePercent = 100; // New domain, +100%
+      const currMinutes = curr ? curr.totalMinutes : 0;
+      const prevMinutes = prev ? prev.totalMinutes : 0;
+      const currentRank = curr ? curr.rank : null;
+      const previousRank = prev ? prev.rank : null;
+
+      let rankChange = null;
+      let status = 'same';
+
+      if (curr && !prev) {
+        // NEWLY tracked domain — no previous data to compare
+        status = 'new';
+        rankChange = null;
+      } else if (!curr && prev) {
+        // Domain dropped off entirely — still show it (currentRank = null)
+        status = 'dropped';
+        rankChange = null;
+      } else if (previousRank !== null && currentRank !== null) {
+        // Domain exists in both periods — compare rank positions
+        rankChange = previousRank - currentRank;
+        if (rankChange > 0) status = 'up';
+        else if (rankChange < 0) status = 'down';
+        else status = 'same';
       }
-
-      // Merge current + previous domain entries
-      const currEntry = currentDomains.find(d => d.domain === domain);
 
       trends.push({
         domain,
-        currentMinutes: currMinutes,
-        previousMinutes: prevMinutes,
-        change: Math.round(change * 100) / 100,
-        changePercent,
-        direction: change > 0 ? 'up' : change < 0 ? 'down' : 'flat',
+        currentMinutes: Math.round(currMinutes * 100) / 100,
+        previousMinutes: Math.round(prevMinutes * 100) / 100,
+        currentRank,
+        previousRank,
+        rankChange,
+        status,
       });
     }
 
-    // Sort by current minutes descending
-    trends.sort((a, b) => b.currentMinutes - a.currentMinutes);
+    // Sort so that current-period domains (with data) come first, ordered
+    // by currentMinutes descending; dropped domains go to the bottom
+    trends.sort((a, b) => {
+      // Domains with current data come first
+      if (a.currentRank !== null && b.currentRank === null) return -1;
+      if (a.currentRank === null && b.currentRank !== null) return 1;
+      // Both have current data — sort by current rank
+      if (a.currentRank !== null && b.currentRank !== null) {
+        return a.currentRank - b.currentRank;
+      }
+      // Both dropped — sort by previous rank
+      return (a.previousRank || 999) - (b.previousRank || 999);
+    });
 
-    // Total trend
+    // 4. Overall total change (kept as minute-percentage for the summary badge)
     const totalChange = currTotal - prevTotal;
-    const totalChangePercent = prevTotal > 0 ? Math.round((totalChange / prevTotal) * 100) : (currTotal > 0 ? 100 : 0);
+    const totalChangePercent = prevTotal > 0
+      ? Math.round((totalChange / prevTotal) * 100)
+      : (currTotal > 0 ? 100 : 0);
 
     return res.json({
       period,
