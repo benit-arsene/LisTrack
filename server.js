@@ -108,14 +108,18 @@ async function createSqliteDriver() {
   }
 
   // Migration: add seq_id column for deduplication
+  // IMPORTANT: The index is created INSIDE the same try block, AFTER the ALTER TABLE.
+  // This avoids crash on existing databases where sql_schema DDL's CREATE INDEX
+  // would fail because seq_id didn't exist yet on the old table.
   try {
     const tableInfo = db.exec("PRAGMA table_info('screen_time')");
     const columns = tableInfo[0]?.values?.map(v => v[1]) || [];
     if (!columns.includes('seq_id')) {
       db.run("ALTER TABLE screen_time ADD COLUMN seq_id INTEGER DEFAULT NULL");
-      db.run("CREATE INDEX IF NOT EXISTS idx_screen_time_seq_id ON screen_time(seq_id)");
       console.log('[db] SQLite migration: added seq_id column to screen_time');
     }
+    // Create index AFTER we've verified/added the column
+    db.run("CREATE INDEX IF NOT EXISTS idx_screen_time_seq_id ON screen_time(seq_id)");
   } catch (err) {
     console.error('[db] SQLite migration error (seq_id):', err.message);
   }
@@ -219,6 +223,10 @@ async function createPostgresDriver(connectionString) {
       }
 
       // Migration: add seq_id column for deduplication
+      // IMPORTANT: The index is created INSIDE the same try block, AFTER the ALTER
+      // TABLE ADD COLUMN (or at least after we've verified the column exists).
+      // This avoids crash on existing databases where sql_schema_pg DDL's CREATE
+      // INDEX would fail because seq_id didn't exist yet on the old table.
       try {
         const colResult = await pool.query(`
           SELECT column_name FROM information_schema.columns
@@ -226,9 +234,10 @@ async function createPostgresDriver(connectionString) {
         `);
         if (colResult.rows.length === 0) {
           await pool.query(`ALTER TABLE screen_time ADD COLUMN seq_id INTEGER DEFAULT NULL`);
-          await pool.query(`CREATE INDEX IF NOT EXISTS idx_screen_time_seq_id ON screen_time(seq_id)`);
           console.log('[db] PostgreSQL migration: added seq_id column');
         }
+        // Create index AFTER we've verified/added the column
+        await pool.query(`CREATE INDEX IF NOT EXISTS idx_screen_time_seq_id ON screen_time(seq_id)`);
       } catch (err) {
         console.error('[db] PostgreSQL migration error (seq_id):', err.message);
       }
@@ -313,7 +322,6 @@ const sql_schema = `
   CREATE INDEX IF NOT EXISTS idx_screen_time_domain ON screen_time(domain);
   CREATE INDEX IF NOT EXISTS idx_screen_time_timestamp ON screen_time(timestamp);
   CREATE INDEX IF NOT EXISTS idx_screen_time_user ON screen_time(user_id);
-  CREATE INDEX IF NOT EXISTS idx_screen_time_seq_id ON screen_time(seq_id);
 
   CREATE TABLE IF NOT EXISTS daily_goals (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -345,7 +353,6 @@ const sql_schema_pg = `
   CREATE INDEX IF NOT EXISTS idx_screen_time_domain ON screen_time(domain);
   CREATE INDEX IF NOT EXISTS idx_screen_time_timestamp ON screen_time(timestamp);
   CREATE INDEX IF NOT EXISTS idx_screen_time_user ON screen_time(user_id);
-  CREATE INDEX IF NOT EXISTS idx_screen_time_seq_id ON screen_time(seq_id);
 
   CREATE TABLE IF NOT EXISTS daily_goals (
     id            SERIAL PRIMARY KEY,
