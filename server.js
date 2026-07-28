@@ -95,17 +95,30 @@ async function createSqliteDriver() {
     init: async () => {
       db.run(sql_schema);
 
-      // Migration: add user_id column if the table was created before multi-user support
-      try {
-        const tableInfo = db.exec("PRAGMA table_info('screen_time')");
-        const columns = tableInfo[0]?.values?.map(v => v[1]) || [];
-        if (!columns.includes('user_id')) {
-          db.run("ALTER TABLE screen_time ADD COLUMN user_id TEXT NOT NULL DEFAULT ''");
-          console.log('[db] SQLite migration: added user_id column to screen_time');
-        }
-      } catch (err) {
-        console.error('[db] SQLite migration error:', err.message);
-      }
+  // Migration: add user_id column if the table was created before multi-user support
+  try {
+    const tableInfo = db.exec("PRAGMA table_info('screen_time')");
+    const columns = tableInfo[0]?.values?.map(v => v[1]) || [];
+    if (!columns.includes('user_id')) {
+      db.run("ALTER TABLE screen_time ADD COLUMN user_id TEXT NOT NULL DEFAULT ''");
+      console.log('[db] SQLite migration: added user_id column to screen_time');
+    }
+  } catch (err) {
+    console.error('[db] SQLite migration error:', err.message);
+  }
+
+  // Migration: add seq_id column for deduplication
+  try {
+    const tableInfo = db.exec("PRAGMA table_info('screen_time')");
+    const columns = tableInfo[0]?.values?.map(v => v[1]) || [];
+    if (!columns.includes('seq_id')) {
+      db.run("ALTER TABLE screen_time ADD COLUMN seq_id INTEGER DEFAULT NULL");
+      db.run("CREATE INDEX IF NOT EXISTS idx_screen_time_seq_id ON screen_time(seq_id)");
+      console.log('[db] SQLite migration: added seq_id column to screen_time');
+    }
+  } catch (err) {
+    console.error('[db] SQLite migration error (seq_id):', err.message);
+  }
 
       // Migration: add user_id column to daily_goals
       try {
@@ -205,6 +218,21 @@ async function createPostgresDriver(connectionString) {
         console.error('[db] PostgreSQL migration error:', err.message);
       }
 
+      // Migration: add seq_id column for deduplication
+      try {
+        const colResult = await pool.query(`
+          SELECT column_name FROM information_schema.columns
+          WHERE table_name = 'screen_time' AND column_name = 'seq_id'
+        `);
+        if (colResult.rows.length === 0) {
+          await pool.query(`ALTER TABLE screen_time ADD COLUMN seq_id INTEGER DEFAULT NULL`);
+          await pool.query(`CREATE INDEX IF NOT EXISTS idx_screen_time_seq_id ON screen_time(seq_id)`);
+          console.log('[db] PostgreSQL migration: added seq_id column');
+        }
+      } catch (err) {
+        console.error('[db] PostgreSQL migration error (seq_id):', err.message);
+      }
+
       // Migration: ensure indexes exist for new columns
       try {
         await pool.query(`CREATE INDEX IF NOT EXISTS idx_screen_time_user ON screen_time(user_id)`);
@@ -277,6 +305,7 @@ const sql_schema = `
     path            TEXT NOT NULL DEFAULT '/',
     durationSeconds REAL NOT NULL,
     timestamp       TEXT NOT NULL,
+    seq_id          INTEGER DEFAULT NULL,
     recovered       INTEGER NOT NULL DEFAULT 0,
     ingested_at     TEXT NOT NULL DEFAULT (datetime('now'))
   );
@@ -284,6 +313,7 @@ const sql_schema = `
   CREATE INDEX IF NOT EXISTS idx_screen_time_domain ON screen_time(domain);
   CREATE INDEX IF NOT EXISTS idx_screen_time_timestamp ON screen_time(timestamp);
   CREATE INDEX IF NOT EXISTS idx_screen_time_user ON screen_time(user_id);
+  CREATE INDEX IF NOT EXISTS idx_screen_time_seq_id ON screen_time(seq_id);
 
   CREATE TABLE IF NOT EXISTS daily_goals (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -307,6 +337,7 @@ const sql_schema_pg = `
     path            TEXT NOT NULL DEFAULT '/',
     "durationSeconds" DOUBLE PRECISION NOT NULL,
     timestamp       TIMESTAMP NOT NULL,
+    seq_id          INTEGER DEFAULT NULL,
     recovered       BOOLEAN NOT NULL DEFAULT FALSE,
     ingested_at     TIMESTAMP NOT NULL DEFAULT NOW()
   );
@@ -314,6 +345,7 @@ const sql_schema_pg = `
   CREATE INDEX IF NOT EXISTS idx_screen_time_domain ON screen_time(domain);
   CREATE INDEX IF NOT EXISTS idx_screen_time_timestamp ON screen_time(timestamp);
   CREATE INDEX IF NOT EXISTS idx_screen_time_user ON screen_time(user_id);
+  CREATE INDEX IF NOT EXISTS idx_screen_time_seq_id ON screen_time(seq_id);
 
   CREATE TABLE IF NOT EXISTS daily_goals (
     id            SERIAL PRIMARY KEY,
@@ -331,13 +363,41 @@ const sql_schema_pg = `
 // ─── Database Helper Functions ──────────────────────────────────────────────
 
 /**
- * Insert a screen-time log entry into storage.
+ * Insert a screen-time log entry into storage with deduplication.
+ *
+ * DEDUP: If the entry includes a seq_id, we check if it has already been
+ * processed. This prevents double-counting when crash-recovered payloads
+ * are replayed after the original had already been saved.
+ *
+ * PRECISION: durationSeconds is stored at full precision (DOUBLE/REAL).
+ * Only the aggregation queries round, preserving granularity.
  */
 async function insertScreenTimeLog(entry) {
+  // ─── Dedup by seq_id ──────────────────────────────────────────────
+  if (entry.seq_id != null) {
+    const existing = await driver.get(
+      `SELECT id FROM screen_time WHERE seq_id = ?`,
+      [entry.seq_id],
+    );
+    if (existing) {
+      console.log(`[screen-time] Dedup: seq_id ${entry.seq_id} already exists (id=${existing.id})`);
+      entry._id = existing.id;
+      return entry; // Skip insert — already counted
+    }
+  }
+
   const result = await driver.run(
-    `INSERT INTO screen_time (user_id, domain, path, "durationSeconds", "timestamp", recovered)
-     VALUES (?, ?, ?, ?, ?, ?)`,
-    [entry.userId || '', entry.domain, entry.path, entry.durationSeconds, entry.timestamp, driver.isPostgres ? !!entry.recovered : (entry.recovered ? 1 : 0)],
+    `INSERT INTO screen_time (user_id, domain, path, "durationSeconds", "timestamp", seq_id, recovered)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    [
+      entry.userId || '',
+      entry.domain,
+      entry.path,
+      entry.durationSeconds,
+      entry.timestamp,
+      entry.seq_id != null ? entry.seq_id : null,
+      driver.isPostgres ? !!entry.recovered : (entry.recovered ? 1 : 0),
+    ],
   );
   entry._id = result.lastInsertRowid;
   return entry;
@@ -362,11 +422,16 @@ async function getAllScreenTimeLogs(userId) {
 
 /**
  * Aggregate screen-time logs grouped by domain for a given date.
+ *
+ * PRECISION FIX: Round to 6 decimal places instead of 2. This preserves
+ * sub-second precision (1 second = 0.016666 minutes). With 2 decimal places,
+ * anything below 0.005 minutes (~0.3 seconds) rounded to zero, losing data.
+ * With 6 decimal places, sub-millisecond precision is preserved.
  */
 async function getAggregatedByDomain(date, userId) {
   const dateValue = date || new Date().toISOString().slice(0, 10);
   const rows = await driver.all(
-    `SELECT domain, ROUND(CAST(SUM("durationSeconds") / 60.0 AS NUMERIC), 2) AS "totalMinutes"
+    `SELECT domain, ROUND(CAST(SUM("durationSeconds") / 60.0 AS NUMERIC), 6) AS "totalMinutes"
      FROM screen_time
      WHERE date("timestamp") = ? AND user_id = ?
      GROUP BY domain
@@ -449,7 +514,7 @@ function getPeriodRange(dateStr, period) {
  */
 async function getAggregatedByDomainForPeriod(startDate, endDate, userId) {
   const rows = await driver.all(
-    `SELECT domain, ROUND(CAST(SUM("durationSeconds") / 60.0 AS NUMERIC), 2) AS "totalMinutes"
+    `SELECT domain, ROUND(CAST(SUM("durationSeconds") / 60.0 AS NUMERIC), 6) AS "totalMinutes"
      FROM screen_time
      WHERE date("timestamp") >= ? AND date("timestamp") <= ? AND user_id = ?
      GROUP BY domain
@@ -467,7 +532,7 @@ async function getAggregatedByDomainForPeriod(startDate, endDate, userId) {
  */
 async function getDailyBreakdownForPeriod(startDate, endDate, userId) {
   const rows = await driver.all(
-    `SELECT date("timestamp") AS d, ROUND(CAST(SUM("durationSeconds") / 60.0 AS NUMERIC), 2) AS "totalMinutes"
+    `SELECT date("timestamp") AS d, ROUND(CAST(SUM("durationSeconds") / 60.0 AS NUMERIC), 6) AS "totalMinutes"
      FROM screen_time
      WHERE date("timestamp") IS NOT NULL AND date("timestamp") >= ? AND date("timestamp") <= ? AND user_id = ?
      GROUP BY date("timestamp")
@@ -566,7 +631,7 @@ async function deleteGoal(id, userId) {
 async function getTodayMinutesForDomain(domain, userId) {
   const today = new Date().toISOString().slice(0, 10);
   const row = await driver.get(
-    `SELECT ROUND(CAST(SUM("durationSeconds") / 60.0 AS NUMERIC), 2) AS "totalMinutes"
+    `SELECT ROUND(CAST(SUM("durationSeconds") / 60.0 AS NUMERIC), 6) AS "totalMinutes"
      FROM screen_time
      WHERE date("timestamp") = ? AND domain = ? AND user_id = ?`,
     [today, domain, userId || ''],
@@ -654,6 +719,7 @@ app.post("/api/screen-time", async (req, res) => {
       path: String(payload.path || "/"),
       durationSeconds: payload.durationSeconds,
       timestamp: payload.timestamp || new Date().toISOString(),
+      seq_id: payload.seq_id != null ? Number(payload.seq_id) : null,
       recovered: payload.recovered === true,
     };
 

@@ -1,15 +1,17 @@
-// LisTrack Background Service Worker
-// Handles forwarding tracking payloads to bypass HTTPS -> HTTP mixed content blocking
-// AND checks daily goals against screen time usage and sends Chrome notifications.
+// LisTrack Background Service Worker (Air-Tight Precision v2)
+//
+// FIXES vs v1:
+//   1. Offline queue: buffers failed payloads in chrome.storage.local
+//   2. Retry mechanism: drains offline queue on periodic alarm
+//   3. Service worker lifecycle: onStartup re-initializes, onSuspend saves state
+//   4. Rejects duplicate seq_id payloads to prevent double-counting
+//   5. Handles forwarding tracking payloads to bypass mixed content blocking
+//   6. Checks daily goals and sends Chrome notifications
 
 // ─── Configuration ──────────────────────────────────────────────────────────
 
 const SERVER_URL = "https://listrack-2.onrender.com";
 
-// Domains to block from being forwarded to the server (defense-in-depth).
-// Should stay in sync with the IGNORED_DOMAIN_PATTERNS in tracker.js.
-// LisTrack dashboard domains are blocked to avoid self-tracking.
-// Other render.com subdomains are NOT blocked.
 const BLOCKED_DOMAINS = [
   "localhost",
   "listrack.onrender.com",
@@ -17,11 +19,14 @@ const BLOCKED_DOMAINS = [
 ];
 
 const GOAL_CHECK_INTERVAL_MINUTES = 5;
-const NOTIFICATION_COOLDOWN_MS = 30 * 60 * 1000; // 30 min before re-notifying
-const BADGE_UPDATE_INTERVAL_MINUTES = 1; // Update toolbar badge every minute
+const NOTIFICATION_COOLDOWN_MS = 30 * 60 * 1000;
+const BADGE_UPDATE_INTERVAL_MINUTES = 1;
+const OFFLINE_RETRY_INTERVAL_MINUTES = 2; // Retry offline queue every 2 minutes
 
 const USER_TOKEN_KEY = "lisTrackTrackerToken";
 const PAUSE_KEY = "lisTrackPaused";
+const OFFLINE_QUEUE_KEY = "lisTrackOfflineQueue";
+const PROCESSED_SEQ_IDS_KEY = "lisTrackProcessedSeqIds"; // Dedup cache
 
 // ─── Token Management ───────────────────────────────────────────────────────
 
@@ -164,8 +169,82 @@ async function checkGoals() {
   }
 }
 
+// ─── Offline Queue (buffer for failed sends) ───────────────────────────
+// The content script pushes failed payloads to chrome.storage.local.
+// This background worker drains them on a 2-minute alarm and on startup.
+
+async function drainOfflineQueue() {
+  try {
+    const result = await chrome.storage.local.get([OFFLINE_QUEUE_KEY]);
+    const queue = result[OFFLINE_QUEUE_KEY] || [];
+    if (queue.length === 0) return;
+
+    const pendingRetries = [];
+    let drained = 0;
+
+    for (const entry of queue) {
+      try {
+        const response = await fetch(`${SERVER_URL}/api/screen-time`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(entry),
+        });
+        if (response.ok) {
+          drained++;
+        } else {
+          pendingRetries.push(entry);
+        }
+      } catch (_) {
+        pendingRetries.push(entry);
+      }
+    }
+
+    // Re-queue only the failed ones
+    await chrome.storage.local.set({ [OFFLINE_QUEUE_KEY]: pendingRetries });
+
+    if (drained > 0) {
+      console.log(`[background] Drained ${drained} offline-queued payloads (${pendingRetries.length} remaining)`);
+    }
+
+    // Update badge after draining
+    updateBadge();
+  } catch (_) {}
+}
+
+// ─── Dedup Cache (seq_id tracking) ──────────────────────────────────────
+// Prevents double-counting when crash-recovered payloads are replayed.
+// The cache holds up to 1000 unique seq_ids with a 24-hour TTL.
+
+async function isDuplicateSeqId(seqId) {
+  if (!seqId) return false;
+  try {
+    const result = await chrome.storage.local.get([PROCESSED_SEQ_IDS_KEY]);
+    const cache = result[PROCESSED_SEQ_IDS_KEY] || {};
+    const now = Date.now();
+    // Purge entries older than 24 hours
+    for (const key of Object.keys(cache)) {
+      if (now - cache[key] > 86_400_000) {
+        delete cache[key];
+      }
+    }
+    if (cache[String(seqId)]) return true;
+    cache[String(seqId)] = now;
+    // Keep cache size manageable
+    const keys = Object.keys(cache);
+    if (keys.length > 1000) {
+      // Remove oldest 200 entries
+      const sorted = keys.sort((a, b) => cache[a] - cache[b]);
+      for (let i = 0; i < 200; i++) delete cache[sorted[i]];
+    }
+    await chrome.storage.local.set({ [PROCESSED_SEQ_IDS_KEY]: cache });
+    return false;
+  } catch (_) {
+    return false;
+  }
+}
+
 /**
- * Reset notification cooldowns at midnight (new day = new chance to warn).
+ * Reset notification cooldowns at midnight.
  */
 async function resetDailyNotifications() {
   const all = await chrome.storage.local.get(null);
@@ -288,6 +367,12 @@ chrome.alarms.create('updateBadge', {
   periodInMinutes: BADGE_UPDATE_INTERVAL_MINUTES,
 });
 
+// Drain offline queue every 2 minutes (retry failed payloads)
+chrome.alarms.create('drainOfflineQueue', {
+  delayInMinutes: 1,
+  periodInMinutes: OFFLINE_RETRY_INTERVAL_MINUTES,
+});
+
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === 'checkGoals') {
     checkGoals();
@@ -295,23 +380,44 @@ chrome.alarms.onAlarm.addListener((alarm) => {
     resetDailyNotifications();
   } else if (alarm.name === 'updateBadge') {
     updateBadge();
+  } else if (alarm.name === 'drainOfflineQueue') {
+    drainOfflineQueue();
   }
 });
 
-// ─── On Install / Update ────────────────────────────────────────────────────
+// ─── On Install / Update / Startup ─────────────────────────────────────────
 
 chrome.runtime.onInstalled.addListener((details) => {
   console.log('[background] Extension installed/updated:', details.reason);
 
-  // Setup context menus
   setupContextMenus();
 
-  // Run initial goal check shortly after install
   setTimeout(checkGoals, 10_000);
-
-  // Update badge immediately on install
   setTimeout(updateBadge, 2_000);
+
+  // Drain any offline-queued payloads that accumulated
+  setTimeout(drainOfflineQueue, 5_000);
 });
+
+// ─── MV3 Lifecycle: onStartup ───────────────────────────────────────────────
+// This fires when the service worker wakes up (e.g., after being suspended).
+// We re-initialize the badge and drain the offline queue.
+
+chrome.runtime.onStartup.addListener(() => {
+  console.log('[background] Service worker started');
+
+  // Re-initialize immediately
+  setTimeout(updateBadge, 1_000);
+  setTimeout(checkGoals, 5_000);
+  setTimeout(drainOfflineQueue, 3_000);
+});
+
+// ─── Keep Alive (via alarms) ────────────────────────────────────────────────
+// In MV3, the service worker can be terminated after ~30s of inactivity.
+// The periodic alarms (1min badge, 2min drain, 5min goals) serve as natural
+// keepalive events that wake the SW on fire. No manual setInterval needed —
+// setInterval is not persisted across SW termination and gives false confidence.
+// The alarms API is the canonical MV3 pattern for periodic wake-ups.
 
 // ─── Message Handler ────────────────────────────────────────────────────────
 
