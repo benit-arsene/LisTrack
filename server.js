@@ -40,7 +40,9 @@ app.use(express.text({ type: "text/plain" }));
 // Redirect old /dashboard.html links to clean /dashboard (preserves query params like ?user=TOKEN)
 app.use((req, res, next) => {
   if (req.path === "/dashboard.html") {
-    const query = req.url.includes("?") ? req.url.substring(req.url.indexOf("?")) : "";
+    const query = req.url.includes("?")
+      ? req.url.substring(req.url.indexOf("?"))
+      : "";
     return res.redirect(301, "/dashboard" + query);
   }
   next();
@@ -64,8 +66,43 @@ app.get("/", (req, res) => {
 // Both expose the same async interface: { init, all, get, run, close }
 
 const DATA_DIR = path.resolve(__dirname, "data");
-const DB_PATH = process.env.DATABASE_PATH || path.join(DATA_DIR, "screen-time.db");
+const DB_PATH =
+  process.env.DATABASE_PATH || path.join(DATA_DIR, "screen-time.db");
 let driver = null;
+
+// ─── Domain Normalization ─────────────────────────────────────────────────
+// Reduce any user-supplied domain/URL to a bare lowercase hostname.
+// Strips scheme, www., port, path, query and hash — mirrors what the
+// extension sends (window.location.hostname) and guards the server against
+// payloads that arrive with full URLs (old clients, direct API calls).
+
+function normalizeDomain(raw) {
+  if (typeof raw !== "string") return "";
+  let input = raw.trim().toLowerCase();
+  if (!input) return "";
+
+  // Prepend a scheme so new URL() parses bare hostnames like
+  // "gemini.google.com" as well as full URLs.
+  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(input)) {
+    input = "http://" + input;
+  }
+
+  let hostname = "";
+  try {
+    hostname = new URL(input).hostname;
+  } catch (_) {
+    // Manual fallback: scheme → authority, then drop path/query/hash/port.
+    let host = input.replace(/^[a-z][a-z0-9+.-]*:\/\//i, "");
+    host = host.split(/[/?#]/)[0];
+    host = host.replace(/:\d+$/, "");
+    hostname = host;
+  }
+
+  hostname = hostname.replace(/^www\./, "").replace(/\.$/, "").toLowerCase();
+  // Must still look like a hostname (letters/digits/dots/hyphens)
+  if (!hostname || !/^[a-z0-9][a-z0-9.-]*$/.test(hostname)) return "";
+  return hostname;
+}
 
 // ─── SQLite Driver (sql.js — pure JS, no native compilation) ────────────────
 
@@ -74,13 +111,12 @@ async function createSqliteDriver() {
   const SQL = await initSqlJs();
 
   let db;
+  // Ensure the database directory exists (DATABASE_PATH may point anywhere)
+  fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
   if (fs.existsSync(DB_PATH)) {
     db = new SQL.Database(fs.readFileSync(DB_PATH));
     console.log(`[db] Loaded existing SQLite database from ${DB_PATH}`);
   } else {
-    if (!fs.existsSync(DATA_DIR)) {
-      fs.mkdirSync(DATA_DIR, { recursive: true });
-    }
     db = new SQL.Database();
     console.log(`[db] Created new SQLite database at ${DB_PATH}`);
   }
@@ -95,47 +131,96 @@ async function createSqliteDriver() {
     init: async () => {
       db.run(sql_schema);
 
-  // Migration: add user_id column if the table was created before multi-user support
-  try {
-    const tableInfo = db.exec("PRAGMA table_info('screen_time')");
-    const columns = tableInfo[0]?.values?.map(v => v[1]) || [];
-    if (!columns.includes('user_id')) {
-      db.run("ALTER TABLE screen_time ADD COLUMN user_id TEXT NOT NULL DEFAULT ''");
-      console.log('[db] SQLite migration: added user_id column to screen_time');
-    }
-  } catch (err) {
-    console.error('[db] SQLite migration error:', err.message);
-  }
+      // Migration: add user_id column if the table was created before multi-user support
+      try {
+        const tableInfo = db.exec("PRAGMA table_info('screen_time')");
+        const columns = tableInfo[0]?.values?.map((v) => v[1]) || [];
+        if (!columns.includes("user_id")) {
+          db.run(
+            "ALTER TABLE screen_time ADD COLUMN user_id TEXT NOT NULL DEFAULT ''",
+          );
+          console.log(
+            "[db] SQLite migration: added user_id column to screen_time",
+          );
+        }
+        // Create index AFTER we've verified/added the column — old DBs
+        // without user_id would crash if this index were in the schema DDL.
+        db.run(
+          "CREATE INDEX IF NOT EXISTS idx_screen_time_user ON screen_time(user_id)",
+        );
+      } catch (err) {
+        console.error("[db] SQLite migration error:", err.message);
+      }
 
-  // Migration: add seq_id column for deduplication
-  // IMPORTANT: The index is created INSIDE the same try block, AFTER the ALTER TABLE.
-  // This avoids crash on existing databases where sql_schema DDL's CREATE INDEX
-  // would fail because seq_id didn't exist yet on the old table.
-  try {
-    const tableInfo = db.exec("PRAGMA table_info('screen_time')");
-    const columns = tableInfo[0]?.values?.map(v => v[1]) || [];
-    if (!columns.includes('seq_id')) {
-      db.run("ALTER TABLE screen_time ADD COLUMN seq_id INTEGER DEFAULT NULL");
-      console.log('[db] SQLite migration: added seq_id column to screen_time');
-    }
-    // Create index AFTER we've verified/added the column
-    db.run("CREATE INDEX IF NOT EXISTS idx_screen_time_seq_id ON screen_time(seq_id)");
-  } catch (err) {
-    console.error('[db] SQLite migration error (seq_id):', err.message);
-  }
+      // Migration: add seq_id column for deduplication
+      // IMPORTANT: The index is created INSIDE the same try block, AFTER the ALTER TABLE.
+      // This avoids crash on existing databases where sql_schema DDL's CREATE INDEX
+      // would fail because seq_id didn't exist yet on the old table.
+      try {
+        const tableInfo = db.exec("PRAGMA table_info('screen_time')");
+        const columns = tableInfo[0]?.values?.map((v) => v[1]) || [];
+        if (!columns.includes("seq_id")) {
+          db.run(
+            "ALTER TABLE screen_time ADD COLUMN seq_id INTEGER DEFAULT NULL",
+          );
+          console.log(
+            "[db] SQLite migration: added seq_id column to screen_time",
+          );
+        }
+        // Create index AFTER we've verified/added the column
+        db.run(
+          "CREATE INDEX IF NOT EXISTS idx_screen_time_seq_id ON screen_time(seq_id)",
+        );
+        // Deduplicate any existing (user_id, seq_id) collisions before
+        // enforcing uniqueness (legacy per-tab counters could collide).
+        db.run(
+          `DELETE FROM screen_time WHERE seq_id IS NOT NULL AND id NOT IN (
+             SELECT MIN(id) FROM screen_time WHERE seq_id IS NOT NULL
+             GROUP BY user_id, seq_id
+           )`,
+        );
+        // UNIQUE index — enables INSERT ... ON CONFLICT dedup
+        db.run(
+          "CREATE UNIQUE INDEX IF NOT EXISTS idx_screen_time_user_seq ON screen_time(user_id, seq_id)",
+        );
+      } catch (err) {
+        console.error("[db] SQLite migration error (seq_id):", err.message);
+      }
+
+      // Verify the unique index exists — INSERT ... ON CONFLICT depends on it
+      try {
+        const idxList = db.exec("PRAGMA index_list('screen_time')");
+        const hasUserSeq = (idxList[0]?.values || []).some(
+          (row) => row[1] === "idx_screen_time_user_seq",
+        );
+        if (!hasUserSeq) {
+          console.error(
+            "[db] WARNING: unique index idx_screen_time_user_seq missing — seq_id dedup (ON CONFLICT) will fail. Remove duplicate (user_id, seq_id) rows.",
+          );
+        }
+      } catch (_) {}
 
       // Migration: add user_id column to daily_goals
       try {
         const goalsInfo = db.exec("PRAGMA table_info('daily_goals')");
-        const goalCols = goalsInfo[0]?.values?.map(v => v[1]) || [];
-        if (!goalCols.includes('user_id')) {
-          db.run("ALTER TABLE daily_goals ADD COLUMN user_id TEXT NOT NULL DEFAULT ''");
-          console.log('[db] SQLite migration: added user_id column to daily_goals');
+        const goalCols = goalsInfo[0]?.values?.map((v) => v[1]) || [];
+        if (!goalCols.includes("user_id")) {
+          db.run(
+            "ALTER TABLE daily_goals ADD COLUMN user_id TEXT NOT NULL DEFAULT ''",
+          );
+          console.log(
+            "[db] SQLite migration: added user_id column to daily_goals",
+          );
         }
         // Create index on user_id (safe to run even if column already existed)
-        db.run("CREATE INDEX IF NOT EXISTS idx_daily_goals_user ON daily_goals(user_id)");
+        db.run(
+          "CREATE INDEX IF NOT EXISTS idx_daily_goals_user ON daily_goals(user_id)",
+        );
       } catch (err) {
-        console.error('[db] SQLite migration error (daily_goals):', err.message);
+        console.error(
+          "[db] SQLite migration error (daily_goals):",
+          err.message,
+        );
       }
 
       // Clean up old global goals (user_id is empty — created before per-user goals)
@@ -215,11 +300,18 @@ async function createPostgresDriver(connectionString) {
           WHERE table_name = 'screen_time' AND column_name = 'user_id'
         `);
         if (colResult.rows.length === 0) {
-          await pool.query(`ALTER TABLE screen_time ADD COLUMN user_id TEXT NOT NULL DEFAULT ''`);
-          console.log('[db] PostgreSQL migration: added user_id column');
+          await pool.query(
+            `ALTER TABLE screen_time ADD COLUMN user_id TEXT NOT NULL DEFAULT ''`,
+          );
+          console.log("[db] PostgreSQL migration: added user_id column");
         }
+        // Create index AFTER we've verified/added the column — old tables
+        // without user_id would crash if this index were in the schema DDL.
+        await pool.query(
+          `CREATE INDEX IF NOT EXISTS idx_screen_time_user ON screen_time(user_id)`,
+        );
       } catch (err) {
-        console.error('[db] PostgreSQL migration error:', err.message);
+        console.error("[db] PostgreSQL migration error:", err.message);
       }
 
       // Migration: add seq_id column for deduplication
@@ -233,20 +325,65 @@ async function createPostgresDriver(connectionString) {
           WHERE table_name = 'screen_time' AND column_name = 'seq_id'
         `);
         if (colResult.rows.length === 0) {
-          await pool.query(`ALTER TABLE screen_time ADD COLUMN seq_id INTEGER DEFAULT NULL`);
-          console.log('[db] PostgreSQL migration: added seq_id column');
+          await pool.query(
+            `ALTER TABLE screen_time ADD COLUMN seq_id INTEGER DEFAULT NULL`,
+          );
+          console.log("[db] PostgreSQL migration: added seq_id column");
         }
         // Create index AFTER we've verified/added the column
-        await pool.query(`CREATE INDEX IF NOT EXISTS idx_screen_time_seq_id ON screen_time(seq_id)`);
+        await pool.query(
+          `CREATE INDEX IF NOT EXISTS idx_screen_time_seq_id ON screen_time(seq_id)`,
+        );
+        // Widen seq_id to TEXT so UUID-based ids fit (legacy INTEGER column)
+        const typeResult = await pool.query(`
+          SELECT data_type FROM information_schema.columns
+          WHERE table_name = 'screen_time' AND column_name = 'seq_id'
+        `);
+        if (
+          typeResult.rows.length > 0 &&
+          String(typeResult.rows[0].data_type).toLowerCase() === "integer"
+        ) {
+          await pool.query(
+            `ALTER TABLE screen_time ALTER COLUMN seq_id TYPE TEXT USING seq_id::text`,
+          );
+          console.log("[db] PostgreSQL migration: widened seq_id to TEXT");
+        }
+        // Deduplicate any existing (user_id, seq_id) collisions before
+        // enforcing uniqueness (legacy per-tab counters could collide).
+        await pool.query(`
+          DELETE FROM screen_time a USING screen_time b
+          WHERE a.id > b.id
+            AND a.user_id = b.user_id
+            AND a.seq_id = b.seq_id
+            AND a.seq_id IS NOT NULL
+        `);
+        // UNIQUE index — enables INSERT ... ON CONFLICT dedup
+        await pool.query(
+          `CREATE UNIQUE INDEX IF NOT EXISTS idx_screen_time_user_seq ON screen_time(user_id, seq_id)`,
+        );
       } catch (err) {
-        console.error('[db] PostgreSQL migration error (seq_id):', err.message);
+        console.error("[db] PostgreSQL migration error (seq_id):", err.message);
       }
+
+      // Verify the unique index exists — INSERT ... ON CONFLICT depends on it
+      try {
+        const idxRes = await pool.query(
+          `SELECT 1 FROM pg_indexes WHERE tablename = 'screen_time' AND indexname = 'idx_screen_time_user_seq'`,
+        );
+        if (idxRes.rows.length === 0) {
+          console.error(
+            "[db] WARNING: unique index idx_screen_time_user_seq missing — seq_id dedup (ON CONFLICT) will fail.",
+          );
+        }
+      } catch (_) {}
 
       // Migration: ensure indexes exist for new columns
       try {
-        await pool.query(`CREATE INDEX IF NOT EXISTS idx_screen_time_user ON screen_time(user_id)`);
+        await pool.query(
+          `CREATE INDEX IF NOT EXISTS idx_screen_time_user ON screen_time(user_id)`,
+        );
       } catch (err) {
-        console.error('[db] PostgreSQL index migration error:', err.message);
+        console.error("[db] PostgreSQL index migration error:", err.message);
       }
 
       // Migration: add user_id column to daily_goals
@@ -256,13 +393,22 @@ async function createPostgresDriver(connectionString) {
           WHERE table_name = 'daily_goals' AND column_name = 'user_id'
         `);
         if (colResult.rows.length === 0) {
-          await pool.query(`ALTER TABLE daily_goals ADD COLUMN user_id TEXT NOT NULL DEFAULT ''`);
-          console.log('[db] PostgreSQL migration: added user_id column to daily_goals');
+          await pool.query(
+            `ALTER TABLE daily_goals ADD COLUMN user_id TEXT NOT NULL DEFAULT ''`,
+          );
+          console.log(
+            "[db] PostgreSQL migration: added user_id column to daily_goals",
+          );
         }
         // Create index on user_id (safe to run even if column already existed)
-        await pool.query(`CREATE INDEX IF NOT EXISTS idx_daily_goals_user ON daily_goals(user_id)`);
+        await pool.query(
+          `CREATE INDEX IF NOT EXISTS idx_daily_goals_user ON daily_goals(user_id)`,
+        );
       } catch (err) {
-        console.error('[db] PostgreSQL migration error (daily_goals):', err.message);
+        console.error(
+          "[db] PostgreSQL migration error (daily_goals):",
+          err.message,
+        );
       }
 
       // Clean up old global goals
@@ -285,8 +431,8 @@ async function createPostgresDriver(connectionString) {
 
     async run(sql, params = []) {
       // For INSERT queries, append RETURNING id so we get the inserted row back
-      const sqlToRun = sql.trim().toUpperCase().startsWith('INSERT')
-        ? sql + ' RETURNING id'
+      const sqlToRun = sql.trim().toUpperCase().startsWith("INSERT")
+        ? sql + " RETURNING id"
         : sql;
       const result = await q(sqlToRun, params);
       return {
@@ -314,14 +460,13 @@ const sql_schema = `
     path            TEXT NOT NULL DEFAULT '/',
     durationSeconds REAL NOT NULL,
     timestamp       TEXT NOT NULL,
-    seq_id          INTEGER DEFAULT NULL,
+    seq_id          TEXT DEFAULT NULL,
     recovered       INTEGER NOT NULL DEFAULT 0,
     ingested_at     TEXT NOT NULL DEFAULT (datetime('now'))
   );
 
   CREATE INDEX IF NOT EXISTS idx_screen_time_domain ON screen_time(domain);
   CREATE INDEX IF NOT EXISTS idx_screen_time_timestamp ON screen_time(timestamp);
-  CREATE INDEX IF NOT EXISTS idx_screen_time_user ON screen_time(user_id);
 
   CREATE TABLE IF NOT EXISTS daily_goals (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -345,14 +490,13 @@ const sql_schema_pg = `
     path            TEXT NOT NULL DEFAULT '/',
     "durationSeconds" DOUBLE PRECISION NOT NULL,
     timestamp       TIMESTAMP NOT NULL,
-    seq_id          INTEGER DEFAULT NULL,
+    seq_id          TEXT DEFAULT NULL,
     recovered       BOOLEAN NOT NULL DEFAULT FALSE,
     ingested_at     TIMESTAMP NOT NULL DEFAULT NOW()
   );
 
   CREATE INDEX IF NOT EXISTS idx_screen_time_domain ON screen_time(domain);
   CREATE INDEX IF NOT EXISTS idx_screen_time_timestamp ON screen_time(timestamp);
-  CREATE INDEX IF NOT EXISTS idx_screen_time_user ON screen_time(user_id);
 
   CREATE TABLE IF NOT EXISTS daily_goals (
     id            SERIAL PRIMARY KEY,
@@ -380,30 +524,60 @@ const sql_schema_pg = `
  * Only the aggregation queries round, preserving granularity.
  */
 async function insertScreenTimeLog(entry) {
-  // ─── Dedup by seq_id ──────────────────────────────────────────────
+  const userId = entry.userId || "";
+
+  // ─── Dedup by (user_id, seq_id) — atomic ──────────────────────────
+  // INSERT ... ON CONFLICT DO NOTHING relies on the UNIQUE index
+  // idx_screen_time_user_seq, so the check-and-insert happens atomically
+  // in one statement — no SELECT-then-INSERT race, and dedup is scoped to
+  // the user (two users can safely share the same seq_id).
   if (entry.seq_id != null) {
-    const existing = await driver.get(
-      `SELECT id FROM screen_time WHERE seq_id = ?`,
-      [entry.seq_id],
+    const result = await driver.run(
+      `INSERT INTO screen_time (user_id, domain, path, "durationSeconds", "timestamp", seq_id, recovered)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(user_id, seq_id) DO NOTHING`,
+      [
+        userId,
+        entry.domain,
+        entry.path,
+        entry.durationSeconds,
+        entry.timestamp,
+        entry.seq_id,
+        driver.isPostgres ? !!entry.recovered : entry.recovered ? 1 : 0,
+      ],
     );
-    if (existing) {
-      console.log(`[screen-time] Dedup: seq_id ${entry.seq_id} already exists (id=${existing.id})`);
-      entry._id = existing.id;
+
+    if (result.changes === 0) {
+      // Conflict — row already exists for this user + seq_id.
+      const existing = await driver.get(
+        `SELECT id FROM screen_time WHERE user_id = ? AND seq_id = ?`,
+        [userId, entry.seq_id],
+      );
+      if (existing) {
+        console.log(
+          `[screen-time] Dedup: seq_id ${entry.seq_id} already exists (id=${existing.id})`,
+        );
+      }
+      entry._id = existing ? existing.id : null;
       return entry; // Skip insert — already counted
     }
+
+    entry._id = result.lastInsertRowid;
+    return entry;
   }
 
+  // No seq_id (e.g. seed data) — plain insert
   const result = await driver.run(
     `INSERT INTO screen_time (user_id, domain, path, "durationSeconds", "timestamp", seq_id, recovered)
      VALUES (?, ?, ?, ?, ?, ?, ?)`,
     [
-      entry.userId || '',
+      userId,
       entry.domain,
       entry.path,
       entry.durationSeconds,
       entry.timestamp,
-      entry.seq_id != null ? entry.seq_id : null,
-      driver.isPostgres ? !!entry.recovered : (entry.recovered ? 1 : 0),
+      null,
+      driver.isPostgres ? !!entry.recovered : entry.recovered ? 1 : 0,
     ],
   );
   entry._id = result.lastInsertRowid;
@@ -419,7 +593,7 @@ async function getAllScreenTimeLogs(userId) {
      FROM screen_time
      WHERE user_id = ?
      ORDER BY id DESC`,
-    [userId || ''],
+    [userId || ""],
   );
   return rows.map((row) => ({
     ...row,
@@ -443,7 +617,7 @@ async function getAggregatedByDomain(date, userId) {
      WHERE date("timestamp") = ? AND user_id = ?
      GROUP BY domain
      ORDER BY "totalMinutes" DESC`,
-    [dateValue, userId || ''],
+    [dateValue, userId || ""],
   );
   return rows.map((row) => ({
     domain: row.domain,
@@ -460,7 +634,7 @@ async function getAvailableDates(userId) {
      FROM screen_time
      WHERE date("timestamp") IS NOT NULL AND user_id = ?
      ORDER BY d DESC`,
-    [userId || ''],
+    [userId || ""],
   );
   return rows.map((row) => row.d);
 }
@@ -526,7 +700,7 @@ async function getAggregatedByDomainForPeriod(startDate, endDate, userId) {
      WHERE date("timestamp") >= ? AND date("timestamp") <= ? AND user_id = ?
      GROUP BY domain
      ORDER BY "totalMinutes" DESC`,
-    [startDate, endDate, userId || ''],
+    [startDate, endDate, userId || ""],
   );
   return rows.map((row) => ({
     domain: row.domain,
@@ -544,7 +718,7 @@ async function getDailyBreakdownForPeriod(startDate, endDate, userId) {
      WHERE date("timestamp") IS NOT NULL AND date("timestamp") >= ? AND date("timestamp") <= ? AND user_id = ?
      GROUP BY date("timestamp")
      ORDER BY d ASC`,
-    [startDate, endDate, userId || ''],
+    [startDate, endDate, userId || ""],
   );
   return rows.map((row) => ({
     date: row.d,
@@ -577,9 +751,10 @@ async function getGoals(userId) {
  * Create a new daily goal for a specific user.
  */
 async function createGoal(domain, maxMinutes, userId) {
+  // domain is already normalized by the route via normalizeDomain()
   const result = await driver.run(
     `INSERT INTO daily_goals (user_id, domain, max_minutes) VALUES (?, ?, ?)`,
-    [userId || '', domain.toLowerCase().replace(/^www\./, ""), maxMinutes],
+    [userId || "", domain, maxMinutes],
   );
   return { id: result.lastInsertRowid };
 }
@@ -588,15 +763,20 @@ async function createGoal(domain, maxMinutes, userId) {
  * Update an existing daily goal (only if it belongs to the user).
  */
 async function updateGoal(id, fields, userId) {
-  const goal = await driver.get("SELECT user_id FROM daily_goals WHERE id = ?", [id]);
+  const goal = await driver.get(
+    "SELECT user_id FROM daily_goals WHERE id = ?",
+    [id],
+  );
   if (!goal || goal.user_id !== userId) return { updated: false };
 
   const sets = [];
   const values = [];
 
   if (fields.domain !== undefined) {
+    const cleanedDomain = normalizeDomain(fields.domain);
+    if (!cleanedDomain) return { updated: false, invalidDomain: true };
     sets.push("domain = ?");
-    values.push(fields.domain.toLowerCase().replace(/^www\./, ""));
+    values.push(cleanedDomain);
   }
   if (fields.max_minutes !== undefined) {
     sets.push("max_minutes = ?");
@@ -625,7 +805,10 @@ async function updateGoal(id, fields, userId) {
  * Delete a daily goal (only if it belongs to the user).
  */
 async function deleteGoal(id, userId) {
-  const goal = await driver.get("SELECT user_id FROM daily_goals WHERE id = ?", [id]);
+  const goal = await driver.get(
+    "SELECT user_id FROM daily_goals WHERE id = ?",
+    [id],
+  );
   if (!goal || goal.user_id !== userId) return { deleted: false };
 
   const result = await driver.run("DELETE FROM daily_goals WHERE id = ?", [id]);
@@ -641,7 +824,7 @@ async function getTodayMinutesForDomain(domain, userId) {
     `SELECT ROUND(CAST(SUM("durationSeconds") / 60.0 AS NUMERIC), 6) AS "totalMinutes"
      FROM screen_time
      WHERE date("timestamp") = ? AND domain = ? AND user_id = ?`,
-    [today, domain, userId || ''],
+    [today, domain, userId || ""],
   );
   return (row && Number(row.totalMinutes)) || 0;
 }
@@ -696,7 +879,7 @@ app.post("/api/screen-time", async (req, res) => {
       }
     }
 
-    const userToken = payload.userToken || req.headers['x-user-token'] || '';
+    const userToken = payload.userToken || req.headers["x-user-token"] || "";
 
     if (!payload || !payload.domain || !payload.durationSeconds) {
       return res.status(400).json({
@@ -706,7 +889,10 @@ app.post("/api/screen-time", async (req, res) => {
       });
     }
 
-    if (typeof payload.durationSeconds !== "number" || payload.durationSeconds < 0) {
+    if (
+      typeof payload.durationSeconds !== "number" ||
+      payload.durationSeconds < 0
+    ) {
       return res.status(400).json({
         status: "error",
         message: "durationSeconds must be a non-negative number",
@@ -722,15 +908,19 @@ app.post("/api/screen-time", async (req, res) => {
 
     const entry = {
       userId: userToken,
-      domain: String(payload.domain).toLowerCase().replace(/^www\./, ""),
+      domain: normalizeDomain(payload.domain),
       path: String(payload.path || "/"),
       durationSeconds: payload.durationSeconds,
       timestamp: payload.timestamp || new Date().toISOString(),
-      seq_id: payload.seq_id != null ? Number(payload.seq_id) : null,
+      seq_id: payload.seq_id != null ? String(payload.seq_id) : null,
       recovered: payload.recovered === true,
     };
 
-    if (entry.domain === "localhost" || entry.domain === "127.0.0.1" || entry.domain === "") {
+    if (
+      entry.domain === "localhost" ||
+      entry.domain === "127.0.0.1" ||
+      entry.domain === ""
+    ) {
       return res.status(200).json({ status: "ignored", reason: "localhost" });
     }
 
@@ -744,7 +934,9 @@ app.post("/api/screen-time", async (req, res) => {
     return res.status(201).json({ status: "ok", id: entry._id });
   } catch (err) {
     console.error("[screen-time] Error processing request:", err);
-    return res.status(500).json({ status: "error", message: "Internal server error" });
+    return res
+      .status(500)
+      .json({ status: "error", message: "Internal server error" });
   }
 });
 
@@ -757,10 +949,15 @@ app.get("/api/dashboard", async (req, res) => {
     const requestedDate = req.query.date || null;
 
     if (requestedDate && !/^\d{4}-\d{2}-\d{2}$/.test(requestedDate)) {
-      return res.status(400).json({ status: "error", message: "Invalid date format. Use YYYY-MM-DD." });
+      return res
+        .status(400)
+        .json({
+          status: "error",
+          message: "Invalid date format. Use YYYY-MM-DD.",
+        });
     }
 
-    const userId = req.query.user || '';
+    const userId = req.query.user || "";
     const domains = await getAggregatedByDomain(requestedDate, userId);
     const availableDates = await getAvailableDates(userId);
 
@@ -768,7 +965,8 @@ app.get("/api/dashboard", async (req, res) => {
     const totalDomains = domains.length;
     const topDomain = domains.length > 0 ? domains[0].domain : null;
 
-    const effectiveDate = requestedDate || new Date().toISOString().slice(0, 10);
+    const effectiveDate =
+      requestedDate || new Date().toISOString().slice(0, 10);
 
     return res.json({
       date: effectiveDate,
@@ -781,7 +979,9 @@ app.get("/api/dashboard", async (req, res) => {
     });
   } catch (err) {
     console.error("[dashboard] Error aggregating data:", err);
-    return res.status(500).json({ status: "error", message: "Internal server error" });
+    return res
+      .status(500)
+      .json({ status: "error", message: "Internal server error" });
   }
 });
 
@@ -792,10 +992,17 @@ app.get("/api/dashboard", async (req, res) => {
 app.get("/api/summary", async (req, res) => {
   try {
     const period = req.query.period || "week";
-    const referenceDate = req.query.date || new Date().toISOString().slice(0, 10);
+    const referenceDate =
+      req.query.date || new Date().toISOString().slice(0, 10);
 
     if (!["week", "month", "7days", "30days", "custom"].includes(period)) {
-      return res.status(400).json({ status: "error", message: "Invalid period. Use 'week', 'month', '7days', '30days', or 'custom'." });
+      return res
+        .status(400)
+        .json({
+          status: "error",
+          message:
+            "Invalid period. Use 'week', 'month', '7days', '30days', or 'custom'.",
+        });
     }
 
     let start, end;
@@ -803,20 +1010,38 @@ app.get("/api/summary", async (req, res) => {
       start = req.query.startDate;
       end = req.query.endDate;
       if (!start || !end) {
-        return res.status(400).json({ status: "error", message: "startDate and endDate are required for custom period" });
+        return res
+          .status(400)
+          .json({
+            status: "error",
+            message: "startDate and endDate are required for custom period",
+          });
       }
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(start) || !/^\d{4}-\d{2}-\d{2}$/.test(end)) {
-        return res.status(400).json({ status: "error", message: "Invalid date format. Use YYYY-MM-DD." });
+      if (
+        !/^\d{4}-\d{2}-\d{2}$/.test(start) ||
+        !/^\d{4}-\d{2}-\d{2}$/.test(end)
+      ) {
+        return res
+          .status(400)
+          .json({
+            status: "error",
+            message: "Invalid date format. Use YYYY-MM-DD.",
+          });
       }
     } else {
       if (referenceDate && !/^\d{4}-\d{2}-\d{2}$/.test(referenceDate)) {
-        return res.status(400).json({ status: "error", message: "Invalid date format. Use YYYY-MM-DD." });
+        return res
+          .status(400)
+          .json({
+            status: "error",
+            message: "Invalid date format. Use YYYY-MM-DD.",
+          });
       }
       const range = getPeriodRange(referenceDate, period);
       start = range.start;
       end = range.end;
     }
-    const userId = req.query.user || '';
+    const userId = req.query.user || "";
 
     const domains = await getAggregatedByDomainForPeriod(start, end, userId);
     const dailyBreakdown = await getDailyBreakdownForPeriod(start, end, userId);
@@ -840,7 +1065,9 @@ app.get("/api/summary", async (req, res) => {
     });
   } catch (err) {
     console.error("[summary] Error aggregating data:", err);
-    return res.status(500).json({ status: "error", message: "Internal server error" });
+    return res
+      .status(500)
+      .json({ status: "error", message: "Internal server error" });
   }
 });
 
@@ -848,12 +1075,14 @@ app.get("/api/summary", async (req, res) => {
 
 app.get("/api/goals", async (req, res) => {
   try {
-    const userId = req.query.user || '';
+    const userId = req.query.user || "";
     const goals = await getGoals(userId);
     return res.json({ goals });
   } catch (err) {
     console.error("[goals] Error fetching goals:", err);
-    return res.status(500).json({ status: "error", message: "Internal server error" });
+    return res
+      .status(500)
+      .json({ status: "error", message: "Internal server error" });
   }
 });
 
@@ -862,22 +1091,46 @@ app.post("/api/goals", async (req, res) => {
     const { domain, max_minutes, userToken } = req.body;
 
     if (!domain || !max_minutes) {
-      return res.status(400).json({ status: "error", message: "Missing required fields: domain, max_minutes" });
+      return res
+        .status(400)
+        .json({
+          status: "error",
+          message: "Missing required fields: domain, max_minutes",
+        });
     }
 
     if (typeof max_minutes !== "number" || max_minutes <= 0) {
-      return res.status(400).json({ status: "error", message: "max_minutes must be a positive number" });
+      return res
+        .status(400)
+        .json({
+          status: "error",
+          message: "max_minutes must be a positive number",
+        });
     }
 
     if (!userToken) {
-      return res.status(400).json({ status: "error", message: "Missing userToken" });
+      return res
+        .status(400)
+        .json({ status: "error", message: "Missing userToken" });
     }
 
-    const result = await createGoal(domain, max_minutes, userToken);
+    const cleanedDomain = normalizeDomain(domain);
+    if (!cleanedDomain) {
+      return res
+        .status(400)
+        .json({
+          status: "error",
+          message: "Invalid domain. Use a bare hostname like gemini.google.com",
+        });
+    }
+
+    const result = await createGoal(cleanedDomain, max_minutes, userToken);
     return res.status(201).json({ status: "ok", id: result.id });
   } catch (err) {
     console.error("[goals] Error creating goal:", err);
-    return res.status(500).json({ status: "error", message: "Internal server error" });
+    return res
+      .status(500)
+      .json({ status: "error", message: "Internal server error" });
   }
 });
 
@@ -885,19 +1138,30 @@ app.put("/api/goals/:id", async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
     if (isNaN(id)) {
-      return res.status(400).json({ status: "error", message: "Invalid goal ID" });
+      return res
+        .status(400)
+        .json({ status: "error", message: "Invalid goal ID" });
     }
 
-    const userId = req.query.user || '';
+    const userId = req.query.user || "";
     const result = await updateGoal(id, req.body, userId);
+    if (result.invalidDomain) {
+      return res
+        .status(400)
+        .json({ status: "error", message: "Invalid domain. Use a bare hostname like gemini.google.com" });
+    }
     if (!result.updated) {
-      return res.status(404).json({ status: "error", message: "Goal not found" });
+      return res
+        .status(404)
+        .json({ status: "error", message: "Goal not found" });
     }
 
     return res.json({ status: "ok" });
   } catch (err) {
     console.error("[goals] Error updating goal:", err);
-    return res.status(500).json({ status: "error", message: "Internal server error" });
+    return res
+      .status(500)
+      .json({ status: "error", message: "Internal server error" });
   }
 });
 
@@ -905,30 +1169,38 @@ app.delete("/api/goals/:id", async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
     if (isNaN(id)) {
-      return res.status(400).json({ status: "error", message: "Invalid goal ID" });
+      return res
+        .status(400)
+        .json({ status: "error", message: "Invalid goal ID" });
     }
 
-    const userId = req.query.user || '';
+    const userId = req.query.user || "";
     const result = await deleteGoal(id, userId);
     if (!result.deleted) {
-      return res.status(404).json({ status: "error", message: "Goal not found" });
+      return res
+        .status(404)
+        .json({ status: "error", message: "Goal not found" });
     }
 
     return res.json({ status: "ok" });
   } catch (err) {
     console.error("[goals] Error deleting goal:", err);
-    return res.status(500).json({ status: "error", message: "Internal server error" });
+    return res
+      .status(500)
+      .json({ status: "error", message: "Internal server error" });
   }
 });
 
 app.get("/api/goals/status", async (req, res) => {
   try {
-    const userId = req.query.user || '';
+    const userId = req.query.user || "";
     const statuses = await getGoalStatus(userId);
     return res.json({ goals: statuses });
   } catch (err) {
     console.error("[goals] Error getting goal status:", err);
-    return res.status(500).json({ status: "error", message: "Internal server error" });
+    return res
+      .status(500)
+      .json({ status: "error", message: "Internal server error" });
   }
 });
 
@@ -947,158 +1219,20 @@ app.get("/api/goals/status", async (req, res) => {
 // When credentials are NOT set, the donation runs in "demo mode" — the UI
 // shows a confirmation without actually charging anyone.
 
-const INTOUCH_USERNAME = process.env.INTOUCH_USERNAME || '';
-const INTOUCH_ACCOUNT_NO = process.env.INTOUCH_ACCOUNT_NO || '';
-const INTOUCH_PARTNER_PASSWORD = process.env.INTOUCH_PARTNER_PASSWORD || '';
-const INTOUCH_API_URL = process.env.INTOUCH_API_URL || 'https://api.intouchpay.co.rw';
-const DONATION_IS_LIVE = !!(INTOUCH_USERNAME && INTOUCH_ACCOUNT_NO && INTOUCH_PARTNER_PASSWORD);
+const registerDonationRoutes = require("./donation");
 
-/**
- * Generate a unique transaction reference.
- */
-function generateTxRef() {
-  const prefix = 'LIS';
-  const ts = Date.now().toString(36).toUpperCase();
-  const rand = Math.random().toString(36).substring(2, 8).toUpperCase();
-  return `${prefix}-${ts}-${rand}`;
-}
-
-/**
- * POST /api/donate/initiate
- * Initiates a mobile money payment via Intouch.
- * Body: { phone, amount, name?, note? }
- *   phone  — Rwandan phone number (e.g., 0788123456)
- *   amount — Amount in Rwandan Francs (positive integer)
- *   name   — Optional donor name
- *   note   — Optional donation note
- *
- * Response:
- *   { success: true, txRef, message: "USSD push sent to your phone..." }
- *   or
- *   { success: false, error: "..." }
- */
-app.post("/api/donate/initiate", async (req, res) => {
-  try {
-    const { phone, amount, name, note } = req.body;
-
-    // ─── Validation ──────────────────────────────────────────────────
-    if (!phone || !amount) {
-      return res.status(400).json({
-        success: false,
-        error: "Please provide both phone number and amount.",
-      });
-    }
-
-    // Clean phone number: remove spaces, dashes, leading + or 00
-    const cleanedPhone = String(phone).replace(/[\s\-]/g, '').replace(/^(\+|00)/, '');
-    if (!/^07\d{8}$/.test(cleanedPhone) && !/^2507\d{8}$/.test(cleanedPhone)) {
-      return res.status(400).json({
-        success: false,
-        error: "Please enter a valid Rwandan phone number (e.g., 0788123456).",
-      });
-    }
-
-    const donationAmount = parseInt(amount, 10);
-    if (isNaN(donationAmount) || donationAmount < 100 || donationAmount > 1000000) {
-      return res.status(400).json({
-        success: false,
-        error: "Amount must be between 100 RWF and 1,000,000 RWF.",
-      });
-    }
-
-    const txRef = generateTxRef();
-
-    // ─── Demo Mode (no credentials) ──────────────────────────────────
-    if (!DONATION_IS_LIVE) {
-      console.log(`[donate] DEMO: Would send ${donationAmount} RWF from ${cleanedPhone} (ref: ${txRef})`);
-      return res.json({
-        success: true,
-        demo: true,
-        txRef,
-        message: "🎉 Demo mode! In production, a MoMo USSD push would be sent to your phone. Ready to go live once IntouchPay credentials are configured.",
-      });
-    }
-
-    // ─── Live Mode — Call Intouch API ────────────────────────────────
-    const intouchPayload = {
-      username: INTOUCH_USERNAME,
-      account_no: INTOUCH_ACCOUNT_NO,
-      partner_password: INTOUCH_PARTNER_PASSWORD,
-      action: "1", // 1 = request payment (collect money)
-      amount: String(donationAmount),
-      phone: cleanedPhone,
-      external_id: txRef,
-    };
-
-    console.log(`[donate] Initiating payment: ${donationAmount} RWF to ${cleanedPhone} (ref: ${txRef})`);
-
-    const intouchResponse = await fetch(`${INTOUCH_API_URL}/request`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(intouchPayload),
-    });
-
-    const intouchResult = await intouchResponse.json();
-
-    if (intouchResponse.ok && intouchResult?.status === "success") {
-      console.log(`[donate] Payment initiated successfully: ${txRef}`);
-      return res.json({
-        success: true,
-        txRef,
-        message: "✅ MoMo USSD push sent! Check your phone and enter your PIN to complete the donation.",
-      });
-    } else {
-      console.error(`[donate] Intouch API error:`, intouchResult);
-      return res.status(502).json({
-        success: false,
-        error: intouchResult?.message || "Payment gateway error. Please try again later.",
-      });
-    }
-  } catch (err) {
-    console.error("[donate] Error initiating payment:", err);
-    return res.status(500).json({
-      success: false,
-      error: "Server error. Please try again later.",
-    });
-  }
-});
-
-/**
- * POST /api/donate/callback
- * Webhook endpoint for Intouch to send payment status updates.
- */
-app.post("/api/donate/callback", (req, res) => {
-  const payload = req.body;
-  console.log("[donate] Callback received:", JSON.stringify(payload));
-
-  // Intouch will send payment status here — log it for now
-  // In production: verify signature, update database, send thank-you, etc.
-
-  // Always respond 200 OK to acknowledge receipt
-  return res.status(200).json({ status: "ok" });
-});
-
-/**
- * GET /api/donate/status
- * Returns whether live donations are configured.
- */
-app.get("/api/donate/status", (req, res) => {
-  return res.json({
-    live: DONATION_IS_LIVE,
-    currency: "RWF",
-    methods: ["MTN MoMo", "Airtel Money"],
-  });
-});
-
+registerDonationRoutes(app);
 
 app.get("/api/logs", async (req, res) => {
   try {
-    const userId = req.query.user || '';
+    const userId = req.query.user || "";
     const logs = await getAllScreenTimeLogs(userId);
     return res.json({ total: logs.length, logs });
   } catch (err) {
     console.error("[logs] Error fetching logs:", err);
-    return res.status(500).json({ status: "error", message: "Internal server error" });
+    return res
+      .status(500)
+      .json({ status: "error", message: "Internal server error" });
   }
 });
 
@@ -1115,16 +1249,27 @@ app.get("/api/logs", async (req, res) => {
 app.get("/api/trends", async (req, res) => {
   try {
     const period = req.query.period || "7days";
-    const referenceDate = req.query.date || new Date().toISOString().slice(0, 10);
+    const referenceDate =
+      req.query.date || new Date().toISOString().slice(0, 10);
 
     if (!["week", "month", "7days", "30days"].includes(period)) {
-      return res.status(400).json({ status: "error", message: "Invalid period. Use 'week', 'month', '7days', or '30days'." });
+      return res
+        .status(400)
+        .json({
+          status: "error",
+          message: "Invalid period. Use 'week', 'month', '7days', or '30days'.",
+        });
     }
     if (referenceDate && !/^\d{4}-\d{2}-\d{2}$/.test(referenceDate)) {
-      return res.status(400).json({ status: "error", message: "Invalid date format. Use YYYY-MM-DD." });
+      return res
+        .status(400)
+        .json({
+          status: "error",
+          message: "Invalid date format. Use YYYY-MM-DD.",
+        });
     }
 
-    const userId = req.query.user || '';
+    const userId = req.query.user || "";
 
     // Get current period range
     const currentRange = getPeriodRange(referenceDate, period);
@@ -1134,7 +1279,7 @@ app.get("/api/trends", async (req, res) => {
     prevEnd.setUTCDate(prevEnd.getUTCDate() - 1);
     const prevEndStr = prevEnd.toISOString().slice(0, 10);
 
-    const periodLengths = { "7days": 7, "30days": 30, "week": 7, "month": 30 };
+    const periodLengths = { "7days": 7, "30days": 30, week: 7, month: 30 };
     const length = periodLengths[period] || 7;
     const prevStart = new Date(prevEnd);
     prevStart.setUTCDate(prevStart.getUTCDate() - length + 1);
@@ -1142,7 +1287,11 @@ app.get("/api/trends", async (req, res) => {
 
     // Fetch both periods in parallel
     const [currentDomains, previousDomains] = await Promise.all([
-      getAggregatedByDomainForPeriod(currentRange.start, currentRange.end, userId),
+      getAggregatedByDomainForPeriod(
+        currentRange.start,
+        currentRange.end,
+        userId,
+      ),
       getAggregatedByDomainForPeriod(prevStartStr, prevEndStr, userId),
     ]);
 
@@ -1192,8 +1341,8 @@ app.get("/api/trends", async (req, res) => {
     //    include domains that dropped off entirely)
     const trends = [];
     const allDomains = new Set([
-      ...currentDomains.map(d => d.domain),
-      ...previousDomains.map(d => d.domain),
+      ...currentDomains.map((d) => d.domain),
+      ...previousDomains.map((d) => d.domain),
     ]);
 
     for (const domain of allDomains) {
@@ -1206,22 +1355,22 @@ app.get("/api/trends", async (req, res) => {
       const previousRank = prev ? prev.rank : null;
 
       let rankChange = null;
-      let status = 'same';
+      let status = "same";
 
       if (curr && !prev) {
         // NEWLY tracked domain — no previous data to compare
-        status = 'new';
+        status = "new";
         rankChange = null;
       } else if (!curr && prev) {
         // Domain dropped off entirely — still show it (currentRank = null)
-        status = 'dropped';
+        status = "dropped";
         rankChange = null;
       } else if (previousRank !== null && currentRank !== null) {
         // Domain exists in both periods — compare rank positions
         rankChange = previousRank - currentRank;
-        if (rankChange > 0) status = 'up';
-        else if (rankChange < 0) status = 'down';
-        else status = 'same';
+        if (rankChange > 0) status = "up";
+        else if (rankChange < 0) status = "down";
+        else status = "same";
       }
 
       trends.push({
@@ -1251,9 +1400,12 @@ app.get("/api/trends", async (req, res) => {
 
     // 4. Overall total change (kept as minute-percentage for the summary badge)
     const totalChange = currTotal - prevTotal;
-    const totalChangePercent = prevTotal > 0
-      ? Math.round((totalChange / prevTotal) * 100)
-      : (currTotal > 0 ? 100 : 0);
+    const totalChangePercent =
+      prevTotal > 0
+        ? Math.round((totalChange / prevTotal) * 100)
+        : currTotal > 0
+          ? 100
+          : 0;
 
     return res.json({
       period,
@@ -1263,15 +1415,17 @@ app.get("/api/trends", async (req, res) => {
       totalPrevious: Math.round(prevTotal * 100) / 100,
       totalChange: Math.round(totalChange * 100) / 100,
       totalChangePercent,
-      totalDirection: totalChange > 0 ? 'up' : totalChange < 0 ? 'down' : 'flat',
+      totalDirection:
+        totalChange > 0 ? "up" : totalChange < 0 ? "down" : "flat",
       trends,
     });
   } catch (err) {
     console.error("[trends] Error:", err);
-    return res.status(500).json({ status: "error", message: "Internal server error" });
+    return res
+      .status(500)
+      .json({ status: "error", message: "Internal server error" });
   }
 });
-
 
 // ─── Seed Data Route ─────────────────────────────────────────────────────────
 // ONLY available when using SQLite (local dev). Never available on PostgreSQL (production).
@@ -1306,7 +1460,8 @@ app.post("/api/seed", async (req, res) => {
     if (driver.isPostgres) {
       return res.status(403).json({
         status: "error",
-        message: "Seed data is only available in local development (SQLite) mode.",
+        message:
+          "Seed data is only available in local development (SQLite) mode.",
       });
     }
 
@@ -1347,7 +1502,14 @@ app.post("/api/seed", async (req, res) => {
         await driver.run(
           `INSERT INTO screen_time (user_id, domain, path, "durationSeconds", "timestamp", recovered)
            VALUES (?, ?, ?, ?, ?, ?)`,
-          [userId, site.domain, site.path, seconds, timestamp, driver.isPostgres ? false : 0]
+          [
+            userId,
+            site.domain,
+            site.path,
+            seconds,
+            timestamp,
+            driver.isPostgres ? false : 0,
+          ],
         );
         screenTimeCount++;
       }
@@ -1358,12 +1520,14 @@ app.post("/api/seed", async (req, res) => {
     for (const goal of SEED_GOALS) {
       await driver.run(
         `INSERT INTO daily_goals (user_id, domain, max_minutes) VALUES (?, ?, ?)`,
-        [userId, goal.domain, goal.max_minutes]
+        [userId, goal.domain, goal.max_minutes],
       );
       goalCount++;
     }
 
-    console.log(`[seed] Created ${screenTimeCount} screen-time records and ${goalCount} goals for user "${userId}"`);
+    console.log(
+      `[seed] Created ${screenTimeCount} screen-time records and ${goalCount} goals for user "${userId}"`,
+    );
 
     return res.status(201).json({
       status: "ok",
@@ -1377,7 +1541,9 @@ app.post("/api/seed", async (req, res) => {
     });
   } catch (err) {
     console.error("[seed] Error generating seed data:", err);
-    return res.status(500).json({ status: "error", message: "Internal server error" });
+    return res
+      .status(500)
+      .json({ status: "error", message: "Internal server error" });
   }
 });
 

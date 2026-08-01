@@ -8,7 +8,7 @@
  *   1. 5-second min threshold removed — flushes every 1s with >=1s minimum
  *   2. Send-lock prevents concurrent sendScreenTime races
  *   3. Three-layer offline queue: sessionStorage + chrome.storage.local
- *   4. Crash recovery uses monotonic seq_id for idempotent dedup
+ *   4. Crash recovery uses globally-unique UUID seq_id for idempotent dedup
  *   5. sessionStorage checkpoint cleared BEFORE async I/O, not after
  *   6. sendBeacon failure falls back to keepalive fetch
  *   7. Service worker detection re-checks on each send cycle
@@ -31,7 +31,6 @@
     STORAGE_KEY: "web_screen_time_tracker",
     USER_TOKEN_KEY: "lisTrackTrackerToken",
     OFFLINE_QUEUE_KEY: "lisTrackOfflineQueue",
-    SEQ_KEY: "lisTrackSeqCounter",
   };
 
   const IGNORED_DOMAIN_PATTERNS = ["localhost", "listrack.onrender.com", "listrack-2.onrender.com"];
@@ -70,42 +69,41 @@
     }
   }
 
-  // ─── Monotonic Sequence Counter (Dedup) ─────────────────────────────────
-  // Each send gets a globally unique, monotonically increasing seq_id.
-  // The server deduplicates by seq_id — even if a stale checkpoint is
-  // replayed after a crash, it won't double-count.
+  // ─── Globally Unique Sequence ID (Dedup) ────────────────────────────────
+  // Each send gets a globally unique UUID. The old per-tab sessionStorage
+  // counter collided across tabs (every tab started at 1), so the server's
+  // global dedup was dropping legitimate data from all but one tab. UUIDs
+  // are unique across tabs, users, and sessions. The server deduplicates by
+  // (user_id, seq_id) — even if a stale checkpoint is replayed after a
+  // crash, it won't double-count.
+
+  function generateUuid() {
+    try {
+      if (typeof crypto !== "undefined" && crypto.getRandomValues) {
+        const bytes = new Uint8Array(16);
+        crypto.getRandomValues(bytes);
+        bytes[6] = (bytes[6] & 0x0f) | 0x40; // version 4
+        bytes[8] = (bytes[8] & 0x3f) | 0x80; // variant 10
+        const hex = Array.from(bytes, (b) =>
+          b.toString(16).padStart(2, "0")
+        ).join("");
+        return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+      }
+    } catch (_) {}
+    // Fallback: timestamp + random suffix (still globally unique in practice)
+    return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
+  }
 
   function getNextSeqId() {
-    try {
-      let seq = parseInt(sessionStorage.getItem(CONFIG.SEQ_KEY) || "0", 10);
-      seq++;
-      sessionStorage.setItem(CONFIG.SEQ_KEY, String(seq));
-      return seq;
-    } catch (_) {
-      return Date.now();
-    }
+    return generateUuid();
   }
 
   // ─── Offline Queue ───────────────────────────────────────────────────────
-  // Two-layer queue:
-  //   1. sessionStorage — fast, per-tab, survives refresh
-  //   2. chrome.storage.local — survives tab close
-
-  function getOfflineQueueFromSession() {
-    try {
-      const raw = sessionStorage.getItem(CONFIG.OFFLINE_QUEUE_KEY);
-      return raw ? JSON.parse(raw) : [];
-    } catch (_) {
-      return [];
-    }
-  }
-
-  function setOfflineQueueToSession(queue) {
-    try {
-      const trimmed = queue.slice(-50);
-      sessionStorage.setItem(CONFIG.OFFLINE_QUEUE_KEY, JSON.stringify(trimmed));
-    } catch (_) {}
-  }
+  // SINGLE durable queue in chrome.storage.local. Content scripts only PUSH
+  // here — draining is owned EXCLUSIVELY by the background service worker
+  // (alarm-driven). Previously the tracker AND background both drained the
+  // same chrome queue, and every payload was pushed into BOTH a sessionStorage
+  // queue AND the chrome queue, so each entry was sent 2–3×.
 
   async function getOfflineQueueFromChromeStorage() {
     if (typeof chrome === 'undefined' || !chrome.storage || !chrome.storage.local) return [];
@@ -117,50 +115,24 @@
     }
   }
 
+  // Returns true only if the queue was actually persisted — the caller
+  // restores activeTimeMs when this returns false so time is never lost.
   async function setOfflineQueueToChromeStorage(queue) {
-    if (typeof chrome === 'undefined' || !chrome.storage || !chrome.storage.local) return;
+    if (typeof chrome === 'undefined' || !chrome.storage || !chrome.storage.local) return false;
     try {
       const trimmed = queue.slice(-500);
       await chrome.storage.local.set({ [CONFIG.OFFLINE_QUEUE_KEY]: trimmed });
-    } catch (_) {}
-  }
-
-  async function drainOfflineQueue() {
-    const sessionQueue = getOfflineQueueFromSession();
-    const chromeQueue = await getOfflineQueueFromChromeStorage();
-    const allEntries = [...sessionQueue, ...chromeQueue];
-    if (allEntries.length === 0) return 0;
-
-    let drained = 0;
-    const pendingRetries = [];
-
-    for (const entry of allEntries) {
-      try {
-        const resp = await fetch(CONFIG.SERVER_URL + CONFIG.API_PATH, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(entry),
-        });
-        if (resp.ok) drained++;
-        else pendingRetries.push(entry);
-      } catch (_) {
-        pendingRetries.push(entry);
-      }
+      return true;
+    } catch (_) {
+      return false;
     }
-
-    setOfflineQueueToSession([]);
-    await setOfflineQueueToChromeStorage(pendingRetries);
-    return drained;
   }
 
+  // Returns true when the payload was durably queued.
   async function pushToOfflineQueue(payload) {
-    const sessionQueue = getOfflineQueueFromSession();
-    sessionQueue.push({ ...payload, queuedAt: Date.now() });
-    setOfflineQueueToSession(sessionQueue);
-
     const chromeQueue = await getOfflineQueueFromChromeStorage();
     chromeQueue.push({ ...payload, queuedAt: Date.now() });
-    await setOfflineQueueToChromeStorage(chromeQueue);
+    return setOfflineQueueToChromeStorage(chromeQueue);
   }
 
   // ─── State ───────────────────────────────────────────────────────────────
@@ -259,6 +231,14 @@
       const capturedMs = state.activeTimeMs;
       state.activeTimeMs = 0;
 
+      // Clear any stale crash checkpoint AT CAPTURE (before async I/O).
+      // If a crash happened after the server accepted this payload but
+      // before the old success-path removeItem ran, the pre-send checkpoint
+      // would be replayed with a DIFFERENT seq_id → double-count. Clearing
+      // here closes that window entirely; the checkpoint is rebuilt by
+      // onCheckpoint() with fresh accumulated time.
+      try { sessionStorage.removeItem(CONFIG.STORAGE_KEY); } catch (_) {}
+
       // Generate monotonic seq_id for server-side dedup
       const seqId = getNextSeqId();
 
@@ -324,28 +304,43 @@
 
       // ─── Handle Failure ────────────────────────────────────────────
       if (!succeeded) {
-        // Restore captured time so it's not lost
-        state.activeTimeMs += capturedMs;
-
-        // Push to persistent offline queue
-        await pushToOfflineQueue(payload);
-
-        // Save crash-recovery checkpoint with seqId
+        // Queue the payload ONLY — never also restore activeTimeMs.
+        // Restoring would re-send the same seconds on the next flush under
+        // a NEW seq_id while the queued copy keeps the OLD seq_id, so the
+        // server would accept both → double-count. If the queue itself
+        // fails, restore the time so the next flush retries it.
+        let queued = false;
         try {
-          const checkpoint = {
-            seqId,
-            activeTimeMs: state.activeTimeMs,
-            lastActivity: state.lastActivity,
-            domain: window.location.hostname,
-            path: window.location.pathname,
-            timestamp: Date.now(),
-          };
-          sessionStorage.setItem(CONFIG.STORAGE_KEY, JSON.stringify(checkpoint));
+          queued = await pushToOfflineQueue(payload);
+        } catch (_) {
+          queued = false;
+        }
+        if (!queued) {
+          state.activeTimeMs += capturedMs;
+        }
+
+        // Save crash-recovery checkpoint with a FRESH seqId (the payload
+        // above already consumed `seqId` — reusing it would make the
+        // recovered entry look like a duplicate of the queued one).
+        // Only write when there is real accumulated time (a 0-duration
+        // checkpoint would be rejected by the server on replay).
+        try {
+          if (state.activeTimeMs > 0) {
+            const checkpoint = {
+              seqId: getNextSeqId(),
+              activeTimeMs: state.activeTimeMs,
+              lastActivity: state.lastActivity,
+              domain: window.location.hostname,
+              path: window.location.pathname,
+              timestamp: Date.now(),
+            };
+            sessionStorage.setItem(CONFIG.STORAGE_KEY, JSON.stringify(checkpoint));
+          }
         } catch (_) {}
-      } else {
-        // Success: clear checkpoint to prevent stale replay on crash
-        try { sessionStorage.removeItem(CONFIG.STORAGE_KEY); } catch (_) {}
       }
+      // NOTE: the checkpoint was already cleared at capture above — no
+      // per-branch removal needed, and a crash mid-send can never replay
+      // the just-sent time.
     } finally {
       state._sendInProgress = false;
     }
@@ -403,7 +398,7 @@
           durationSeconds: data.activeTimeMs / 1000,
           timestamp: new Date(data.timestamp).toISOString(),
           userToken: token,
-          seq_id: data.seqId || Date.now(),
+          seq_id: data.seqId || generateUuid(),
           recovered: true,
         };
 
@@ -490,11 +485,9 @@
     }
 
     // Drain any offline-queued data from previous sessions
-    drainOfflineQueue().then(count => {
-      if (count > 0) {
-        console.log(`[tracker] Drained ${count} offline-queued payloads`);
-      }
-    }).catch(() => {});
+    // NOTE: draining is owned by the background service worker (single
+    // owner) so payloads aren't processed twice — content script no longer
+    // drains the shared chrome.storage.local queue.
 
     recoverCrashData();
 

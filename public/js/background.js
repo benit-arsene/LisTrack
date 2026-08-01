@@ -4,7 +4,7 @@
 //   1. Offline queue: buffers failed payloads in chrome.storage.local
 //   2. Retry mechanism: drains offline queue on periodic alarm
 //   3. Service worker lifecycle: onStartup re-initializes, onSuspend saves state
-//   4. Rejects duplicate seq_id payloads to prevent double-counting
+//   4. Dedup is enforced server-side via a UNIQUE (user_id, seq_id) index
 //   5. Handles forwarding tracking payloads to bypass mixed content blocking
 //   6. Checks daily goals and sends Chrome notifications
 
@@ -26,7 +26,6 @@ const OFFLINE_RETRY_INTERVAL_MINUTES = 2; // Retry offline queue every 2 minutes
 const USER_TOKEN_KEY = "lisTrackTrackerToken";
 const PAUSE_KEY = "lisTrackPaused";
 const OFFLINE_QUEUE_KEY = "lisTrackOfflineQueue";
-const PROCESSED_SEQ_IDS_KEY = "lisTrackProcessedSeqIds"; // Dedup cache
 
 // ─── Token Management ───────────────────────────────────────────────────────
 
@@ -191,6 +190,10 @@ async function drainOfflineQueue() {
         });
         if (response.ok) {
           drained++;
+        } else if (response.status >= 400 && response.status < 500) {
+          // Permanent client error (e.g. invalid domain/duration) — drop so
+          // it isn't retried forever; only 5xx / network errors are retryable.
+          console.warn('[background] Dropping permanently-invalid queued payload:', response.status);
         } else {
           pendingRetries.push(entry);
         }
@@ -199,8 +202,23 @@ async function drainOfflineQueue() {
       }
     }
 
-    // Re-queue only the failed ones
-    await chrome.storage.local.set({ [OFFLINE_QUEUE_KEY]: pendingRetries });
+    // Re-queue only the failed ones — but MERGE with any entries pushed by
+    // content scripts WHILE this drain was in flight, so they aren't lost.
+    // (chrome.storage.local.set replaces the whole key, so an unconditional
+    // overwrite here could silently drop newly-queued payloads.)
+    // Re-queue only entries that failed this pass PLUS entries pushed by
+    // content scripts WHILE this drain was in flight (i.e. not part of the
+    // snapshot we just processed) — so nothing is lost and nothing that
+    // already succeeded is sent again.
+    const processed = new Set(queue.map((e) => JSON.stringify(e)));
+    const current = await chrome.storage.local.get([OFFLINE_QUEUE_KEY]);
+    const currentQueue = current[OFFLINE_QUEUE_KEY] || [];
+    const newDuringDrain = currentQueue.filter(
+      (e) => !processed.has(JSON.stringify(e)),
+    );
+    await chrome.storage.local.set({
+      [OFFLINE_QUEUE_KEY]: [...pendingRetries, ...newDuringDrain],
+    });
 
     if (drained > 0) {
       console.log(`[background] Drained ${drained} offline-queued payloads (${pendingRetries.length} remaining)`);
@@ -211,37 +229,11 @@ async function drainOfflineQueue() {
   } catch (_) {}
 }
 
-// ─── Dedup Cache (seq_id tracking) ──────────────────────────────────────
-// Prevents double-counting when crash-recovered payloads are replayed.
-// The cache holds up to 1000 unique seq_ids with a 24-hour TTL.
-
-async function isDuplicateSeqId(seqId) {
-  if (!seqId) return false;
-  try {
-    const result = await chrome.storage.local.get([PROCESSED_SEQ_IDS_KEY]);
-    const cache = result[PROCESSED_SEQ_IDS_KEY] || {};
-    const now = Date.now();
-    // Purge entries older than 24 hours
-    for (const key of Object.keys(cache)) {
-      if (now - cache[key] > 86_400_000) {
-        delete cache[key];
-      }
-    }
-    if (cache[String(seqId)]) return true;
-    cache[String(seqId)] = now;
-    // Keep cache size manageable
-    const keys = Object.keys(cache);
-    if (keys.length > 1000) {
-      // Remove oldest 200 entries
-      const sorted = keys.sort((a, b) => cache[a] - cache[b]);
-      for (let i = 0; i < 200; i++) delete cache[sorted[i]];
-    }
-    await chrome.storage.local.set({ [PROCESSED_SEQ_IDS_KEY]: cache });
-    return false;
-  } catch (_) {
-    return false;
-  }
-}
+// ─── Dedup ──────────────────────────────────────────────────────────────
+// Dedup is enforced server-side via a UNIQUE index on (user_id, seq_id)
+// with INSERT ... ON CONFLICT DO NOTHING — no client-side cache needed.
+// The old PROCESSED_SEQ_IDS_KEY cache was never wired into the message
+// handler, so it has been removed.
 
 /**
  * Reset notification cooldowns at midnight.
@@ -503,7 +495,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       } else {
         console.warn('[background] Server returned non-OK status:', response.status);
       }
-      sendResponse({ received: true, status: response.status });
+      // received mirrors the server result so the content script knows
+      // whether to keep/queue the payload on failure.
+      sendResponse({ received: response.ok, status: response.status });
     })
     .catch((err) => {
       console.error('[background] Failed to connect to server:', err);
