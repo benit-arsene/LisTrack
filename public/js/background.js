@@ -7,6 +7,9 @@
 //   4. Dedup is enforced server-side via a UNIQUE (user_id, seq_id) index
 //   5. Handles forwarding tracking payloads to bypass mixed content blocking
 //   6. Checks daily goals and sends Chrome notifications
+//   7. Mandatory Google sign-in: all server traffic is gated on user_id
+//      (the signed-in Google email in chrome.storage.sync). Without it,
+//      tracking is paused and no data is sent.
 
 // ─── Configuration ──────────────────────────────────────────────────────────
 
@@ -23,45 +26,35 @@ const NOTIFICATION_COOLDOWN_MS = 30 * 60 * 1000;
 const BADGE_UPDATE_INTERVAL_MINUTES = 1;
 const OFFLINE_RETRY_INTERVAL_MINUTES = 2; // Retry offline queue every 2 minutes
 
-const USER_TOKEN_KEY = "lisTrackTrackerToken";
+const USER_ID_KEY = "user_id";
 const PAUSE_KEY = "lisTrackPaused";
 const OFFLINE_QUEUE_KEY = "lisTrackOfflineQueue";
 
-// ─── Token Management ───────────────────────────────────────────────────────
+// ─── User Identity (Mandatory Google Sign-In) ──────────────────────────────
+// The signed-in Google email is stored in chrome.storage.sync under
+// `user_id`. Every network request to the server is gated on its presence.
 
 /**
- * Generate a cryptographically-random hex token.
+ * Get the signed-in user's Google email, or null when not signed in.
  */
-function generateToken() {
-  const bytes = new Uint8Array(16);
-  crypto.getRandomValues(bytes);
-  return Array.from(bytes)
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
+async function getUserId() {
+  try {
+    const result = await chrome.storage.sync.get([USER_ID_KEY]);
+    const id = result[USER_ID_KEY];
+    // Emails are case-insensitive — normalize to lowercase so the
+    // server-side identity stays consistent across all callers.
+    return typeof id === "string" && id.trim() ? id.trim().toLowerCase() : null;
+  } catch (err) {
+    console.error("[background] Failed to read user_id:", err);
+    return null;
+  }
 }
 
 /**
- * Get the user token from storage, creating one if it doesn't exist.
- * Also handles migration from the old key (lisTrackUserToken) for existing users.
+ * Open the mandatory onboarding (Google sign-in) page.
  */
-async function getOrCreateToken() {
-  const OLD_TOKEN_KEY = "lisTrackUserToken";
-  const result = await chrome.storage.local.get([USER_TOKEN_KEY, OLD_TOKEN_KEY]);
-  let token = result[USER_TOKEN_KEY];
-
-  if (!token && result[OLD_TOKEN_KEY]) {
-    // Migrate existing token from old key to new key
-    token = result[OLD_TOKEN_KEY];
-    await chrome.storage.local.set({ [USER_TOKEN_KEY]: token });
-    await chrome.storage.local.remove(OLD_TOKEN_KEY);
-    console.log("[background] Migrated existing token:", token);
-  } else if (!token) {
-    token = generateToken();
-    await chrome.storage.local.set({ [USER_TOKEN_KEY]: token });
-    console.log("[background] Created new user token:", token);
-  }
-
-  return token;
+function openOnboarding() {
+  chrome.tabs.create({ url: chrome.runtime.getURL("public/html/onboarding.html") });
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -75,9 +68,9 @@ function isBlockedDomain(domain) {
 /**
  * Fetch goal status from the server.
  */
-async function fetchGoalStatus(userToken) {
+async function fetchGoalStatus(userId) {
   try {
-    const response = await fetch(`${SERVER_URL}/api/goals/status?user=${encodeURIComponent(userToken)}`);
+    const response = await fetch(`${SERVER_URL}/api/goals/status?user=${encodeURIComponent(userId)}`);
     if (!response.ok) return null;
     return await response.json();
   } catch (err) {
@@ -151,12 +144,18 @@ async function recordNotification(goal, type) {
 
 /**
  * Check all goals and send notifications where needed.
+ * Gated on sign-in — never runs without a user_id.
  */
 async function checkGoals() {
   console.log("[background] Checking goals...");
 
-  const userToken = await getOrCreateToken();
-  const data = await fetchGoalStatus(userToken);
+  const userId = await getUserId();
+  if (!userId) {
+    console.log("[background] Skipping goal check — user not signed in");
+    return;
+  }
+
+  const data = await fetchGoalStatus(userId);
   if (!data || !data.goals || data.goals.length === 0) return;
 
   for (const goal of data.goals) {
@@ -174,6 +173,10 @@ async function checkGoals() {
 
 async function drainOfflineQueue() {
   try {
+    // Gated on sign-in — never send to the server without a user_id
+    const userId = await getUserId();
+    if (!userId) return;
+
     const result = await chrome.storage.local.get([OFFLINE_QUEUE_KEY]);
     const queue = result[OFFLINE_QUEUE_KEY] || [];
     if (queue.length === 0) return;
@@ -252,8 +255,14 @@ async function resetDailyNotifications() {
 
 async function updateBadge() {
   try {
-    const userToken = await getOrCreateToken();
-    const resp = await fetch(`${SERVER_URL}/api/dashboard?user=${encodeURIComponent(userToken)}`);
+    const userId = await getUserId();
+    if (!userId) {
+      // Not signed in — no badge to show (reset both text and color)
+      chrome.action.setBadgeText({ text: '' });
+      chrome.action.setBadgeBackgroundColor({ color: '#6b7280' });
+      return;
+    }
+    const resp = await fetch(`${SERVER_URL}/api/dashboard?user=${encodeURIComponent(userId)}`);
     if (!resp.ok) return;
 
     const data = await resp.json();
@@ -308,32 +317,39 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
     const url = new URL(tab.url);
     const domain = url.hostname.replace(/^www\./, '');
 
-    chrome.storage.local.get([USER_TOKEN_KEY], (result) => {
-      const token = result[USER_TOKEN_KEY] || '';
+    getUserId().then((userId) => {
+      if (!userId) {
+        // Not signed in — route to onboarding first
+        openOnboarding();
+        return;
+      }
       if (info.menuItemId === 'viewScreenTime') {
         chrome.tabs.create({
-          url: `${SERVER_URL}/dashboard?user=${encodeURIComponent(token)}`,
+          url: `${SERVER_URL}/dashboard?user=${encodeURIComponent(userId)}`,
         });
       } else if (info.menuItemId === 'setDailyGoal') {
         chrome.tabs.create({
-          url: `${SERVER_URL}/dashboard?user=${encodeURIComponent(token)}&goal=${encodeURIComponent(domain)}`,
+          url: `${SERVER_URL}/dashboard?user=${encodeURIComponent(userId)}&goal=${encodeURIComponent(domain)}`,
         });
       }
     });
   } catch (_) {}
 });
 
-// ─── Notification Clicks ───────────────────────────────────────────────────-
+// ─── Notification Clicks ────────────────────────────────────────────────────
 // Clicking a goal notification opens the dashboard so users can take action.
 
 chrome.notifications.onClicked.addListener((notificationId) => {
   if (!notificationId || !notificationId.startsWith('goal-')) return;
 
-  chrome.storage.local.get([USER_TOKEN_KEY], (result) => {
-    const token = result[USER_TOKEN_KEY] || '';
-    if (token) {
+  getUserId().then((userId) => {
+    if (!userId) {
+      openOnboarding();
+      return;
+    }
+    if (userId) {
       chrome.tabs.create({
-        url: `${SERVER_URL}/dashboard?user=${encodeURIComponent(token)}`,
+        url: `${SERVER_URL}/dashboard?user=${encodeURIComponent(userId)}`,
       });
     }
   });
@@ -384,6 +400,11 @@ chrome.runtime.onInstalled.addListener((details) => {
 
   setupContextMenus();
 
+  // Mandatory onboarding: on first install, open the Google sign-in page
+  if (details.reason === 'install') {
+    openOnboarding();
+  }
+
   setTimeout(checkGoals, 10_000);
   setTimeout(updateBadge, 2_000);
 
@@ -414,12 +435,6 @@ chrome.runtime.onStartup.addListener(() => {
 // ─── Message Handler ────────────────────────────────────────────────────────
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  // Handle token request from content script
-  if (message === 'getUserToken') {
-    getOrCreateToken().then((token) => sendResponse({ token }));
-    return true;
-  }
-
   // Handle tracking state query from popup or content script
   if (message && message.type === 'getTrackingState') {
     chrome.storage.local.get([PAUSE_KEY], (result) => {
@@ -440,26 +455,46 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  // Handle sign-out: clear cached Google auth tokens + user_id
+  if (message && message.type === 'signOut') {
+    (async () => {
+      try {
+        await chrome.identity.clearAllCachedAuthTokens();
+      } catch (_) {}
+      try {
+        await chrome.storage.sync.remove([USER_ID_KEY]);
+      } catch (_) {}
+      chrome.action.setBadgeText({ text: '' });
+      console.log('[background] User signed out — tracking paused');
+      sendResponse({ signedOut: true });
+    })();
+    return true;
+  }
+
   // Handle dashboard data request from popup
   if (message && message.type === 'getDashboardSummary') {
-    getOrCreateToken().then(async (token) => {
+    getUserId().then(async (userId) => {
+      if (!userId) {
+        sendResponse({ token: null, dashboard: null, goals: null, requiresAuth: true });
+        return;
+      }
       try {
         const [dashboardResp, goalsResp] = await Promise.all([
-          fetch(`${SERVER_URL}/api/dashboard?user=${encodeURIComponent(token)}`),
-          fetch(`${SERVER_URL}/api/goals/status?user=${encodeURIComponent(token)}`),
+          fetch(`${SERVER_URL}/api/dashboard?user=${encodeURIComponent(userId)}`),
+          fetch(`${SERVER_URL}/api/goals/status?user=${encodeURIComponent(userId)}`),
         ]);
 
         const dashboard = dashboardResp.ok ? await dashboardResp.json() : null;
         const goals = goalsResp.ok ? await goalsResp.json() : null;
 
         sendResponse({
-          token,
+          token: userId,
           dashboard,
           goals: goals ? goals.goals : null,
         });
       } catch (err) {
         console.error('[background] Failed to fetch dashboard summary:', err);
-        sendResponse({ token, dashboard: null, goals: null });
+        sendResponse({ token: userId, dashboard: null, goals: null });
       }
     });
     return true;
@@ -475,12 +510,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   console.log('[background] Forwarding tracking data for domain:', message.domain);
 
-  // Forward the payload using the token from the content script (localStorage)
-  // so the extension and dashboard share the same user identity.
-  // Fallback to background's own token if content script didn't send one.
-  getOrCreateToken()
-    .then((bgToken) => {
-      const payload = { ...message, userToken: message.userToken || bgToken };
+  // Mandatory sign-in gate: only forward screen-time when the user has a
+  // Google user_id in chrome.storage.sync. Without it, drop the payload.
+  getUserId()
+    .then((userId) => {
+      if (!userId) {
+        console.log('[background] Ignoring tracking payload — user not signed in');
+        sendResponse({ received: false, requiresAuth: true });
+        return null;
+      }
+      // Forward the payload tagged with the signed-in email so the server
+      // attributes the data to this Google account.
+      const payload = { ...message, userToken: userId };
       return fetch(`${SERVER_URL}/api/screen-time`, {
         method: 'POST',
         headers: {
@@ -490,6 +531,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       });
     })
     .then((response) => {
+      if (!response) return; // already handled by the sign-in gate
       if (response.ok) {
         console.log('[background] Tracking data sent:', message.domain, response.status);
       } else {

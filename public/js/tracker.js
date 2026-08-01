@@ -13,6 +13,8 @@
  *   6. sendBeacon failure falls back to keepalive fetch
  *   7. Service worker detection re-checks on each send cycle
  *   8. All timing via Date.now() deltas (no setInterval drift)
+ *   9. Mandatory Google sign-in gate: no user_id (email in chrome.storage.sync)
+ *      => no time capture, no network requests to /api/screen-time
  */
 
 (function () {
@@ -30,6 +32,7 @@
     FLUSH_MINIMUM_MS: 1_000,
     STORAGE_KEY: "web_screen_time_tracker",
     USER_TOKEN_KEY: "lisTrackTrackerToken",
+    USER_ID_KEY: "user_id",
     OFFLINE_QUEUE_KEY: "lisTrackOfflineQueue",
   };
 
@@ -45,28 +48,43 @@
     );
   }
 
-  // ─── Fallback Token ──────────────────────────────────────────────────────
+  // ─── Mandatory Sign-In Gate ──────────────────────────────────────────────
+  // LisTrack only captures screen time while the user is signed in with
+  // Google (user_id = email in chrome.storage.sync). Without a user_id:
+  //   - the timer never starts (no capture)
+  //   - sendScreenTime() returns immediately (no /api/screen-time requests)
+  //   - crash recovery is skipped (no replay sends)
 
-  function generateFallbackToken() {
-    const chars = "0123456789abcdef";
-    let token = "";
-    for (let i = 0; i < 32; i++) {
-      token += chars[Math.floor(Math.random() * 16)];
-    }
-    return token;
-  }
+  let signedInUserId = null; // current Google email, or null when signed out
 
-  function getOrCreateFallbackToken() {
+  async function getSyncUserId() {
+    if (typeof chrome === 'undefined' || !chrome.storage || !chrome.storage.sync) return null;
     try {
-      let token = localStorage.getItem(CONFIG.USER_TOKEN_KEY);
-      if (!token) {
-        token = generateFallbackToken();
-        localStorage.setItem(CONFIG.USER_TOKEN_KEY, token);
-      }
-      return token;
+      const result = await chrome.storage.sync.get([CONFIG.USER_ID_KEY]);
+      const id = result[CONFIG.USER_ID_KEY];
+      // Emails are case-insensitive — normalize to lowercase to keep the
+      // server-side identity consistent (no User@x vs user@x duplicates).
+      return typeof id === "string" && id.trim() ? id.trim().toLowerCase() : null;
     } catch (_) {
       return null;
     }
+  }
+
+  async function refreshAuthState() {
+    signedInUserId = await getSyncUserId();
+    if (!signedInUserId) {
+      // Pause all time logging while signed out
+      state.authenticated = false;
+      pauseTimer();
+      state.activeTimeMs = 0;
+      try { localStorage.removeItem(CONFIG.USER_TOKEN_KEY); } catch (_) {}
+    } else {
+      state.authenticated = true;
+      // Mirror the email to localStorage so the web landing page / dashboard
+      // (which read lisTrackTrackerToken) can identify this browser's user.
+      try { localStorage.setItem(CONFIG.USER_TOKEN_KEY, signedInUserId); } catch (_) {}
+    }
+    return state.authenticated;
   }
 
   // ─── Globally Unique Sequence ID (Dedup) ────────────────────────────────
@@ -146,6 +164,7 @@
     flushIntervalId: null,
     _finalSent: false,
     paused: false,
+    authenticated: false,
     // Send-lock: prevents concurrent sendScreenTime races
     _sendInProgress: false,
   };
@@ -153,7 +172,8 @@
   // ─── Core Timer Logic (Delta-based, zero drift) ─────────────────────────
 
   function resumeTimer() {
-    if (state.sessionStart === null && state.isTabVisible && !state.paused) {
+    // Never capture while signed out or paused
+    if (state.sessionStart === null && state.isTabVisible && !state.paused && state.authenticated) {
       state.sessionStart = Date.now();
     }
   }
@@ -176,7 +196,7 @@
     state.lastActivity = now;
     state.hasEverInteracted = true;
 
-    if (!state.paused && state.sessionStart === null && state.isTabVisible) {
+    if (!state.paused && state.sessionStart === null && state.isTabVisible && state.authenticated) {
       resumeTimer();
     }
   }
@@ -199,7 +219,7 @@
     } else {
       state.isTabVisible = true;
       const elapsed = Date.now() - state.lastActivity;
-      if (elapsed < CONFIG.IDLE_THRESHOLD_MS && !state.paused) {
+      if (elapsed < CONFIG.IDLE_THRESHOLD_MS && !state.paused && state.authenticated) {
         resumeTimer();
       }
     }
@@ -214,6 +234,12 @@
 
     try {
       pauseTimer();
+
+      // Mandatory sign-in gate — no network requests without a user_id
+      if (!state.authenticated) {
+        state.activeTimeMs = 0;
+        return;
+      }
 
       const durationSeconds = state.activeTimeMs / 1000;
       if (durationSeconds <= 0) return;
@@ -243,12 +269,14 @@
       const seqId = getNextSeqId();
 
       // Immediately resume timer so the next millisecond is tracked
-      if (state.isTabVisible && !state.paused) {
+      if (state.isTabVisible && !state.paused && state.authenticated) {
         resumeTimer();
       }
 
       // ─── Build Payload ──────────────────────────────────────────────
-      const token = getOrCreateFallbackToken();
+      // userToken = the signed-in Google email (user_id). No fallback
+      // tokens — the sign-in gate guarantees signedInUserId is present.
+      const token = signedInUserId;
 
       const payload = {
         domain,
@@ -262,6 +290,16 @@
 
       // ─── Page Unload Path (isFinal) ─────────────────────────────────
       if (isFinal) {
+        // Rely on the synchronous auth gate at the top of this function
+        // (already passed) plus the live state.authenticated / signedInUserId
+        // kept in sync by handleTrackingStateChange. We deliberately avoid an
+        // async chrome.storage read here: during pagehide/beforeunload the
+        // continuation may never resolve, silently dropping the beacon.
+        if (!state.authenticated || !signedInUserId) {
+          state.activeTimeMs = 0;
+          return;
+        }
+
         let beaconSent = false;
         try {
           const blob = new Blob([JSON.stringify(payload)], { type: "application/json" });
@@ -283,15 +321,25 @@
 
       // ─── Normal Send: Extension → Direct Fetch ─────────────────────
       let succeeded = false;
+      let authGated = false;
 
       if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.sendMessage) {
         try {
           const response = await chrome.runtime.sendMessage(payload);
+          if (response && response.requiresAuth) {
+            // Background dropped the payload because the user is signed out.
+            // Treat this as authoritative — never fall back to a direct
+            // /api/screen-time fetch while signed out.
+            authGated = true;
+            state.authenticated = false;
+            state.activeTimeMs = 0;
+            return;
+          }
           succeeded = !!(response && response.received);
         } catch (_) {}
       }
 
-      if (!succeeded) {
+      if (!succeeded && !authGated) {
         try {
           const resp = await fetch(CONFIG.SERVER_URL + CONFIG.API_PATH, {
             method: "POST",
@@ -391,13 +439,15 @@
         Date.now() - data.timestamp < 3_600_000 &&
         shouldTrackDomain(data.domain)
       ) {
-        const token = getOrCreateFallbackToken();
+        // Sign-in gate: never replay crashed data while signed out
+        if (!state.authenticated) return;
+
         const payload = {
           domain: data.domain,
           path: data.path,
           durationSeconds: data.activeTimeMs / 1000,
           timestamp: new Date(data.timestamp).toISOString(),
-          userToken: token,
+          userToken: signedInUserId,
           seq_id: data.seqId || generateUuid(),
           recovered: true,
         };
@@ -448,10 +498,27 @@
   }
 
   function handleTrackingStateChange(changes, area) {
+    // Pause/resume toggles live in chrome.storage.local
     if (area === 'local' && changes.lisTrackPaused) {
       state.paused = !!changes.lisTrackPaused.newValue;
       if (state.paused) {
         pauseTimer();
+      } else if (state.isTabVisible) {
+        const elapsed = Date.now() - state.lastActivity;
+        if (elapsed < CONFIG.IDLE_THRESHOLD_MS) {
+          resumeTimer();
+        }
+      }
+    }
+
+    // Sign-in/sign-out events live in chrome.storage.sync — react live
+    if (area === 'sync' && changes.user_id) {
+      const newId = changes.user_id.newValue;
+      signedInUserId = typeof newId === "string" && newId.trim() ? newId.trim().toLowerCase() : null;
+      state.authenticated = !!signedInUserId;
+      if (!state.authenticated) {
+        pauseTimer();
+        state.activeTimeMs = 0;
       } else if (state.isTabVisible) {
         const elapsed = Date.now() - state.lastActivity;
         if (elapsed < CONFIG.IDLE_THRESHOLD_MS) {
@@ -468,6 +535,7 @@
   async function onFlushTick() {
     if (state.paused) return;
     if (state._sendInProgress) return;
+    if (!state.authenticated) return;
 
     if (state.activeTimeMs >= CONFIG.FLUSH_MINIMUM_MS) {
       await sendScreenTime(false);
@@ -477,7 +545,7 @@
   // ─── Bind Events & Initialize ────────────────────────────────────────────
 
   async function init() {
-    await trySyncTokenFromStorage();
+    await refreshAuthState();
     await checkPausedState();
 
     if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.onChanged) {
@@ -493,7 +561,9 @@
 
     if (!document.hidden) {
       state.lastActivity = Date.now();
-      resumeTimer();
+      if (state.authenticated) {
+        resumeTimer();
+      }
     }
 
     const activityEvents = ["mousemove", "mousedown", "keydown", "scroll", "touchstart", "touchmove", "wheel"];
@@ -521,42 +591,6 @@
     state.flushIntervalId = setInterval(onFlushTick, CONFIG.FLUSH_INTERVAL_MS);
 
     document.documentElement.dataset.lisTrackInstalled = 'true';
-  }
-
-  // ─── Token Sync ──────────────────────────────────────────────────────────
-
-  async function trySyncTokenFromStorage() {
-    let token = null;
-
-    if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) {
-      try {
-        const result = await chrome.storage.local.get([CONFIG.USER_TOKEN_KEY]);
-        token = result[CONFIG.USER_TOKEN_KEY];
-      } catch (_) {}
-    }
-
-    if (!token && typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.sendMessage) {
-      try {
-        const timeout = new Promise((_, reject) =>
-          setTimeout(() => reject(new Error('timeout')), 2000)
-        );
-        const response = await Promise.race([
-          chrome.runtime.sendMessage("getUserToken"),
-          timeout
-        ]);
-        if (response && response.token) {
-          token = response.token;
-        }
-      } catch (_) {}
-    }
-
-    try {
-      if (token) {
-        localStorage.setItem(CONFIG.USER_TOKEN_KEY, token);
-      } else {
-        getOrCreateFallbackToken();
-      }
-    } catch (_) {}
   }
 
   // ─── Boot ────────────────────────────────────────────────────────────────

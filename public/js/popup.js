@@ -2,11 +2,18 @@
  * LisTrack Rich Popup
  * Shows today's screen time stats, top domains, goals status,
  * and provides pause/resume control directly from the extension popup.
+ *
+ * Mandatory Google sign-in:
+ *   - With user_id (email in chrome.storage.sync): full stats + email badge
+ *     + Sign Out button.
+ *   - Without user_id: the UI is locked with a "Login Required to Activate
+ *     LisTrack" prompt and a Sign-In button.
  */
 (async function () {
   "use strict";
 
   const app = document.getElementById("app");
+  const ONBOARDING_URL = chrome.runtime.getURL("public/html/onboarding.html");
 
   // ─── Helpers ────────────────────────────────────────────────────────────
 
@@ -31,6 +38,36 @@
     return mainName.charAt(0).toUpperCase() + mainName.slice(1);
   }
 
+  // ─── Login Required (locked) State ──────────────────────────────────────
+
+  function renderLoginRequired() {
+    app.innerHTML = `
+      <div class="auth-lock">
+        <div class="auth-lock-icon">
+          <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 10-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H6.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z" />
+          </svg>
+        </div>
+        <div class="auth-lock-title">Login Required to Activate LisTrack</div>
+        <div class="auth-lock-sub">Sign in with your Google account to start tracking your screen time.</div>
+        <button class="auth-signin" id="authSignInBtn">
+          <svg class="g-logo" viewBox="0 0 48 48" width="16" height="16" aria-hidden="true">
+            <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/>
+            <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/>
+            <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/>
+            <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/>
+          </svg>
+          <span>Sign in with Google</span>
+        </button>
+      </div>
+      <div class="footer">LisTrack v1.0</div>
+    `;
+
+    document.getElementById("authSignInBtn").addEventListener("click", () => {
+      chrome.tabs.create({ url: ONBOARDING_URL });
+    });
+  }
+
   // ─── Render Error ──────────────────────────────────────────────────────
 
   function showError(message) {
@@ -47,10 +84,11 @@
 
   // ─── Render Popup ──────────────────────────────────────────────────────
 
-  function renderPopup(data, isPaused) {
+  function renderPopup(data, isPaused, email) {
     const dashboard = data.dashboard;
     const goals = data.goals || [];
     const token = data.token || "";
+    const userEmail = email || "";
     const dashboardUrl = `https://listrack-2.onrender.com/dashboard?user=${encodeURIComponent(token)}`;
 
     const totalMinutes = dashboard ? dashboard.totalMinutes || 0 : 0;
@@ -135,6 +173,14 @@
         </div>
       </div>
 
+      <!-- User Email Badge -->
+      <div class="user-badge">
+        <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M17.982 18.725A7.488 7.488 0 0012 15.75a7.488 7.488 0 00-5.982 2.975m11.963 0a9 9 0 10-11.963 0m11.963 0A8.966 8.966 0 0112 21a8.966 8.966 0 01-5.982-2.275M15 9.75a3 3 0 11-6 0 3 3 0 016 0z" />
+        </svg>
+        <span class="user-badge-email" id="userEmail" title="Signed in as ${userEmail}">${userEmail}</span>
+      </div>
+
       <!-- Today's Time -->
       <div class="time-section">
         <div class="time-label">Screen Time Today</div>
@@ -197,12 +243,12 @@
             : `<svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M15.75 5.25v13.5m-7.5-13.5v13.5" /></svg> Pause Tracking`
           }
         </button>
-      </div>
-
-      <!-- Token -->
-      <div class="token-bar">
-        <span class="token-text" id="tokenText" title="Your user token">${token.substring(0, 16)}…</span>
-        <button class="token-copy" id="copyBtn">${navigator.clipboard ? "Copy" : ""}</button>
+        <button class="btn-secondary signout" id="signOutBtn">
+          <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M15.75 9V5.25A2.25 2.25 0 0013.5 3h-6a2.25 2.25 0 00-2.25 2.25v13.5A2.25 2.25 0 007.5 21h6a2.25 2.25 0 002.25-2.25V15m3 0l3-3m0 0l-3-3m3 3H9" />
+          </svg>
+          Sign Out
+        </button>
       </div>
 
       <!-- Footer -->
@@ -219,19 +265,16 @@
         (response) => {
           if (response && response.paused !== undefined) {
             // Re-render with new state
-            renderPopup(data, response.paused);
+            renderPopup(data, response.paused, userEmail);
           }
         }
       );
     });
 
-    // Copy token
-    document.getElementById("copyBtn").addEventListener("click", () => {
-      if (!navigator.clipboard) return;
-      navigator.clipboard.writeText(token).then(() => {
-        const btn = document.getElementById("copyBtn");
-        btn.textContent = "✅";
-        setTimeout(() => { btn.textContent = "Copy"; }, 2000);
+    // Sign out
+    document.getElementById("signOutBtn").addEventListener("click", () => {
+      chrome.runtime.sendMessage({ type: "signOut" }, () => {
+        renderLoginRequired();
       });
     });
 
@@ -244,6 +287,15 @@
   // ─── Main ──────────────────────────────────────────────────────────────
 
   try {
+    // Mandatory sign-in gate: without a user_id, lock the dashboard UI
+    const syncResult = await chrome.storage.sync.get(["user_id"]);
+    const userId = syncResult.user_id;
+
+    if (!userId) {
+      renderLoginRequired();
+      return;
+    }
+
     // Get token + tracking state + dashboard data in one go
     const [tokenResult, stateResult] = await Promise.all([
       // Get data from background
@@ -268,37 +320,36 @@
       }),
     ]);
 
-    if (!tokenResult || !tokenResult.token) {
-      showError("Could not retrieve your user token. Try reinstalling the extension.");
+    if (!tokenResult || tokenResult.requiresAuth || !tokenResult.token) {
+      renderLoginRequired();
       return;
     }
 
-    renderPopup(tokenResult, stateResult ? stateResult.paused : false);
+    renderPopup(tokenResult, stateResult ? stateResult.paused : false, userId);
   } catch (err) {
     // Fallback: try chrome.storage directly
     try {
-      const result = await chrome.storage.local.get(["lisTrackTrackerToken", "lisTrackPaused"]);
-      const token = result.lisTrackTrackerToken;
-      const paused = !!result.lisTrackPaused;
+      const syncResult = await chrome.storage.sync.get(["user_id"]);
+      const userId = syncResult.user_id;
 
-      if (!token) {
-        showError("Could not retrieve your user token. Try reinstalling the extension.");
+      if (!userId) {
+        renderLoginRequired();
         return;
       }
 
       // Fetch dashboard data directly from server
       const resp = await fetch(
-        `https://listrack-2.onrender.com/api/dashboard?user=${encodeURIComponent(token)}`
+        `https://listrack-2.onrender.com/api/dashboard?user=${encodeURIComponent(userId)}`
       );
 
       const goalsResp = await fetch(
-        `https://listrack-2.onrender.com/api/goals/status?user=${encodeURIComponent(token)}`
+        `https://listrack-2.onrender.com/api/goals/status?user=${encodeURIComponent(userId)}`
       );
 
       const dashboard = resp.ok ? await resp.json() : null;
       const goalsData = goalsResp.ok ? await goalsResp.json() : null;
 
-      renderPopup({ dashboard, goals: goalsData ? goalsData.goals : null, token }, paused);
+      renderPopup({ dashboard, goals: goalsData ? goalsData.goals : null, token: userId }, false, userId);
     } catch (fallbackErr) {
       showError("Could not connect to the server. Make sure the server is running.");
     }

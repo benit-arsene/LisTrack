@@ -323,41 +323,6 @@ body {
 .btn-secondary.danger { color: #ef4444; }
 .btn-secondary.danger:hover { background: #fef2f2; }
 
-/* ─── Token ────────────────────────────────────────── */
-.token-bar {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 6px 16px 12px;
-}
-.token-text {
-  flex: 1;
-  font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
-  font-size: 9px;
-  color: #d1d5db;
-  background: #f9fafb;
-  padding: 4px 8px;
-  border-radius: 6px;
-  user-select: all;
-  cursor: text;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.token-copy {
-  font-size: 9px;
-  color: #6366f1;
-  background: none;
-  border: none;
-  cursor: pointer;
-  font-weight: 600;
-  padding: 4px 6px;
-  border-radius: 6px;
-  transition: all 0.1s;
-  flex-shrink: 0;
-}
-.token-copy:hover { background: #eef2ff; }
-
 /* ─── Loading & Error ──────────────────────────────── */
 .loading {
   display: flex;
@@ -405,3 +370,98 @@ body {
   text-align: center;
   padding: 0 16px 10px;
 }
+
+/* ─── User Email Badge ─────────────────────────────── */
+.user-badge {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 8px 16px 0;
+  padding: 6px 10px;
+  background: #eef2ff;
+  border: 1px solid #e0e7ff;
+  border-radius: 999px;
+}
+.user-badge svg {
+  width: 12px;
+  height: 12px;
+  color: #6366f1;
+  flex-shrink: 0;
+}
+.user-badge-email {
+  font-size: 10px;
+  font-weight: 600;
+  color: #4f46e5;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ─── Sign Out Button ──────────────────────────────── */
+.btn-secondary.signout {
+  color: #ef4444;
+  border: 1px solid #fecaca;
+  background: #fef2f2;
+}
+.btn-secondary.signout:hover {
+  background: #fee2e2;
+  color: #dc2626;
+}
+
+/* ─── Auth Lock (Login Required) ───────────────────── */
+.auth-lock {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  padding: 28px 20px 18px;
+}
+.auth-lock-icon {
+  width: 52px;
+  height: 52px;
+  border-radius: 16px;
+  background: #eef2ff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #6366f1;
+  margin-bottom: 14px;
+}
+.auth-lock-icon svg {
+  width: 24px;
+  height: 24px;
+}
+.auth-lock-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: #1f2937;
+  margin-bottom: 6px;
+}
+.auth-lock-sub {
+  font-size: 11px;
+  color: #6b7280;
+  line-height: 1.5;
+  margin-bottom: 18px;
+}
+.auth-signin {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  padding: 10px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #374151;
+  background: #ffffff;
+  border: 1px solid #d1d5db;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.auth-signin:hover {
+  background: #f9fafb;
+  border-color: #9ca3af;
+}
+.auth-signin:active { transform: scale(0.98); }
+.auth-signin .g-logo { flex-shrink: 0; }
