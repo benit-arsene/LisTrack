@@ -2,6 +2,7 @@
   "manifest_version": 3,
   "name": "LisTrack - Personal Screen Time Tracker",
   "version": "1.0.0",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAsYPPoPrnmRe+U5uwDIetTJvku2MDlnArt6L9COYlIf3MA07fiG1VDBNLb/+fR6AhK52AnV6e/MleWzn4yqbCxRLnLkJE6uRi7G02V90XKzhCEcTF5wE6qRMOE5V+qYnvEJKg9zcjN8kA+YEuQrzkjYpae+wVEckols4ZvSOo6uO6HhBae21NLHunkw3kBTyUrNGh37C069WNrzsi6tMh1l6KOoA7B/G+rc9tphcDz4iQDtcvsYEpAR6nUyuf1ji5ijKlXLQ1lxMq0+1nA0EEb5p4XlkotSkpaUEj7PP2uFhbiLLzkTYZ0A++0ZnmxazFsENQlxPSKdBAW0IAo2jauwIDAQAB",
   "description": "Automatically track active screen-time on websites you visit and send it to your remote dashboard.",
   "permissions": [
     "notifications",
@@ -18,7 +19,7 @@
     "https://www.googleapis.com/*"
   ],
   "oauth2": {
-    "client_id": "liolnkgjhpbefhpmflnhabdlmjpnlfik.apps.googleusercontent.com",
+    "client_id": "kglonnjnmfmjagiklnhhbnpmkbgioinn.apps.googleusercontent.com",
     "scopes": [
       "https://www.googleapis.com/auth/userinfo.email"
     ]

@@ -14,6 +14,10 @@ package-lock.json
 .env.local
 .env.*.local
 
+# Extension signing key (never commit the private key)
+lisTrack-key.pem
+*.pem
+
 # OS artifacts
 nul
 .DS_Store
