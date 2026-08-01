@@ -19,7 +19,7 @@
     "https://www.googleapis.com/*"
   ],
   "oauth2": {
-    "client_id": "kglonnjnmfmjagiklnhhbnpmkbgioinn.apps.googleusercontent.com",
+    "client_id": "268748947158-7djicsjlgiapan6q9u63h5ljo248rgbv.apps.googleusercontent.com",
     "scopes": [
       "https://www.googleapis.com/auth/userinfo.email"
     ]
