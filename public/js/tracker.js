@@ -294,26 +294,35 @@
         // (already passed) plus the live state.authenticated / signedInUserId
         // kept in sync by handleTrackingStateChange. We deliberately avoid an
         // async chrome.storage read here: during pagehide/beforeunload the
-        // continuation may never resolve, silently dropping the beacon.
+        // continuation may never resolve.
         if (!state.authenticated || !signedInUserId) {
           state.activeTimeMs = 0;
           return;
         }
 
-        let beaconSent = false;
+        // FIX (auth lockdown): every /api/* call now requires the Google
+        // access token, but a raw sendBeacon cannot carry an Authorization
+        // header — the old unload beacon was rejected with 401 and the final
+        // seconds of each visit were silently lost. Instead we fire-and-forget
+        // the payload to the background service worker, which attaches the
+        // Bearer token, forwards it, and buffers it to the offline queue if
+        // the network call fails. Sending the message is synchronous from
+        // this page's perspective, so it survives pagehide even though we
+        // never await the response.
+        let dispatched = false;
         try {
-          const blob = new Blob([JSON.stringify(payload)], { type: "application/json" });
-          beaconSent = navigator.sendBeacon(CONFIG.SERVER_URL + CONFIG.API_PATH, blob);
+          if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.sendMessage) {
+            chrome.runtime.sendMessage(payload).catch(() => {});
+            dispatched = true;
+          }
         } catch (_) {}
 
-        if (!beaconSent) {
+        // Last resort only (extension runtime unavailable — rare): a raw
+        // beacon may 401, but it is better than dropping the time entirely.
+        if (!dispatched) {
           try {
-            await fetch(CONFIG.SERVER_URL + CONFIG.API_PATH, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify(payload),
-              keepalive: true,
-            }).catch(() => {});
+            const blob = new Blob([JSON.stringify(payload)], { type: "application/json" });
+            navigator.sendBeacon(CONFIG.SERVER_URL + CONFIG.API_PATH, blob);
           } catch (_) {}
         }
         return;
@@ -467,7 +476,17 @@
     try { sessionStorage.removeItem(CONFIG.STORAGE_KEY); } catch (_) {}
   }
 
-  function useFallbackSend(payload) {
+  // Crash-recovery fallback — runs at page LOAD, so async storage is safe
+  // here. Buffer durably instead of firing an unauthenticated beacon: the
+  // background worker drains the offline queue with a valid Authorization
+  // header. A raw beacon can't carry the header and would be rejected 401.
+  async function useFallbackSend(payload) {
+    try {
+      const queued = await pushToOfflineQueue(payload);
+      if (queued) return;
+    } catch (_) {}
+
+    // Last resort: extension runtime unavailable — raw beacon (may 401).
     const blob = new Blob([JSON.stringify(payload)], { type: "application/json" });
     try {
       navigator.sendBeacon(CONFIG.SERVER_URL + CONFIG.API_PATH, blob);

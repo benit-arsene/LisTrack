@@ -236,8 +236,26 @@ async function checkGoals() {
 }
 
 // ─── Offline Queue (buffer for failed sends) ───────────────────────────
-// The content script pushes failed payloads to chrome.storage.local.
-// This background worker drains them on a 2-minute alarm and on startup.
+// The content script pushes failed payloads to chrome.storage.local, and
+// this worker ALSO buffers its own failed forwards (e.g. page-unload
+// fire-and-forget sends, where the content script context is already gone
+// and cannot queue itself). Draining is owned EXCLUSIVELY by this worker
+// (2-minute alarm + startup).
+
+/**
+ * Append a payload to the durable offline queue (bounded to latest 500).
+ */
+async function pushToOfflineQueue(payload) {
+  try {
+    const result = await chrome.storage.local.get([OFFLINE_QUEUE_KEY]);
+    const queue = result[OFFLINE_QUEUE_KEY] || [];
+    queue.push({ ...payload, queuedAt: Date.now() });
+    await chrome.storage.local.set({ [OFFLINE_QUEUE_KEY]: queue.slice(-500) });
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
 
 async function drainOfflineQueue() {
   try {
@@ -598,30 +616,43 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       if (!userId) {
         console.log('[background] Ignoring tracking payload — user not signed in');
         sendResponse({ received: false, requiresAuth: true });
-        return null;
+        return;
       }
       // Forward the payload tagged with the signed-in email so the server
       // attributes the data to this Google account.
       const payload = { ...message, userToken: userId };
-      return fetch(`${SERVER_URL}/api/screen-time`, {
-        method: 'POST',
-        headers: await authedFetchHeaders({ 'Content-Type': 'application/json' }),
-        body: JSON.stringify(payload),
-      });
-    })
-    .then((response) => {
-      if (!response) return; // already handled by the sign-in gate
+      let response;
+      try {
+        response = await fetch(`${SERVER_URL}/api/screen-time`, {
+          method: 'POST',
+          headers: await authedFetchHeaders({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify(payload),
+        });
+      } catch (err) {
+        // Network failure — buffer durably so the offline-queue drain
+        // (which attaches a fresh Authorization header) retries it. This is
+        // the safety net for page-unload fire-and-forget sends where the
+        // content script is already gone and cannot queue itself.
+        console.error('[background] Failed to connect to server:', err);
+        try { await pushToOfflineQueue(payload); } catch (_) {}
+        sendResponse({ received: false, error: err.message });
+        return;
+      }
       if (response.ok) {
         console.log('[background] Tracking data sent:', message.domain, response.status);
+        sendResponse({ received: true, status: response.status });
       } else {
         console.warn('[background] Server returned non-OK status:', response.status);
+        // Buffer for retry — the drain drops permanent 4xx client errors.
+        try { await pushToOfflineQueue(payload); } catch (_) {}
+        // received mirrors the server result so the content script knows
+        // whether to keep/queue the payload on failure.
+        sendResponse({ received: false, status: response.status });
       }
-      // received mirrors the server result so the content script knows
-      // whether to keep/queue the payload on failure.
-      sendResponse({ received: response.ok, status: response.status });
     })
     .catch((err) => {
-      console.error('[background] Failed to connect to server:', err);
+      // Async safety net (e.g. chrome.storage read failures)
+      console.error('[background] Tracking forward error:', err);
       sendResponse({ received: false, error: err.message });
     });
 
