@@ -87,9 +87,13 @@
   function renderPopup(data, isPaused, email) {
     const dashboard = data.dashboard;
     const goals = data.goals || [];
-    const token = data.token || "";
     const userEmail = email || "";
-    const dashboardUrl = `https://listrack-2.onrender.com/dashboard?user=${encodeURIComponent(token)}`;
+    // Open the dashboard with the Google access token — the server verifies
+    // it and mints an HTTP-only session cookie before serving the page.
+    const accessToken = data.accessToken || "";
+    const dashboardUrl = accessToken
+      ? `https://listrack-2.onrender.com/dashboard?access_token=${encodeURIComponent(accessToken)}`
+      : `https://listrack-2.onrender.com/dashboard`;
 
     const totalMinutes = dashboard ? dashboard.totalMinutes || 0 : 0;
     const domains = dashboard ? dashboard.domains || [] : [];
@@ -337,19 +341,30 @@
         return;
       }
 
-      // Fetch dashboard data directly from server
+      // Fetch dashboard data directly from server. The /api/* endpoints now
+      // require auth — attach the Google access token (extension page scope).
+      const accessToken = await new Promise((resolve) => {
+        chrome.identity.getAuthToken({ interactive: false }, (t) => {
+          if (chrome.runtime.lastError) resolve(null);
+          else resolve(t || null);
+        });
+      });
+      const headers = accessToken ? { Authorization: `Bearer ${accessToken}` } : {};
+
       const resp = await fetch(
-        `https://listrack-2.onrender.com/api/dashboard?user=${encodeURIComponent(userId)}`
+        `https://listrack-2.onrender.com/api/dashboard?user=${encodeURIComponent(userId)}`,
+        { headers }
       );
 
       const goalsResp = await fetch(
-        `https://listrack-2.onrender.com/api/goals/status?user=${encodeURIComponent(userId)}`
+        `https://listrack-2.onrender.com/api/goals/status?user=${encodeURIComponent(userId)}`,
+        { headers }
       );
 
       const dashboard = resp.ok ? await resp.json() : null;
       const goalsData = goalsResp.ok ? await goalsResp.json() : null;
 
-      renderPopup({ dashboard, goals: goalsData ? goalsData.goals : null, token: userId }, false, userId);
+      renderPopup({ dashboard, goals: goalsData ? goalsData.goals : null, token: userId, accessToken: null }, false, userId);
     } catch (fallbackErr) {
       showError("Could not connect to the server. Make sure the server is running.");
     }

@@ -339,6 +339,13 @@
     let selectedModalDomain = null;
 
     async function getUserId() {
+      // 1. Identity injected by the server after Google token verification
+      //    (the /dashboard route only serves the page with a valid session).
+      const meta = document.querySelector('meta[name="lisTrack-user"]');
+      if (meta && meta.content) return meta.content;
+
+      // 2. Legacy ?user= param (deprecated — the server rejects ?user= links,
+      //    kept only as a local-dev fallback).
       const params = new URLSearchParams(window.location.search);
       const urlUser = params.get('user');
       if (urlUser) return urlUser;

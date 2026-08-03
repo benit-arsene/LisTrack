@@ -51,9 +51,292 @@ app.use((req, res, next) => {
 app.use(express.static(path.join(__dirname, "public")));
 app.use(express.static(__dirname));
 
-// Serve dashboard at the clean /dashboard URL
-app.get("/dashboard", (req, res) => {
-  res.sendFile(path.join(__dirname, "public", "html", "dashboard.html"));
+// ─── Dashboard Route Protection (Google Token → HTTP-only Session Cookie) ──
+// Opening /dashboard from the extension carries ?access_token=... (the Google
+// OAuth access token from chrome.identity). The server verifies it against
+// Google's tokeninfo endpoint, then drops an HTTP-only session cookie for the
+// verified email and serves the dashboard. Any missing/invalid token — or a
+// legacy /dashboard?user=... link — bounces straight back to the landing page.
+
+const manifest = require("./manifest.json");
+const OAUTH_CLIENT_ID =
+  (manifest.oauth2 && manifest.oauth2.client_id) || "";
+const LANDING_URL =
+  process.env.LANDING_URL || "https://listrack-2.onrender.com/";
+const SESSION_COOKIE = "lisTrackSession";
+const GOOGLE_TOKENINFO_URL = "https://oauth2.googleapis.com/tokeninfo";
+const DASHBOARD_HTML_PATH = path.join(
+  __dirname,
+  "public",
+  "html",
+  "dashboard.html",
+);
+
+/**
+ * Minimal cookie header parser (avoids a new dependency).
+ */
+function parseCookies(header) {
+  const cookies = {};
+  if (!header) return cookies;
+  for (const part of header.split(";")) {
+    const eq = part.indexOf("=");
+    if (eq === -1) continue;
+    const key = part.slice(0, eq).trim();
+    if (!key) continue;
+    try {
+      cookies[key] = decodeURIComponent(part.slice(eq + 1).trim());
+    } catch (_) {
+      cookies[key] = part.slice(eq + 1).trim();
+    }
+  }
+  return cookies;
+}
+
+/**
+ * Basic sanity check for an email-shaped value.
+ */
+function isValidEmail(email) {
+  return (
+    typeof email === "string" &&
+    email.length > 0 &&
+    email.length <= 254 &&
+    /^[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$/i.test(
+      email,
+    )
+  );
+}
+
+/**
+ * In-memory cache of Google access tokens verified via tokeninfo.
+ * The extension's API calls (badge, goal checks, popup summary, screen-time
+ * posts) hit the server far more often than the /dashboard page, so caching
+ * avoids a Google round-trip on every request. Access tokens live ~1 hour;
+ * we cache for at most 10 minutes.
+ */
+
+const verifiedTokenCache = new Map(); // accessToken → { email, expiresAt }
+const TOKEN_CACHE_MAX_MS = 10 * 60 * 1000;
+
+function getCachedVerifiedToken(accessToken) {
+  const entry = verifiedTokenCache.get(accessToken);
+  if (!entry) return null;
+  if (entry.expiresAt <= Date.now()) {
+    verifiedTokenCache.delete(accessToken);
+    return null;
+  }
+  return entry.email;
+}
+
+function cacheVerifiedToken(accessToken, email, ttlMs) {
+  // Bound the cache so attacker-spammed garbage tokens can't grow it unbounded.
+  if (verifiedTokenCache.size > 500) verifiedTokenCache.clear();
+  verifiedTokenCache.set(accessToken, {
+    email,
+    expiresAt: Date.now() + Math.min(Math.max(ttlMs, 1000), TOKEN_CACHE_MAX_MS),
+  });
+}
+
+/**
+ * Verify a Google OAuth access token against Google's tokeninfo endpoint.
+ * Returns the verified (lowercased) email, or null when the token is
+ * invalid, expired, or was not issued to our OAuth client.
+ * Freshly-verified tokens are cached in memory to keep re-checks cheap.
+ */
+async function verifyGoogleAccessToken(accessToken) {
+  if (typeof accessToken !== "string" || !accessToken.trim()) return null;
+  const token = accessToken.trim();
+
+  const cached = getCachedVerifiedToken(token);
+  if (cached) return cached;
+
+  try {
+    const resp = await fetch(
+      `${GOOGLE_TOKENINFO_URL}?access_token=${encodeURIComponent(token)}`,
+      { signal: AbortSignal.timeout(8000) },
+    );
+    if (!resp.ok) return null; // invalid / expired token → HTTP 400
+    const info = await resp.json();
+
+    // Email must be present, verified, and shaped like an email.
+    const emailVerified =
+      info.email_verified === "true" || info.email_verified === true;
+    if (!emailVerified || !isValidEmail(info.email || "")) return null;
+
+    // The token must have been issued to OUR OAuth client (extension client_id).
+    if (OAUTH_CLIENT_ID && info.aud !== OAUTH_CLIENT_ID) {
+      console.warn(
+        `[auth] Token audience mismatch: expected ${OAUTH_CLIENT_ID}, got ${info.aud}`,
+      );
+      return null;
+    }
+
+    const email = String(info.email).trim().toLowerCase();
+    const expiresIn = parseInt(info.expires_in, 10);
+    const ttlMs =
+      (expiresIn > 0 ? expiresIn - 60 : TOKEN_CACHE_MAX_MS / 1000) * 1000;
+    cacheVerifiedToken(token, email, ttlMs);
+    return email;
+  } catch (err) {
+    console.error("[auth] Google token verification failed:", err.message);
+    return null;
+  }
+}
+
+function redirectToLanding(res) {
+  return res.redirect(302, LANDING_URL);
+}
+
+/**
+ * Session authentication middleware for sensitive /api/* endpoints.
+ *
+ * The authenticated identity is resolved from (in order):
+ *   1. The `lisTrackSession` cookie — minted by /dashboard after the Google
+ *      access token was verified (used by same-origin browser calls).
+ *   2. An `Authorization: Bearer <Google access token>` header — used by the
+ *      extension's cross-origin calls (service worker, popup).
+ *
+ * The claimed user (req.query.user / req.body.userToken / x-user-token header)
+ * must match the authenticated email, otherwise the request is rejected with
+ * 401 JSON before the route handler runs.
+ */
+async function requireAuth(req, res, next) {
+  try {
+    const cookies = parseCookies(req.headers.cookie);
+    const sessionEmail = cookies[SESSION_COOKIE]
+      ? String(cookies[SESSION_COOKIE]).trim().toLowerCase()
+      : "";
+
+    let headerEmail = "";
+    const authHeader = req.headers.authorization || "";
+    if (authHeader.startsWith("Bearer ")) {
+      headerEmail =
+        (await verifyGoogleAccessToken(authHeader.slice(7).trim())) || "";
+    }
+
+    const authenticatedEmail = sessionEmail || headerEmail;
+    if (!isValidEmail(authenticatedEmail)) {
+      return res.status(401).json({
+        status: "error",
+        message: "Unauthorized — sign in with Google to access your data.",
+      });
+    }
+
+    // Resolve the user this request claims to act on behalf of.
+    let claimed = (req.query && req.query.user) || "";
+    if (!claimed && req.body && typeof req.body === "object" && req.body.userToken) {
+      claimed = req.body.userToken;
+    }
+    // text/plain bodies (legacy sendBeacon path) keep userToken inside the
+    // string — parse it so the claimed user is still enforced.
+    if (!claimed && req.body && typeof req.body === "string") {
+      try {
+        const parsed = JSON.parse(req.body);
+        if (parsed && parsed.userToken) claimed = parsed.userToken;
+      } catch (_) {}
+    }
+    if (!claimed) claimed = req.headers["x-user-token"] || "";
+
+    if (claimed) {
+      if (String(claimed).trim().toLowerCase() !== authenticatedEmail) {
+        console.warn(
+          `[auth] 401: session is ${authenticatedEmail}, request claims ${claimed}`,
+        );
+        return res.status(401).json({
+          status: "error",
+          message: "Unauthorized — session does not match the requested user.",
+        });
+      }
+    }
+
+    req.authenticatedUser = authenticatedEmail;
+    next();
+  } catch (err) {
+    console.error("[auth] requireAuth error:", err);
+    return res
+      .status(500)
+      .json({ status: "error", message: "Internal server error" });
+  }
+}
+
+/**
+ * Serve the dashboard at the clean /dashboard URL.
+ *
+ *   ?access_token=...    → verify against Google, set an HTTP-only session
+ *                          cookie, redirect to /dashboard (the token never
+ *                          stays in the URL bar, history, or server logs).
+ *   valid session cookie → serve the dashboard with the user identity injected.
+ *   anything else        → immediately redirect to the landing page.
+ *   (missing token, invalid token, or a legacy /dashboard?user=... link)
+ */
+app.get("/dashboard", async (req, res) => {
+  const query = req.query || {};
+  const cookies = parseCookies(req.headers.cookie);
+
+  // Legacy unauthenticated /dashboard?user=... links are rejected outright.
+  if (query.user) {
+    console.warn("[auth] Rejected legacy /dashboard?user= access");
+    return redirectToLanding(res);
+  }
+
+  // ─── Token exchange path ────────────────────────────────────────────
+  const accessToken = query.access_token || null;
+  if (accessToken) {
+    const email = await verifyGoogleAccessToken(accessToken);
+    if (!email) {
+      console.warn("[auth] Rejected dashboard access — invalid Google token");
+      return redirectToLanding(res);
+    }
+
+    // HTTP-only session cookie for the verified email. Never readable by JS.
+    const isSecure =
+      req.secure ||
+      String(req.headers["x-forwarded-proto"] || "")
+        .split(",")[0]
+        .trim() === "https";
+    res.cookie(SESSION_COOKIE, email, {
+      httpOnly: true,
+      secure: isSecure,
+      sameSite: "lax",
+      path: "/",
+    });
+    console.log(`[auth] Dashboard session started for ${email}`);
+
+    // Drop the token from the URL, keeping only benign params (goal/period/date).
+    const safeParams = new URLSearchParams();
+    for (const [key, value] of Object.entries(query)) {
+      if (["user", "access_token", "token"].includes(key)) continue;
+      if (value != null) safeParams.set(key, value);
+    }
+    const qs = safeParams.toString();
+    return res.redirect(302, "/dashboard" + (qs ? "?" + qs : ""));
+  }
+
+  // ─── Session cookie path ────────────────────────────────────────────
+  const sessionEmail = cookies[SESSION_COOKIE];
+  if (!isValidEmail(sessionEmail || "")) {
+    console.warn("[auth] Rejected dashboard access — no valid session");
+    return redirectToLanding(res);
+  }
+
+  // Inject the authenticated identity so dashboard.js can scope its API calls.
+  const email = String(sessionEmail).trim().toLowerCase();
+  const safeEmail = email
+    .replace(/&/g, "&amp;")
+    .replace(/"/g, "&quot;")
+    .replace(/</g, "&lt;");
+  const meta = `<meta name="lisTrack-user" content="${safeEmail}" />`;
+
+  let html;
+  try {
+    html = fs.readFileSync(DASHBOARD_HTML_PATH, "utf8");
+  } catch (err) {
+    console.error("[auth] Failed to read dashboard.html:", err);
+    return res.status(500).send("Internal server error");
+  }
+  html = html.replace("</head>", meta + "</head>");
+  // Per-user HTML — never let the browser cache it.
+  res.set("Cache-Control", "no-store");
+  res.type("html").send(html);
 });
 
 // Root route — serve index.html from public/html/
@@ -864,7 +1147,7 @@ async function getGoalStatus(userId) {
  * POST /api/screen-time
  * Accepts screen-time payloads sent by the tracking snippet.
  */
-app.post("/api/screen-time", async (req, res) => {
+app.post("/api/screen-time", requireAuth, async (req, res) => {
   try {
     let payload = req.body;
 
@@ -944,7 +1227,7 @@ app.post("/api/screen-time", async (req, res) => {
  * GET /api/dashboard
  * Returns aggregated screen-time data grouped by domain for a given date.
  */
-app.get("/api/dashboard", async (req, res) => {
+app.get("/api/dashboard", requireAuth, async (req, res) => {
   try {
     const requestedDate = req.query.date || null;
 
@@ -989,7 +1272,7 @@ app.get("/api/dashboard", async (req, res) => {
  * GET /api/summary
  * Returns aggregated screen-time data grouped by domain for a week or month period.
  */
-app.get("/api/summary", async (req, res) => {
+app.get("/api/summary", requireAuth, async (req, res) => {
   try {
     const period = req.query.period || "week";
     const referenceDate =
@@ -1073,7 +1356,7 @@ app.get("/api/summary", async (req, res) => {
 
 // ─── Goals Routes ───────────────────────────────────────────────────────────
 
-app.get("/api/goals", async (req, res) => {
+app.get("/api/goals", requireAuth, async (req, res) => {
   try {
     const userId = req.query.user || "";
     const goals = await getGoals(userId);
@@ -1086,7 +1369,7 @@ app.get("/api/goals", async (req, res) => {
   }
 });
 
-app.post("/api/goals", async (req, res) => {
+app.post("/api/goals", requireAuth, async (req, res) => {
   try {
     const { domain, max_minutes, userToken } = req.body;
 
@@ -1134,7 +1417,7 @@ app.post("/api/goals", async (req, res) => {
   }
 });
 
-app.put("/api/goals/:id", async (req, res) => {
+app.put("/api/goals/:id", requireAuth, async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
     if (isNaN(id)) {
@@ -1165,7 +1448,7 @@ app.put("/api/goals/:id", async (req, res) => {
   }
 });
 
-app.delete("/api/goals/:id", async (req, res) => {
+app.delete("/api/goals/:id", requireAuth, async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
     if (isNaN(id)) {
@@ -1191,7 +1474,7 @@ app.delete("/api/goals/:id", async (req, res) => {
   }
 });
 
-app.get("/api/goals/status", async (req, res) => {
+app.get("/api/goals/status", requireAuth, async (req, res) => {
   try {
     const userId = req.query.user || "";
     const statuses = await getGoalStatus(userId);
@@ -1223,7 +1506,7 @@ const registerDonationRoutes = require("./donation");
 
 registerDonationRoutes(app);
 
-app.get("/api/logs", async (req, res) => {
+app.get("/api/logs", requireAuth, async (req, res) => {
   try {
     const userId = req.query.user || "";
     const logs = await getAllScreenTimeLogs(userId);
@@ -1246,7 +1529,7 @@ app.get("/api/logs", async (req, res) => {
  *   date   — reference date (default: today)
  *   user   — user token
  */
-app.get("/api/trends", async (req, res) => {
+app.get("/api/trends", requireAuth, async (req, res) => {
   try {
     const period = req.query.period || "7days";
     const referenceDate =
@@ -1455,7 +1738,7 @@ const SEED_GOALS = [
  * Generates sample screen-time data and goals for local development testing.
  * Only works with SQLite (local). Returns 403 on PostgreSQL (production).
  */
-app.post("/api/seed", async (req, res) => {
+app.post("/api/seed", requireAuth, async (req, res) => {
   try {
     if (driver.isPostgres) {
       return res.status(403).json({

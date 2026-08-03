@@ -397,23 +397,41 @@
 
     /**
      * Check if the LisTrack extension is installed and navigate accordingly.
-     * - If extension IS installed → get token from localStorage and go to dashboard
-     * - If extension is NOT installed → show a modal prompting installation
+     * - Extension IS installed → ask it (via the tracker.js bridge) for the
+     *   Google access token, then open /dashboard?access_token=... so the
+     *   server can verify the token before serving the dashboard.
+     * - Extension is NOT installed → show a modal prompting installation.
      */
     function openDashboard() {
-      // Check for the DOM marker set by tracker.js content script at document_end
       var isInstalled = document.documentElement.dataset.lisTrackInstalled === 'true';
 
-      if (isInstalled) {
-        // Extension is running — get the token and navigate
-        var token = '';
-        try { token = localStorage.getItem('lisTrackTrackerToken') || ''; } catch (e) {}
-        var url = token ? '/dashboard?user=' + encodeURIComponent(token) : '/dashboard';
-        window.location.href = url;
-      } else {
-        // Extension not detected — show install prompt
+      if (!isInstalled) {
         document.getElementById('installModal').classList.remove('hidden');
+        return;
       }
+
+      // Ask the extension for a Google access token. If we can't get one,
+      // the server bounces unauthenticated visits back to the landing page.
+      var requestId = 'lt' + Date.now() + Math.random().toString(36).slice(2);
+      var timedOut = false;
+      var timer = setTimeout(function () {
+        timedOut = true;
+        window.location.href = '/dashboard';
+      }, 3000);
+
+      function onTokenResponse(e) {
+        var detail = e.detail || {};
+        if (detail.requestId !== requestId || timedOut) return;
+        clearTimeout(timer);
+        window.removeEventListener('lisTrack:accessTokenResponse', onTokenResponse);
+        var url = detail.accessToken
+          ? '/dashboard?access_token=' + encodeURIComponent(detail.accessToken)
+          : '/dashboard';
+        window.location.href = url;
+      }
+
+      window.addEventListener('lisTrack:accessTokenResponse', onTokenResponse);
+      window.dispatchEvent(new CustomEvent('lisTrack:getAccessToken', { detail: { requestId: requestId } }));
     }
 
     function closeInstallModal() {

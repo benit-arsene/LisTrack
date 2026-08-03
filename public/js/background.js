@@ -57,6 +57,72 @@ function openOnboarding() {
   chrome.tabs.create({ url: chrome.runtime.getURL("public/html/onboarding.html") });
 }
 
+// In-memory cache for the Google access token — the /api/* endpoints are now
+// authenticated, so every server call needs the token. Chrome's identity API
+// is cheap but async IPC; caching avoids the churn on per-flush screen-time
+// posts (every ~2s per tab). Tokens live ~1 hour; we refresh ours every 10 min.
+let _cachedAccessToken = null;
+let _cachedAccessTokenAt = 0;
+const ACCESS_TOKEN_CACHE_MS = 10 * 60 * 1000;
+
+/**
+ * Get the cached Google OAuth access token (no consent UI — the user already
+ * authorized during onboarding). Returns null when not signed in / revoked.
+ */
+function getGoogleAccessToken() {
+  if (
+    _cachedAccessToken &&
+    Date.now() - _cachedAccessTokenAt < ACCESS_TOKEN_CACHE_MS
+  ) {
+    return Promise.resolve(_cachedAccessToken);
+  }
+  return new Promise((resolve) => {
+    chrome.identity.getAuthToken({ interactive: false }, (token) => {
+      if (chrome.runtime.lastError) {
+        console.warn('[background] No cached Google token:', chrome.runtime.lastError.message);
+        _cachedAccessToken = null;
+        resolve(null);
+      } else {
+        _cachedAccessToken = token || null;
+        _cachedAccessTokenAt = Date.now();
+        resolve(_cachedAccessToken);
+      }
+    });
+  });
+}
+
+/**
+ * Merge an `Authorization: Bearer <Google token>` header into a header set.
+ * The server's requireAuth middleware verifies the token (cached server-side)
+ * before serving any /api/* data.
+ */
+async function authedFetchHeaders(extra = {}) {
+  const token = await getGoogleAccessToken();
+  if (!token) return extra;
+  return { ...extra, Authorization: `Bearer ${token}` };
+}
+
+/**
+ * Open the dashboard passing the Google access token (?access_token=...).
+ * The server verifies the token, mints an HTTP-only session cookie, and then
+ * redirects to a clean /dashboard URL. Falls back to onboarding when no
+ * token is available.
+ *
+ * @param {Object} extraParams Optional benign params (e.g. { goal: domain }).
+ */
+async function openDashboardWithToken(extraParams = {}) {
+  const accessToken = await getGoogleAccessToken();
+  if (!accessToken) {
+    openOnboarding();
+    return;
+  }
+  const params = new URLSearchParams({ access_token: accessToken });
+  for (const [key, value] of Object.entries(extraParams)) {
+    if (value) params.set(key, value);
+  }
+  chrome.tabs.create({ url: `${SERVER_URL}/dashboard?${params.toString()}` });
+}
+
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
 function isBlockedDomain(domain) {
@@ -70,7 +136,9 @@ function isBlockedDomain(domain) {
  */
 async function fetchGoalStatus(userId) {
   try {
-    const response = await fetch(`${SERVER_URL}/api/goals/status?user=${encodeURIComponent(userId)}`);
+    const response = await fetch(`${SERVER_URL}/api/goals/status?user=${encodeURIComponent(userId)}`, {
+      headers: await authedFetchHeaders(),
+    });
     if (!response.ok) return null;
     return await response.json();
   } catch (err) {
@@ -183,12 +251,13 @@ async function drainOfflineQueue() {
 
     const pendingRetries = [];
     let drained = 0;
+    const drainHeaders = await authedFetchHeaders({ 'Content-Type': 'application/json' });
 
     for (const entry of queue) {
       try {
         const response = await fetch(`${SERVER_URL}/api/screen-time`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: drainHeaders,
           body: JSON.stringify(entry),
         });
         if (response.ok) {
@@ -262,7 +331,9 @@ async function updateBadge() {
       chrome.action.setBadgeBackgroundColor({ color: '#6b7280' });
       return;
     }
-    const resp = await fetch(`${SERVER_URL}/api/dashboard?user=${encodeURIComponent(userId)}`);
+    const resp = await fetch(`${SERVER_URL}/api/dashboard?user=${encodeURIComponent(userId)}`, {
+      headers: await authedFetchHeaders(),
+    });
     if (!resp.ok) return;
 
     const data = await resp.json();
@@ -324,13 +395,9 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
         return;
       }
       if (info.menuItemId === 'viewScreenTime') {
-        chrome.tabs.create({
-          url: `${SERVER_URL}/dashboard?user=${encodeURIComponent(userId)}`,
-        });
+        openDashboardWithToken();
       } else if (info.menuItemId === 'setDailyGoal') {
-        chrome.tabs.create({
-          url: `${SERVER_URL}/dashboard?user=${encodeURIComponent(userId)}&goal=${encodeURIComponent(domain)}`,
-        });
+        openDashboardWithToken({ goal: domain });
       }
     });
   } catch (_) {}
@@ -347,11 +414,7 @@ chrome.notifications.onClicked.addListener((notificationId) => {
       openOnboarding();
       return;
     }
-    if (userId) {
-      chrome.tabs.create({
-        url: `${SERVER_URL}/dashboard?user=${encodeURIComponent(userId)}`,
-      });
-    }
+    openDashboardWithToken();
   });
 });
 
@@ -458,6 +521,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   // Handle sign-out: clear cached Google auth tokens + user_id
   if (message && message.type === 'signOut') {
     (async () => {
+      // Drop the in-memory token cache so the revoked token isn't reused.
+      _cachedAccessToken = null;
+      _cachedAccessTokenAt = 0;
       try {
         await chrome.identity.clearAllCachedAuthTokens();
       } catch (_) {}
@@ -479,9 +545,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return;
       }
       try {
+        const accessToken = await getGoogleAccessToken();
+        const headers = accessToken
+          ? { Authorization: `Bearer ${accessToken}` }
+          : {};
         const [dashboardResp, goalsResp] = await Promise.all([
-          fetch(`${SERVER_URL}/api/dashboard?user=${encodeURIComponent(userId)}`),
-          fetch(`${SERVER_URL}/api/goals/status?user=${encodeURIComponent(userId)}`),
+          fetch(`${SERVER_URL}/api/dashboard?user=${encodeURIComponent(userId)}`, { headers }),
+          fetch(`${SERVER_URL}/api/goals/status?user=${encodeURIComponent(userId)}`, { headers }),
         ]);
 
         const dashboard = dashboardResp.ok ? await dashboardResp.json() : null;
@@ -489,13 +559,24 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
         sendResponse({
           token: userId,
+          accessToken,
           dashboard,
           goals: goals ? goals.goals : null,
         });
       } catch (err) {
         console.error('[background] Failed to fetch dashboard summary:', err);
-        sendResponse({ token: userId, dashboard: null, goals: null });
+        sendResponse({ token: userId, accessToken: null, dashboard: null, goals: null });
       }
+    });
+    return true;
+  }
+
+  // Hand the Google access token to the landing page (via the tracker.js
+  // content-script bridge) so its Dashboard button can open /dashboard
+  // with a verified token instead of the legacy ?user= parameter.
+  if (message && message.type === 'getAccessToken') {
+    getGoogleAccessToken().then((accessToken) => {
+      sendResponse({ accessToken });
     });
     return true;
   }
@@ -513,7 +594,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   // Mandatory sign-in gate: only forward screen-time when the user has a
   // Google user_id in chrome.storage.sync. Without it, drop the payload.
   getUserId()
-    .then((userId) => {
+    .then(async (userId) => {
       if (!userId) {
         console.log('[background] Ignoring tracking payload — user not signed in');
         sendResponse({ received: false, requiresAuth: true });
@@ -524,9 +605,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const payload = { ...message, userToken: userId };
       return fetch(`${SERVER_URL}/api/screen-time`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: await authedFetchHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify(payload),
       });
     })

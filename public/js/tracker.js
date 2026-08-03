@@ -593,6 +593,26 @@
     document.documentElement.dataset.lisTrackInstalled = 'true';
   }
 
+  // ─── Landing-Page Bridge ────────────────────────────────────────────────
+  // The web landing page (listrack-2.onrender.com) dispatches
+  // `lisTrack:getAccessToken` when its "Open Dashboard" button is clicked, so
+  // it can pass the Google access token (?access_token=...) instead of the
+  // legacy (now rejected) ?user= email parameter. Content scripts and the page
+  // exchange data across the isolated world through DOM events.
+
+  window.addEventListener('lisTrack:getAccessToken', async function (e) {
+    const requestId = e.detail && e.detail.requestId;
+    if (typeof chrome === 'undefined' || !chrome.runtime || !chrome.runtime.sendMessage) return;
+    let accessToken = null;
+    try {
+      const resp = await chrome.runtime.sendMessage({ type: 'getAccessToken' });
+      accessToken = resp && resp.accessToken ? resp.accessToken : null;
+    } catch (_) {}
+    window.dispatchEvent(new CustomEvent('lisTrack:accessTokenResponse', {
+      detail: { requestId: requestId, accessToken: accessToken },
+    }));
+  });
+
   // ─── Boot ────────────────────────────────────────────────────────────────
   if (typeof navigator.sendBeacon !== "undefined") {
     if (document.readyState === "loading") {
