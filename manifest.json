@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "LisTrack - Personal Screen Time Tracker",
   "version": "1.0.0",
-  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAsYPPoPrnmRe+U5uwDIetTJvku2MDlnArt6L9COYlIf3MA07fiG1VDBNLb/+fR6AhK52AnV6e/MleWzn4yqbCxRLnLkJE6uRi7G02V90XKzhCEcTF5wE6qRMOE5V+qYnvEJKg9zcjN8kA+YEuQrzkjYpae+wVEckols4ZvSOo6uO6HhBae21NLHunkw3kBTyUrNGh37C069WNrzsi6tMh1l6KOoA7B/G+rc9tphcDz4iQDtcvsYEpAR6nUyuf1ji5ijKlXLQ1lxMq0+1nA0EEb5p4XlkotSkpaUEj7PP2uFhbiLLzkTYZ0A++0ZnmxazFsENQlxPSKdBAW0IAo2jauwIDAQAB",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA2PndChHrGq3hfHMWUxx3onMjA1y7utMTR2chZ2rN2FoWfDx3LXNpvlSdTiuz3kT3u1ogEjUvuAnE+k1ECjlL+DOa1AVxGYHaiwnyZwPDLuyA6VdV7c5v9r5deErGgnhnxhHEIUkVOPrkO418J+M+Zn4xB9w/UBE8t6PQg9YsR2AUSm2GK8dEHZDqYdX5gWk7gx3wjYxVTHK5o/KzineMXCefAgEFOG0+EvioYYIOg5V4YOfeoE9Mv8VM0nCaKuHutKnh8dyHgv573SvBAxOALoxCpfFqPo52SVrUcZ4WeUNqhnO727nkw26DJPDA9cIcgKRSP9uOfO22PLFrpdny7QIDAQAB",
   "description": "Automatically track active screen-time on websites you visit and send it to your remote dashboard.",
   "permissions": [
     "notifications",
