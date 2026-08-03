@@ -152,7 +152,7 @@ async function fetchGoalStatus(userId) {
  */
 function sendGoalNotification(goal, type) {
   const isWarning = type === "warning";
-  const title = isWarning ? "⚠️ Approaching screen time limit" : "🔴 Screen time limit reached!";
+  const title = isWarning ? "Approaching screen time limit" : "Screen time limit reached!";
   const message = isWarning
     ? `You've used ${goal.percentage}% of your ${goal.maxMinutes} min budget on ${goal.domain}.`
     : `You've exceeded your ${goal.maxMinutes} min budget on ${goal.domain} (${goal.todayMinutes.toFixed(0)} min used).`;

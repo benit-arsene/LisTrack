@@ -1,7 +1,7 @@
 /**
  * LisTrack Rich Popup
- * Shows today's screen time stats, top domains, goals status,
- * and provides pause/resume control directly from the extension popup.
+ * Shows today's screen time stats, top domains, goals status, and links to
+ * the full dashboard. Sign-out lives in the header as a subtle icon button.
  *
  * Mandatory Google sign-in:
  *   - With user_id (email in chrome.storage.sync): full stats + email badge
@@ -84,7 +84,7 @@
 
   // ─── Render Popup ──────────────────────────────────────────────────────
 
-  function renderPopup(data, isPaused, email) {
+  function renderPopup(data, email) {
     const dashboard = data.dashboard;
     const goals = data.goals || [];
     const userEmail = email || "";
@@ -106,9 +106,6 @@
     const exceededGoals = goals.filter((g) => g.exceeded).length;
     const approachingGoals = goals.filter((g) => g.approaching && !g.exceeded).length;
     const okGoals = goals.filter((g) => g.enabled && !g.exceeded && !g.approaching).length;
-
-    // Determine paused state
-    const paused = isPaused;
 
     // Generate goal item HTML
     function getGoalItemHtml(goal) {
@@ -166,12 +163,17 @@
         <div class="header-left">
           <div class="header-logo">L</div>
           <span class="header-title">LisTrack</span>
-          <span class="live-dot ${paused ? "paused" : ""}" id="liveDot" title="${paused ? "Paused" : "Tracking"}"></span>
+          <span class="live-dot" id="liveDot" title="Tracking"></span>
         </div>
         <div class="header-right">
-          <button class="header-btn" id="refreshBtn" title="Refresh">
+          <button class="header-btn" id="refreshBtn" title="Refresh" aria-label="Refresh">
             <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
               <path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+            </svg>
+          </button>
+          <button class="header-btn signout" id="signOutBtn" title="Sign out" aria-label="Sign out">
+            <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M15.75 9V5.25A2.25 2.25 0 0013.5 3h-6a2.25 2.25 0 00-2.25 2.25v13.5A2.25 2.25 0 007.5 21h6a2.25 2.25 0 002.25-2.25V15m3 0l3-3m0 0l-3-3m3 3H9" />
             </svg>
           </button>
         </div>
@@ -188,8 +190,8 @@
       <!-- Today's Time -->
       <div class="time-section">
         <div class="time-label">Screen Time Today</div>
-        <div class="time-value ${paused ? "paused-text" : ""}" id="timeValue">${paused ? "Paused" : formatTime(totalMinutes)}</div>
-        <div class="time-sub">${paused ? "Tracking is paused" : totalDomains > 0 ? `Across ${totalDomains} site${totalDomains !== 1 ? "s" : ""}` : "No activity recorded"}</div>
+        <div class="time-value" id="timeValue">${formatTime(totalMinutes)}</div>
+        <div class="time-sub">${totalDomains > 0 ? `Across ${totalDomains} site${totalDomains !== 1 ? "s" : ""}` : "No activity recorded"}</div>
       </div>
 
       <!-- Stats Row -->
@@ -225,14 +227,6 @@
         </div>
       </div>
 
-      <!-- Pause Banner -->
-      <div class="pause-banner ${paused ? "visible" : ""}" id="pauseBanner">
-        <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-          <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z" />
-        </svg>
-        <span>Tracking is paused. No data is being collected.</span>
-      </div>
-
       <!-- Actions -->
       <div class="actions">
         <a href="${dashboardUrl}" target="_blank" class="btn-primary">
@@ -241,18 +235,6 @@
           </svg>
           Open Dashboard
         </a>
-        <button class="btn-secondary ${paused ? "" : "danger"}" id="pauseBtn">
-          ${paused
-            ? `<svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M5.25 5.653c0-.856.917-1.398 1.667-.986l11.54 6.348a1.125 1.125 0 010 1.971l-11.54 6.347a1.125 1.125 0 01-1.667-.985V5.653z" /></svg> Resume Tracking`
-            : `<svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M15.75 5.25v13.5m-7.5-13.5v13.5" /></svg> Pause Tracking`
-          }
-        </button>
-        <button class="btn-secondary signout" id="signOutBtn">
-          <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-            <path stroke-linecap="round" stroke-linejoin="round" d="M15.75 9V5.25A2.25 2.25 0 0013.5 3h-6a2.25 2.25 0 00-2.25 2.25v13.5A2.25 2.25 0 007.5 21h6a2.25 2.25 0 002.25-2.25V15m3 0l3-3m0 0l-3-3m3 3H9" />
-          </svg>
-          Sign Out
-        </button>
       </div>
 
       <!-- Footer -->
@@ -261,21 +243,7 @@
 
     // ─── Bind Events ────────────────────────────────────────────────────
 
-    // Pause/Resume toggle
-    document.getElementById("pauseBtn").addEventListener("click", () => {
-      const newPaused = !paused;
-      chrome.runtime.sendMessage(
-        { type: "setTrackingState", paused: newPaused },
-        (response) => {
-          if (response && response.paused !== undefined) {
-            // Re-render with new state
-            renderPopup(data, response.paused, userEmail);
-          }
-        }
-      );
-    });
-
-    // Sign out
+    // Sign out (subtle icon button in the header)
     document.getElementById("signOutBtn").addEventListener("click", () => {
       chrome.runtime.sendMessage({ type: "signOut" }, () => {
         renderLoginRequired();
@@ -300,36 +268,23 @@
       return;
     }
 
-    // Get token + tracking state + dashboard data in one go
-    const [tokenResult, stateResult] = await Promise.all([
-      // Get data from background
-      new Promise((resolve, reject) => {
-        chrome.runtime.sendMessage(
-          { type: "getDashboardSummary" },
-          (response) => {
-            if (chrome.runtime.lastError) reject(chrome.runtime.lastError);
-            else resolve(response);
-          }
-        );
-      }),
-      // Get pause state
-      new Promise((resolve) => {
-        chrome.runtime.sendMessage(
-          { type: "getTrackingState" },
-          (response) => {
-            if (chrome.runtime.lastError) resolve({ paused: false });
-            else resolve(response || { paused: false });
-          }
-        );
-      }),
-    ]);
+    // Get token + dashboard data from the background in one go
+    const tokenResult = await new Promise((resolve, reject) => {
+      chrome.runtime.sendMessage(
+        { type: "getDashboardSummary" },
+        (response) => {
+          if (chrome.runtime.lastError) reject(chrome.runtime.lastError);
+          else resolve(response);
+        }
+      );
+    });
 
     if (!tokenResult || tokenResult.requiresAuth || !tokenResult.token) {
       renderLoginRequired();
       return;
     }
 
-    renderPopup(tokenResult, stateResult ? stateResult.paused : false, userId);
+    renderPopup(tokenResult, userId);
   } catch (err) {
     // Fallback: try chrome.storage directly
     try {
@@ -364,7 +319,7 @@
       const dashboard = resp.ok ? await resp.json() : null;
       const goalsData = goalsResp.ok ? await goalsResp.json() : null;
 
-      renderPopup({ dashboard, goals: goalsData ? goalsData.goals : null, token: userId, accessToken: null }, false, userId);
+      renderPopup({ dashboard, goals: goalsData ? goalsData.goals : null, token: userId, accessToken: null }, userId);
     } catch (fallbackErr) {
       showError("Could not connect to the server. Make sure the server is running.");
     }
