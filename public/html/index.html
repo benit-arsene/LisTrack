@@ -66,16 +66,16 @@
         on every website you visit. See your browsing habits on a beautiful dashboard.
       </p>
       <div class="flex flex-col sm:flex-row items-center justify-center gap-4">
-        <a
-          href="/lisTrack-extension.zip"
-          download
+        <button
+          type="button"
+          onclick="handleDownloadExtension(this)"
           class="inline-flex items-center gap-2 px-6 py-3 text-base font-semibold text-white bg-indigo-600 rounded-xl hover:bg-indigo-700 transition-all duration-150 shadow-md hover:shadow-lg"
         >
           <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
             <path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
           </svg>
           Download Extension
-        </a>
+        </button>
         <button
           onclick="openDashboard()"
           class="inline-flex items-center gap-2 px-6 py-3 text-base font-semibold text-gray-700 dark:text-gray-300 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl hover:bg-gray-50 dark:hover:bg-gray-700 transition-all duration-150 shadow-sm"
@@ -296,17 +296,16 @@
         The LisTrack Chrome extension is not installed. Please download and install it first to view your dashboard.
       </p>
       <div class="flex flex-col gap-3">
-        <a
-          href="/lisTrack-extension.zip"
-          download
+        <button
+          type="button"
+          onclick="handleDownloadExtension(this)"
           class="inline-flex items-center justify-center gap-2 px-5 py-2.5 text-sm font-semibold text-white bg-indigo-600 rounded-xl hover:bg-indigo-700 transition-all duration-150 shadow-sm"
-          onclick="closeInstallModal()"
         >
           <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
             <path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
           </svg>
           Download Extension
-        </a>
+        </button>
         <button
           onclick="closeInstallModal()"
           class="text-sm font-medium text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 transition-colors"
@@ -318,6 +317,64 @@
   </div>
 
   <script>
+    // ─── Download Extension (with loading state) ───────────────────────────
+    // The buttons fetch the zip, show a spinner while it's being prepared,
+    // then trigger the download via a blob URL. On failure the button shows
+    // an error state and re-enables so the user can retry.
+
+    const DOWNLOAD_SPINNER_SVG =
+      '<svg class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24" aria-hidden="true">' +
+      '<circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>' +
+      '<path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>' +
+      '</svg>';
+
+    function restoreDownloadBtn(btn, originalHtml, delayMs) {
+      setTimeout(function () {
+        btn.dataset.loading = '';
+        btn.disabled = false;
+        btn.classList.remove('opacity-70', 'cursor-wait');
+        btn.innerHTML = originalHtml;
+      }, delayMs || 0);
+    }
+
+    function handleDownloadExtension(btn) {
+      if (!btn || btn.dataset.loading === 'true') return;
+      var originalHtml = btn.innerHTML;
+
+      btn.dataset.loading = 'true';
+      btn.disabled = true;
+      btn.classList.add('opacity-70', 'cursor-wait');
+      btn.innerHTML = DOWNLOAD_SPINNER_SVG + '<span>Preparing…</span>';
+
+      // Keep the spinner visible for at least 700ms so the state is noticeable
+      var minDelay = new Promise(function (resolve) { setTimeout(resolve, 700); });
+
+      fetch('/lisTrack-extension.zip')
+        .then(function (res) {
+          if (!res.ok) throw new Error('HTTP ' + res.status);
+          return res.blob();
+        })
+        .then(function (blob) {
+          return minDelay.then(function () { return blob; });
+        })
+        .then(function (blob) {
+          var url = URL.createObjectURL(blob);
+          var a = document.createElement('a');
+          a.href = url;
+          a.download = 'lisTrack-extension.zip';
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+          setTimeout(function () { URL.revokeObjectURL(url); }, 5000);
+          restoreDownloadBtn(btn, originalHtml, 500);
+          closeInstallModal();
+        })
+        .catch(function () {
+          btn.innerHTML = '<span>Download failed — try again</span>';
+          restoreDownloadBtn(btn, originalHtml, 2200);
+        });
+    }
+
     // ─── Donation — USSD Push (Direct MoMo) ────────────────────────────────
     const USSD_MERCHANT_CODE = '657174'; // Your MTN MoMo merchant code
     let selectedUssdAmount = 2000;
