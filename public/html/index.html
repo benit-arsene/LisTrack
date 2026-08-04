@@ -344,7 +344,7 @@
       btn.dataset.loading = 'true';
       btn.disabled = true;
       btn.classList.add('opacity-70', 'cursor-wait');
-      btn.innerHTML = DOWNLOAD_SPINNER_SVG + '<span>Preparing…</span>';
+      btn.innerHTML = DOWNLOAD_SPINNER_SVG + '<span>Downloading…</span>';
 
       // Keep the spinner visible for at least 700ms so the state is noticeable
       var minDelay = new Promise(function (resolve) { setTimeout(resolve, 700); });
