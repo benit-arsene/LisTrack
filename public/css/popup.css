@@ -414,3 +414,81 @@ body {
 }
 .auth-signin:active { transform: scale(0.98); }
 .auth-signin .g-logo { flex-shrink: 0; }
+
+/* ─── Daily Limit Card (popup-blocker, isolated module) ─────────── */
+.limit-card {
+  margin: 2px 16px 10px;
+  padding: 10px 12px;
+  background: #f8f7ff;
+  border: 1px solid #e0e7ff;
+  border-radius: 10px;
+}
+.limit-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+.limit-title {
+  font-size: 10px;
+  font-weight: 600;
+  color: #9ca3af;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.limit-domain {
+  font-size: 10px;
+  font-weight: 600;
+  color: #6366f1;
+  max-width: 130px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.limit-row {
+  display: flex;
+  gap: 6px;
+}
+.limit-input {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 8px;
+  font-size: 11px;
+  font-family: inherit;
+  color: #1f2937;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  outline: none;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.limit-input:focus {
+  border-color: #6366f1;
+  box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.15);
+}
+.limit-set {
+  flex-shrink: 0;
+  padding: 6px 12px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #fff;
+  background: #6366f1;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 0.15s, transform 0.1s;
+}
+.limit-set:hover { background: #4f46e5; }
+.limit-set:active { transform: scale(0.96); }
+.limit-set:disabled { opacity: 0.5; cursor: default; }
+.limit-status {
+  margin-top: 8px;
+  font-size: 10px;
+  color: #6b7280;
+  line-height: 1.5;
+}
+.limit-status strong { color: #4f46e5; font-weight: 600; }
+.limit-remove {
+  color: #ef4444;
+  font-weight: 600;
+  text-decoration: underline;
+}

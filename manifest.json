@@ -10,7 +10,8 @@
     "storage",
     "contextMenus",
     "identity",
-    "tabs"
+    "tabs",
+    "webNavigation"
   ],
   "host_permissions": [
     "https://listrack.onrender.com/*",

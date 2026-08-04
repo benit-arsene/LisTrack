@@ -658,3 +658,85 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   return true; // Keep service worker alive until sendResponse is called
 });
+
+// ─── Daily Site-Limit Blocker (isolated feature) ───────────────────────────
+// This entire section is a SEPARATE, self-contained feature. It loads the
+// dedicated blocker module (public/js/blocker.js) and only ADDS listeners —
+// every existing event handler above is left completely untouched.
+//
+// importScripts is synchronous and safe here: this top-level code runs during
+// the service worker's initial synchronous execution. The path is relative to
+// this file (public/js/), so "blocker.js" resolves to public/js/blocker.js.
+
+importScripts("blocker.js");
+
+/** True when a tab URL belongs to the given (normalized) domain. */
+function blockerTabMatches(tabUrl, domain) {
+  try {
+    const host = new URL(tabUrl).hostname.replace(/^www\./, "").toLowerCase();
+    return host === domain || host.endsWith("." + domain);
+  } catch (_) {
+    return false;
+  }
+}
+
+/** Redirect every active tab on the domain to the block screen. */
+async function blockerRedirectTabsTo(domain) {
+  const blockedUrl =
+    chrome.runtime.getURL("public/blocked.html?domain=" + encodeURIComponent(domain));
+  try {
+    const tabs = await chrome.tabs.query({});
+    for (const tab of tabs) {
+      if (!tab || !tab.url) continue;
+      // Never redirect extension pages (incl. the block screen itself).
+      if (tab.url.startsWith(chrome.runtime.getURL(""))) continue;
+      if (blockerTabMatches(tab.url, domain)) {
+        chrome.tabs.update(tab.id, { url: blockedUrl });
+      }
+    }
+  } catch (_) {}
+}
+
+// 1) Ping hook: every screen-time ping (domain + durationSeconds) also flows
+//    to this listener. It accumulates the domain's daily usage and, once the
+//    total reaches the limit, redirects open tabs to the block screen. It
+//    never calls sendResponse, so the existing forward handler is unaffected.
+chrome.runtime.onMessage.addListener((message) => {
+  if (!message || !message.domain) return;
+  if (typeof message.durationSeconds !== "number") return;
+  if (isBlockedDomain(message.domain)) return;
+
+  void (async () => {
+    try {
+      await LisTrackBlocker.addUsage(message.domain, message.durationSeconds);
+      if (await LisTrackBlocker.isBlockedToday(message.domain)) {
+        await blockerRedirectTabsTo(message.domain);
+      }
+    } catch (_) {}
+  })();
+});
+
+// 2) Navigation hook: instantly block NEW attempts to navigate to a domain
+//    whose daily usage already exceeds its limit (during the same day).
+chrome.webNavigation.onBeforeNavigate.addListener((details) => {
+  // Top-frame navigations only.
+  if (details.frameId !== 0) return;
+
+  let domain;
+  try {
+    domain = new URL(details.url).hostname.replace(/^www\./, "").toLowerCase();
+  } catch (_) {
+    return;
+  }
+  if (!domain || isBlockedDomain(domain)) return;
+
+  void (async () => {
+    try {
+      if (await LisTrackBlocker.isBlockedToday(domain)) {
+        chrome.tabs.update(details.tabId, {
+          url: chrome.runtime.getURL("public/blocked.html?domain=" + encodeURIComponent(domain)),
+        });
+      }
+    } catch (_) {}
+  })();
+});
