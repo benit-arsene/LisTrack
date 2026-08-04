@@ -50,6 +50,18 @@
       }
     }
 
+    // Top Site card shows the friendly display name (same formatter as the
+    // Websites list below — e.g. procyclingstats.com → "Procyclingstats").
+    // The title attribute carries the full name so hovering reveals it when
+    // the CSS truncation clips the card text.
+    function updateTopSiteName(domain) {
+      const el = document.getElementById('topDomain');
+      if (!el) return;
+      const displayName = getDisplayName(domain);
+      el.textContent = displayName;
+      el.title = domain ? displayName : 'Top Site';
+    }
+
     function getGradientClass(index) {
       const gradients = [
         'bar-gradient-1', 'bar-gradient-2', 'bar-gradient-3', 'bar-gradient-4',
@@ -1137,7 +1149,7 @@
       const totalMinEl = document.getElementById('totalMinutes');
       if (totalMinEl) totalMinEl.textContent = formatTime(data.totalMinutes || 0);
 
-      document.getElementById('topDomain').textContent = data.topDomain || '—';
+      updateTopSiteName(data.topDomain);
       updateTopSiteFavicon(data.topDomain);
       updateDomainCount(data);
 
@@ -1282,7 +1294,7 @@
       const totalMinEl = document.getElementById('totalMinutes');
       if (totalMinEl) totalMinEl.textContent = formatTime(data.totalMinutes);
 
-      document.getElementById('topDomain').textContent = data.topDomain || '—';
+      updateTopSiteName(data.topDomain);
       updateTopSiteFavicon(data.topDomain);
       updateDomainCount(data);
 
