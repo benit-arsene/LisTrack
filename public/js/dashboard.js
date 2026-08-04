@@ -1557,40 +1557,6 @@
       }
     }
 
-    // ─── Extension Detection ───────────────────────────────────────────────
-
-    var _extensionDetected = false;
-
-    function detectExtension() {
-      if (document.documentElement.dataset.lisTrackInstalled === 'true') {
-        _extensionDetected = true;
-        return;
-      }
-
-      var observer = new MutationObserver(function () {
-        if (document.documentElement.dataset.lisTrackInstalled === 'true') {
-          _extensionDetected = true;
-          document.getElementById('installBanner').classList.add('hidden');
-          observer.disconnect();
-        }
-      });
-      observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-lis-track-installed'] });
-
-      setTimeout(function () {
-        if (!_extensionDetected) {
-          let dismissed = false;
-          try { dismissed = localStorage.getItem('lisTrackBannerDismissed') === 'true'; } catch (_) {}
-          if (!dismissed) document.getElementById('installBanner').classList.remove('hidden');
-        }
-        observer.disconnect();
-      }, 3000);
-    }
-
-    function dismissInstallBanner() {
-      document.getElementById('installBanner').classList.add('hidden');
-      try { localStorage.setItem('lisTrackBannerDismissed', 'true'); } catch (_) {}
-    }
-
     // ─── Init & Auto-refresh ───────────────────────────────────────────────
     document.addEventListener('DOMContentLoaded', () => {
       // Close modal on Escape
@@ -1617,7 +1583,6 @@
       if (urlDate && /^\d{4}-\d{2}-\d{2}$/.test(urlDate)) currentDate = urlDate;
 
       updatePeriodButtons();
-      detectExtension();
 
       // Date picker: open native picker on button click
       document.getElementById('datePickerBtn').addEventListener('click', function() {
