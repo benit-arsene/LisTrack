@@ -8,17 +8,22 @@
  * section at the end of background.js).
  *
  * Storage (chrome.storage.local, dedicated keys — no existing keys touched):
- *   lisTrack_domain_limits → { [domain]: { limitSeconds, setAt } }
+ *   lisTrack_domain_limits → { [domain]: { limitSeconds, setAt, source? } }
  *   lisTrack_domain_usage  → { [domain]: { day: 'YYYY-MM-DD', seconds } }
  *
  * Exposed API (window.LisTrackBlocker / globalThis.LisTrackBlocker):
- *   setDomainLimit(domain, limitInSeconds)
+ *   setDomainLimit(domain, limitInSeconds, opts?)  → opts stored on the entry
  *   removeDomainLimit(domain)
- *   getDomainLimit(domain)          → { limitSeconds, setAt } | null
+ *   getDomainLimit(domain)          → { limitSeconds, setAt, source? } | null
  *   addUsage(domain, seconds)       → accumulate today's seconds
  *   getDailyUsage(domain)           → seconds used today (resets at midnight)
  *   checkIfExceeded(domain, totalSeconds) → totalSeconds >= limit ?
  *   isBlockedToday(domain)          → today's usage >= limit ?
+ *   syncServerLimits(enabledGoals)  → reconcile server-synced limits
+ *     enabledGoals: [{ domain, maxMinutes }]. Entries previously written with
+ *     opts.source === 'server' are dropped first (covers disabled/deleted
+ *     dashboard goals), then every enabled goal is (re)written as a
+ *     source-tagged limit. Popup-set limits (no source) are never touched.
  */
 (function () {
   "use strict";
@@ -61,16 +66,50 @@
 
   /**
    * Set (or update) the daily time limit for a domain, in seconds.
+   * Extra opts (e.g. { source: 'server' }) are stored verbatim on the entry.
    * Returns true on success.
    */
-  async function setDomainLimit(domain, limitInSeconds) {
+  async function setDomainLimit(domain, limitInSeconds, opts = {}) {
     const normalized = normalizeDomain(domain);
     if (!normalized || !(limitInSeconds > 0)) return false;
     const limits = await readAll(LIMITS_KEY);
     limits[normalized] = {
       limitSeconds: Math.round(limitInSeconds),
       setAt: Date.now(),
+      ...opts,
     };
+    return writeAll(LIMITS_KEY, limits);
+  }
+
+  /**
+   * Reconcile limits with the server's enabled daily goals.
+   *
+   * - Every entry tagged `source: 'server'` is dropped first, so goals that
+   *   were disabled or deleted on the dashboard stop blocking immediately.
+   * - Each enabled goal is then (re)written as a server-tagged limit.
+   * - Popup-set limits (entries without a source) are left untouched.
+   *
+   * @param {Array<{domain: string, maxMinutes: number}>} enabledGoals
+   * @returns {Promise<boolean>} true when the write succeeded
+   */
+  async function syncServerLimits(enabledGoals) {
+    const limits = await readAll(LIMITS_KEY);
+    // Drop previously server-synced entries (disabled/deleted dashboard goals).
+    for (const key of Object.keys(limits)) {
+      if (limits[key] && limits[key].source === 'server') delete limits[key];
+    }
+    const list = Array.isArray(enabledGoals) ? enabledGoals : [];
+    for (const goal of list) {
+      const normalized = normalizeDomain(goal && goal.domain);
+      if (!normalized) continue;
+      const maxMinutes = Number(goal.maxMinutes);
+      if (!(maxMinutes > 0)) continue;
+      limits[normalized] = {
+        limitSeconds: Math.round(maxMinutes * 60),
+        setAt: Date.now(),
+        source: 'server',
+      };
+    }
     return writeAll(LIMITS_KEY, limits);
   }
 
@@ -150,6 +189,7 @@
     getDailyUsage,
     checkIfExceeded,
     isBlockedToday,
+    syncServerLimits,
   };
 
   // Expose globally — works as a classic script (popup) and via

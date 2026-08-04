@@ -709,6 +709,9 @@ chrome.runtime.onMessage.addListener((message) => {
   void (async () => {
     try {
       await LisTrackBlocker.addUsage(message.domain, message.durationSeconds);
+      // While pings flow, opportunistically pull down the user's server daily
+      // goals (throttled) so dashboard-created goals start blocking locally.
+      maybeSyncServerGoals();
       if (await LisTrackBlocker.isBlockedToday(message.domain)) {
         await blockerRedirectTabsTo(message.domain);
       }
@@ -739,4 +742,156 @@ chrome.webNavigation.onBeforeNavigate.addListener((details) => {
       }
     } catch (_) {}
   })();
+});
+
+// ─── Server Goal ↔ Local Limit Sync (connects dashboard Daily Goals) ───────
+// The web dashboard stores Daily Goals in the server DB. This section pulls
+// those goals down and mirrors the enabled ones into the local blocker limits
+// (lisTrack_domain_limits), so dashboard goals enforce the same block screen
+// as popup-set limits. It is fully additive — no existing handler is touched.
+//
+// Sync cadence:
+//   - throttled trigger on each tracking ping (see maybeSyncServerGoals)
+//   - a dedicated 5-minute alarm
+//   - on service-worker startup / extension install
+//
+// Enforcement:
+//   - every synced goal becomes a local limit → the existing ping & navigation
+//     hooks block at the limit via local usage
+//   - server-reported `exceeded` flags also redirect open tabs immediately
+
+const SERVER_GOALS_SYNC_INTERVAL_MS = 5 * 60 * 1000;
+let _lastServerGoalsSyncAt = 0;
+
+/**
+ * Pull the user's daily goals from the server, mirror enabled ones into the
+ * local blocker limits, and redirect any open tabs on exceeded domains.
+ * Throttled to once per SERVER_GOALS_SYNC_INTERVAL_MS.
+ */
+async function syncServerGoalsToLimits() {
+  const userId = await getUserId();
+  if (!userId) return;
+
+  const now = Date.now();
+  if (now - _lastServerGoalsSyncAt < SERVER_GOALS_SYNC_INTERVAL_MS) return;
+  _lastServerGoalsSyncAt = now;
+
+  try {
+    const headers = await authedFetchHeaders();
+    const [goalsResp, statusResp] = await Promise.all([
+      fetch(`${SERVER_URL}/api/goals?user=${encodeURIComponent(userId)}`, { headers }),
+      fetch(`${SERVER_URL}/api/goals/status?user=${encodeURIComponent(userId)}`, { headers }),
+    ]);
+
+    // 1) Mirror enabled server goals into local blocker limits.
+    const enabledGoals = [];
+    if (goalsResp.ok) {
+      const data = await goalsResp.json();
+      for (const goal of data.goals || []) {
+        if (!goal || !goal.enabled) continue;
+        if (isBlockedDomain(goal.domain)) continue;
+        enabledGoals.push({ domain: goal.domain, maxMinutes: goal.max_minutes });
+      }
+      await LisTrackBlocker.syncServerLimits(enabledGoals);
+
+      // Fast path: a synced goal may already be exceeded by LOCAL usage —
+      // redirect matching tabs right away.
+      for (const goal of enabledGoals) {
+        if (await LisTrackBlocker.isBlockedToday(goal.domain)) {
+          await blockerRedirectTabsTo(goal.domain);
+        }
+      }
+    }
+
+    // 2) Server-reported exceeded flags (authoritative daily totals) —
+    //    redirect matching tabs so blocking also works when the extension
+    //    missed pings (e.g. browser was closed earlier in the day).
+    if (statusResp.ok) {
+      const statusData = await statusResp.json();
+      for (const s of statusData.goals || []) {
+        if (!s || !s.exceeded) continue;
+        if (isBlockedDomain(s.domain)) continue;
+        await blockerRedirectTabsTo(s.domain);
+      }
+    }
+  } catch (_) {
+    // Reset so the next ping/alarm retries the sync.
+    _lastServerGoalsSyncAt = 0;
+  }
+}
+
+/** Fire-and-forget throttled sync trigger (safe to call on every ping). */
+function maybeSyncServerGoals() {
+  if (Date.now() - _lastServerGoalsSyncAt >= SERVER_GOALS_SYNC_INTERVAL_MS) {
+    void syncServerGoalsToLimits();
+  }
+}
+
+// Dedicated alarm — runs alongside the existing alarms (all listeners receive
+// every alarm event; this one only reacts to its own name).
+chrome.alarms.create('syncServerLimits', {
+  delayInMinutes: 1,
+  periodInMinutes: 5,
+});
+
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === 'syncServerLimits') {
+    void syncServerGoalsToLimits();
+  }
+});
+
+// Sync shortly after the service worker wakes and after install/update, so
+// limits exist before the first alarm fires. (Additive listeners.)
+chrome.runtime.onStartup.addListener(() => {
+  _lastServerGoalsSyncAt = 0;
+  void syncServerGoalsToLimits();
+});
+
+chrome.runtime.onInstalled.addListener(() => {
+  _lastServerGoalsSyncAt = 0;
+  void syncServerGoalsToLimits();
+});
+
+// Popup "Remove" for a dashboard-synced limit — deletes the matching server
+// goal (with the OAuth token attached) so the next sync does not re-add it.
+// Pure addition: the existing message handler above is left untouched.
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (!message || message.type !== "deleteServerGoal" || !message.domain) return;
+
+  (async () => {
+    try {
+      const userId = await getUserId();
+      if (!userId) {
+        sendResponse({ deleted: false });
+        return;
+      }
+      const headers = await authedFetchHeaders();
+      const listResp = await fetch(
+        `${SERVER_URL}/api/goals?user=${encodeURIComponent(userId)}`,
+        { headers }
+      );
+      if (!listResp.ok) {
+        sendResponse({ deleted: false });
+        return;
+      }
+      const data = await listResp.json();
+      const normalized = LisTrackBlocker.normalizeDomain(message.domain);
+      const goal = (data.goals || []).find(
+        (g) => g && LisTrackBlocker.normalizeDomain(g.domain) === normalized
+      );
+      if (!goal) {
+        sendResponse({ deleted: false });
+        return;
+      }
+      const delResp = await fetch(
+        `${SERVER_URL}/api/goals/${goal.id}?user=${encodeURIComponent(userId)}`,
+        { method: "DELETE", headers }
+      );
+      sendResponse({ deleted: delResp.ok });
+    } catch (_) {
+      sendResponse({ deleted: false });
+    }
+  })();
+
+  return true; // Keep the service worker alive until sendResponse resolves
 });

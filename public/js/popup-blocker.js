@@ -52,6 +52,8 @@
     const limit = await LisTrackBlocker.getDomainLimit(domain);
     const usedSeconds = await LisTrackBlocker.getDailyUsage(domain);
     const limitMinutes = limit ? Math.round(limit.limitSeconds / 60) : 0;
+    // Limits mirrored from the dashboard Daily Goals carry source: 'server'.
+    const isServerManaged = !!(limit && limit.source === "server");
 
     const card = document.createElement("div");
     card.className = "limit-card";
@@ -60,21 +62,51 @@
         <span class="limit-title">Daily Limit</span>
         <span class="limit-domain" title="${domain}">${displayName}</span>
       </div>
+      ${isServerManaged ? "" : `
       <div class="limit-row">
         <input class="limit-input" type="number" min="${MINUTES.min}" max="${MINUTES.max}"
                placeholder="Minutes" value="${limitMinutes || ""}" inputmode="numeric" />
         <button class="limit-set" id="limitSetBtn">Set</button>
-      </div>
+      </div>`}
       <div class="limit-status" id="limitStatus"></div>
     `;
 
     const input = card.querySelector(".limit-input");
     const setBtn = card.querySelector("#limitSetBtn");
     const status = card.querySelector("#limitStatus");
+    const usedText = formatTime(usedSeconds);
+
+    function setStatusText(text) { status.textContent = text; }
+
+    // Removing a dashboard-synced limit deletes the server goal too (the
+    // background attaches the OAuth token), so the next sync won't re-add it.
+    async function removeServerManagedLimit() {
+      let deleted = false;
+      try {
+        const resp = await chrome.runtime.sendMessage({ type: "deleteServerGoal", domain });
+        deleted = !!(resp && resp.deleted);
+      } catch (_) {}
+      await LisTrackBlocker.removeDomainLimit(domain);
+      const removeLink = card.querySelector("#limitRemoveBtn");
+      if (removeLink) removeLink.remove();
+      setStatusText(
+        deleted
+          ? `Removed ${displayName} from your dashboard goals.`
+          : "Limit removed locally — the dashboard goal may re-sync it."
+      );
+    }
 
     function renderStatus() {
-      if (limit) {
-        const usedText = formatTime(usedSeconds);
+      if (isServerManaged) {
+        status.innerHTML =
+          `Synced from your dashboard goals — <strong>${displayName}</strong> is blocked after ` +
+          `<strong>${limitMinutes}m</strong> today (${usedText} used). ` +
+          `<a href="#" class="limit-remove" id="limitRemoveBtn">Remove from dashboard</a>`;
+        card.querySelector("#limitRemoveBtn").addEventListener("click", (e) => {
+          e.preventDefault();
+          removeServerManagedLimit();
+        });
+      } else if (limit) {
         status.innerHTML =
           `Blocking <strong>${displayName}</strong> after <strong>${limitMinutes}m</strong> today. ` +
           `Used so far: <strong>${usedText}</strong>. ` +
@@ -82,36 +114,38 @@
         card.querySelector("#limitRemoveBtn").addEventListener("click", (e) => {
           e.preventDefault();
           LisTrackBlocker.removeDomainLimit(domain).then(() => {
-            status.textContent = "Limit removed for " + displayName + ".";
-            input.value = "";
+            setStatusText("Limit removed for " + displayName + ".");
+            if (input) input.value = "";
           });
         });
       } else {
-        status.textContent = `No limit set for ${displayName}.`;
+        setStatusText(`No limit set for ${displayName}.`);
       }
     }
 
-    setBtn.addEventListener("click", async () => {
-      const minutes = parseInt(input.value, 10);
-      if (!minutes || isNaN(minutes) || minutes < MINUTES.min) {
-        status.textContent = "Enter a limit in minutes (min " + MINUTES.min + ").";
-        return;
-      }
-      if (minutes > MINUTES.max) {
-        status.textContent = "Limit is capped at " + MINUTES.max + " minutes (24 h).";
-        return;
-      }
-      const ok = await LisTrackBlocker.setDomainLimit(domain, minutes * 60);
-      if (ok) {
-        status.innerHTML =
-          `Limit set — <strong>${displayName}</strong> will be blocked after ` +
-          `<strong>${minutes}m</strong> today. 🌿`;
-        setBtn.disabled = true;
-        setTimeout(() => { setBtn.disabled = false; }, 1200);
-      } else {
-        status.textContent = "Could not save the limit. Try again.";
-      }
-    });
+    if (setBtn) {
+      setBtn.addEventListener("click", async () => {
+        const minutes = parseInt(input.value, 10);
+        if (!minutes || isNaN(minutes) || minutes < MINUTES.min) {
+          setStatusText("Enter a limit in minutes (min " + MINUTES.min + ").");
+          return;
+        }
+        if (minutes > MINUTES.max) {
+          setStatusText("Limit is capped at " + MINUTES.max + " minutes (24 h).");
+          return;
+        }
+        const ok = await LisTrackBlocker.setDomainLimit(domain, minutes * 60);
+        if (ok) {
+          status.innerHTML =
+            `Limit set — <strong>${displayName}</strong> will be blocked after ` +
+            `<strong>${minutes}m</strong> today. 🌿`;
+          setBtn.disabled = true;
+          setTimeout(() => { setBtn.disabled = false; }, 1200);
+        } else {
+          setStatusText("Could not save the limit. Try again.");
+        }
+      });
+    }
 
     renderStatus();
     return card;
