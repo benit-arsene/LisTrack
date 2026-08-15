@@ -26,6 +26,15 @@ const NOTIFICATION_COOLDOWN_MS = 30 * 60 * 1000;
 const BADGE_UPDATE_INTERVAL_MINUTES = 1;
 const OFFLINE_RETRY_INTERVAL_MINUTES = 2; // Retry offline queue every 2 minutes
 
+// Badge color scale — the toolbar badge turns fully red at this many hours of
+// daily screen time. The server can push a different value at runtime via the
+// `badgeMaxHours` field on /api/screen-time ping responses (see
+// applyBadgeConfig), so installed extensions pick up threshold updates on
+// their next ping without a manual reinstall.
+const BADGE_MAX_HOURS_DEFAULT = 10;
+const BADGE_MAX_HOURS_KEY = "lisTrackBadgeMaxHours";
+let _badgeMaxHours = BADGE_MAX_HOURS_DEFAULT;
+
 const USER_ID_KEY = "user_id";
 const PAUSE_KEY = "lisTrackPaused";
 const OFFLINE_QUEUE_KEY = "lisTrackOfflineQueue";
@@ -340,6 +349,97 @@ async function resetDailyNotifications() {
 // ─── Badge Update ───────────────────────────────────────────────────────────
 // Shows today's total screen time as a badge on the extension toolbar icon.
 
+// Color ramp for the badge background — linearly interpolated between stops,
+// expressed as a fraction of the badge max (10h by default). At the default
+// 10h scale this maps to:
+//   0h – 3.5h   solid fresh green (#22c55e)
+//   3.5h – 7h   smooth green → yellow (#eab308) → soft orange (#fb923c)
+//   8h – 10h+   deepens through orange to full red (#ef4444)
+const BADGE_COLOR_STOPS = [
+  { frac: 0.0, color: "#22c55e" },  // fresh green
+  { frac: 0.35, color: "#22c55e" }, // solid green until 3.5h (of 10h)
+  { frac: 0.525, color: "#eab308" },// yellow
+  { frac: 0.7, color: "#fb923c" },  // soft orange
+  { frac: 0.8, color: "#fb923c" },  // soft orange through the 8h band
+  { frac: 0.9, color: "#f97316" },  // deeper orange
+  { frac: 1.0, color: "#ef4444" },  // red at max
+];
+
+function hexToRgb(hex) {
+  const h = hex.replace("#", "");
+  return {
+    r: parseInt(h.slice(0, 2), 16),
+    g: parseInt(h.slice(2, 4), 16),
+    b: parseInt(h.slice(4, 6), 16),
+  };
+}
+
+function rgbToHex({ r, g, b }) {
+  const ch = (v) =>
+    Math.round(Math.min(255, Math.max(0, v))).toString(16).padStart(2, "0");
+  return `#${ch(r)}${ch(g)}${ch(b)}`;
+}
+
+/**
+ * Smoothly interpolate the badge color for a given daily screen time.
+ * @param {number} hours Current daily screen time in hours.
+ * @param {number} maxHours Hours at which the badge turns fully red.
+ */
+function badgeColorForHours(hours, maxHours) {
+  const frac = maxHours > 0 ? hours / maxHours : 0;
+  const stops = BADGE_COLOR_STOPS;
+  if (frac <= stops[0].frac) return stops[0].color;
+  if (frac >= stops[stops.length - 1].frac) {
+    return stops[stops.length - 1].color;
+  }
+  for (let i = 1; i < stops.length; i++) {
+    const prev = stops[i - 1];
+    const next = stops[i];
+    if (frac <= next.frac) {
+      const t = (frac - prev.frac) / (next.frac - prev.frac);
+      const a = hexToRgb(prev.color);
+      const b = hexToRgb(next.color);
+      return rgbToHex({
+        r: a.r + (b.r - a.r) * t,
+        g: a.g + (b.g - a.g) * t,
+        b: a.b + (b.b - a.b) * t,
+      });
+    }
+  }
+  return stops[stops.length - 1].color;
+}
+
+/**
+ * Load the server-provided badge threshold (badgeMaxHours) persisted in
+ * chrome.storage.local, falling back to the compiled-in default (10h).
+ */
+async function loadBadgeConfig() {
+  try {
+    const result = await chrome.storage.local.get([BADGE_MAX_HOURS_KEY]);
+    const stored = result[BADGE_MAX_HOURS_KEY];
+    if (typeof stored === "number" && stored > 0 && isFinite(stored)) {
+      _badgeMaxHours = stored;
+    }
+  } catch (_) {}
+}
+
+/**
+ * Apply badge config returned by a server ping response (if present). Updates
+ * the in-memory threshold AND persists it so it survives service-worker
+ * restarts. Fully additive — a response without badgeMaxHours is a no-op.
+ */
+async function applyBadgeConfig(data) {
+  if (!data || typeof data.badgeMaxHours !== "number") return;
+  if (!(data.badgeMaxHours > 0) || !isFinite(data.badgeMaxHours)) return;
+  _badgeMaxHours = data.badgeMaxHours;
+  try {
+    await chrome.storage.local.set({ [BADGE_MAX_HOURS_KEY]: data.badgeMaxHours });
+  } catch (_) {}
+}
+
+// Restore the persisted threshold on service-worker start (defaults to 10h).
+void loadBadgeConfig();
+
 async function updateBadge() {
   try {
     const userId = await getUserId();
@@ -369,7 +469,9 @@ async function updateBadge() {
 
     chrome.action.setBadgeText({ text: badgeText });
 
-    // Color: grey (paused), green (<30min), amber (30-120min), red (>120min)
+    // Color: grey when paused; otherwise ramp green → yellow → orange → red
+    // across 0h to BADGE_MAX_HOURS_DEFAULT (adjustable server-side via
+    // badgeMaxHours on ping responses).
     try {
       const paused = await chrome.storage.local.get([PAUSE_KEY]);
       if (paused[PAUSE_KEY]) {
@@ -378,7 +480,7 @@ async function updateBadge() {
       }
     } catch (_) {}
 
-    const color = totalMin > 120 ? '#ef4444' : totalMin > 30 ? '#f59e0b' : '#22c55e';
+    const color = badgeColorForHours(totalMin / 60, _badgeMaxHours);
     chrome.action.setBadgeBackgroundColor({ color });
   } catch (_) {
     // Silently fail — badge just won't update
@@ -639,6 +741,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return;
       }
       if (response.ok) {
+        // The ping response may carry server config (e.g. badgeMaxHours) —
+        // apply it so threshold changes reach installed extensions on the
+        // next ping without a manual reinstall.
+        try {
+          await applyBadgeConfig(await response.json());
+        } catch (_) {}
         console.log('[background] Tracking data sent:', message.domain, response.status);
         sendResponse({ received: true, status: response.status });
       } else {

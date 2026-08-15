@@ -31,6 +31,12 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const USE_PG = !!process.env.DATABASE_URL;
 
+// Badge color scale — the extension's toolbar badge reaches full red at this
+// many hours of daily screen time. Returned on every /api/screen-time ping
+// response so installed extensions pick up threshold changes dynamically on
+// their next ping (no manual reinstall required).
+const BADGE_MAX_HOURS = 10;
+
 // ─── Middleware ──────────────────────────────────────────────────────────────
 
 app.use(cors());
@@ -1214,7 +1220,11 @@ app.post("/api/screen-time", requireAuth, async (req, res) => {
         (entry.recovered ? " (recovered)" : ""),
     );
 
-    return res.status(201).json({ status: "ok", id: entry._id });
+    return res.status(201).json({
+      status: "ok",
+      id: entry._id,
+      badgeMaxHours: BADGE_MAX_HOURS,
+    });
   } catch (err) {
     console.error("[screen-time] Error processing request:", err);
     return res
