@@ -35,7 +35,7 @@
   if (domain) {
     domainEl.textContent = domain;
     domainEl.title = domain;
-    faviconEl.src = `https://www.google.com/s2/favicons?domain=${encodeURIComponent(domain)}&sz=64`;
+    faviconEl.src = `https://www.google.com/s2/favicons?domain=${encodeURIComponent(domain)}&sz=32`;
   }
 
   // Show today's accumulated usage for this domain (from the local module).

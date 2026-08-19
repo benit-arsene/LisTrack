@@ -280,25 +280,42 @@ async function drainOfflineQueue() {
     let drained = 0;
     const drainHeaders = await authedFetchHeaders({ 'Content-Type': 'application/json' });
 
-    for (const entry of queue) {
-      try {
-        const response = await fetch(`${SERVER_URL}/api/screen-time`, {
-          method: 'POST',
-          headers: drainHeaders,
-          body: JSON.stringify(entry),
-        });
-        if (response.ok) {
+    // Parallel batch: send up to 5 concurrent requests instead of serial.
+    // This keeps the SW alive for less time while draining the same queue.
+    const BATCH_SIZE = 5;
+    for (let i = 0; i < queue.length; i += BATCH_SIZE) {
+      const batch = queue.slice(i, i + BATCH_SIZE);
+      const results = await Promise.allSettled(
+        batch.map((entry) =>
+          fetch(`${SERVER_URL}/api/screen-time`, {
+            method: 'POST',
+            headers: drainHeaders,
+            body: JSON.stringify(entry),
+          }).then((response) => {
+            if (response.ok) return { entry, ok: true };
+            if (response.status >= 400 && response.status < 500) {
+              return { entry, ok: false, drop: true, status: response.status };
+            }
+            return { entry, ok: false, status: response.status };
+          })
+        )
+      );
+      results.forEach((r, idx) => {
+        const entry = batch[idx];
+        if (r.status !== 'fulfilled') {
+          // Network-level failure — the Error has no .entry, use batch[idx]
+          pendingRetries.push(entry);
+          return;
+        }
+        const { ok, drop } = r.value;
+        if (ok) {
           drained++;
-        } else if (response.status >= 400 && response.status < 500) {
-          // Permanent client error (e.g. invalid domain/duration) — drop so
-          // it isn't retried forever; only 5xx / network errors are retryable.
-          console.warn('[background] Dropping permanently-invalid queued payload:', response.status);
+        } else if (drop) {
+          console.warn('[background] Dropping permanently-invalid queued payload:', r.value.status);
         } else {
           pendingRetries.push(entry);
         }
-      } catch (_) {
-        pendingRetries.push(entry);
-      }
+      });
     }
 
     // Re-queue only the failed ones — but MERGE with any entries pushed by
@@ -449,7 +466,10 @@ async function updateBadge() {
       chrome.action.setBadgeBackgroundColor({ color: '#6b7280' });
       return;
     }
-    const resp = await fetch(`${SERVER_URL}/api/dashboard?user=${encodeURIComponent(userId)}`, {
+    // Use the lightweight /api/today endpoint instead of the full dashboard.
+    // This avoids fetching the entire per-domain breakdown just for the
+    // total minutes needed to render the badge.
+    const resp = await fetch(`${SERVER_URL}/api/today?user=${encodeURIComponent(userId)}`, {
       headers: await authedFetchHeaders(),
     });
     if (!resp.ok) return;

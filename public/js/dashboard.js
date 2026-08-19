@@ -29,8 +29,8 @@
       return `${mins}m`;
     }
 
-    function getFaviconUrl(domain) {
-      return `https://www.google.com/s2/favicons?domain=${domain}&sz=64`;
+    function getFaviconUrl(domain, size) {
+      return `https://www.google.com/s2/favicons?domain=${domain}&sz=${size || 32}`;
     }
 
     function updateTopSiteFavicon(domain) {
@@ -40,7 +40,7 @@
       if (domain) {
         star.classList.add('hidden');
         img.classList.remove('hidden');
-        img.src = getFaviconUrl(domain);
+        img.src = getFaviconUrl(domain, 64);
         img.alt = domain;
         img.onerror = function() { this.classList.add('hidden'); star.classList.remove('hidden'); };
       } else {
@@ -784,39 +784,31 @@
 
     async function loadDomainBreakdown(domain) {
       try {
-        const url = await apiUrl('/logs');
+        // Use the dedicated server-side aggregation endpoint instead of
+        // loading ALL logs and filtering client-side.
+        const url = await apiUrl('/domain-breakdown', { domain });
         const response = await fetch(url);
-        if (!response.ok) throw new Error('Failed to fetch logs');
+        if (!response.ok) throw new Error('Failed to fetch domain breakdown');
 
         const data = await response.json();
-        const logs = (data.logs || []).filter(l => l.domain === domain);
+        const breakdown = data.breakdown || [];
+        const totalMin = data.totalMinutes || 0;
+        const totalVisits = data.totalVisits || 0;
 
-        // Group by date
-        const byDate = {};
-        logs.forEach(l => {
-          const date = l.timestamp.slice(0, 10);
-          if (!byDate[date]) byDate[date] = 0;
-          byDate[date] += l.durationSeconds;
-        });
+        document.getElementById('modalTotal').textContent = `${formatTime(totalMin)} total · ${totalVisits} visits`;
 
-        const dates = Object.keys(byDate).sort().reverse();
-        const totalSeconds = logs.reduce((s, l) => s + l.durationSeconds, 0);
-        const totalMin = totalSeconds / 60;
-
-        document.getElementById('modalTotal').textContent = `${formatTime(totalMin)} total · ${logs.length} visits`;
-
-        if (dates.length === 0) {
+        if (breakdown.length === 0) {
           document.getElementById('modalBreakdown').innerHTML = '<p class="text-sm text-gray-400 dark:text-gray-500 text-center py-4">No detailed data available.</p>';
           return;
         }
 
-        const maxVal = Math.max(...dates.map(d => byDate[d]));
+        const maxVal = Math.max(...breakdown.map(d => d.totalMinutes * 60));
 
         let html = '';
-        dates.slice(0, 14).forEach(date => {
-          const sec = byDate[date];
-          const min = sec / 60;
-          const label = safeFormatDate(date, { weekday: 'short', month: 'short', day: 'numeric' });
+        breakdown.slice(0, 14).forEach(item => {
+          const sec = item.totalMinutes * 60;
+          const min = item.totalMinutes;
+          const label = safeFormatDate(item.date, { weekday: 'short', month: 'short', day: 'numeric' });
           const pct = maxVal > 0 ? (sec / maxVal) * 100 : 0;
           const barColor = pct > 80 ? 'bg-red-500' : pct > 50 ? 'bg-amber-500' : pct > 20 ? 'bg-emerald-500' : 'bg-indigo-500';
 
@@ -831,8 +823,8 @@
           `;
         });
 
-        if (dates.length > 14) {
-          html += `<p class="text-xs text-gray-400 dark:text-gray-500 text-center pt-2">+ ${dates.length - 14} more days</p>`;
+        if (breakdown.length > 14) {
+          html += `<p class="text-xs text-gray-400 dark:text-gray-500 text-center pt-2">+ ${breakdown.length - 14} more days</p>`;
         }
 
         document.getElementById('modalBreakdown').innerHTML = html;

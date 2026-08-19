@@ -1125,9 +1125,29 @@ async function getGoalStatus(userId) {
   const goals = await getGoals(userId);
   const enabledGoals = goals.filter((g) => g.enabled);
 
+  if (enabledGoals.length === 0) return [];
+
+  // Batch query: fetch today's minutes for ALL enabled domains in one
+  // GROUP BY instead of N separate queries (N+1 fix).
+  const today = new Date().toISOString().slice(0, 10);
+  const placeholders = enabledGoals.map(() => '?').join(',');
+  const rows = await driver.all(
+    `SELECT domain, ROUND(CAST(SUM("durationSeconds") / 60.0 AS NUMERIC), 6) AS "totalMinutes"
+     FROM screen_time
+     WHERE date("timestamp") = ? AND user_id = ? AND domain IN (${placeholders})
+     GROUP BY domain`,
+    [today, userId || '', ...enabledGoals.map((g) => g.domain)],
+  );
+
+  // Build lookup map: domain → todayMinutes
+  const minutesMap = {};
+  for (const row of rows) {
+    minutesMap[row.domain] = Number(row.totalMinutes) || 0;
+  }
+
   const result = [];
   for (const goal of enabledGoals) {
-    const todayMinutes = await getTodayMinutesForDomain(goal.domain, userId);
+    const todayMinutes = minutesMap[goal.domain] || 0;
     const percentage =
       goal.max_minutes > 0
         ? Math.min(Math.round((todayMinutes / goal.max_minutes) * 100), 999)
@@ -1214,6 +1234,10 @@ app.post("/api/screen-time", requireAuth, async (req, res) => {
     }
 
     await insertScreenTimeLog(entry);
+
+    // Invalidate cached reads for this user so the next dashboard/badge
+    // request reflects the freshly-inserted data.
+    cacheInvalidateUser(entry.userId);
 
     console.log(
       `[screen-time] ${entry.domain}${entry.path} — ${entry.durationSeconds}s` +
@@ -1515,6 +1539,117 @@ app.get("/api/goals/status", requireAuth, async (req, res) => {
 const registerDonationRoutes = require("./donation");
 
 registerDonationRoutes(app);
+
+// ─── Simple In-Memory Cache ───────────────────────────────────────────────
+// TTL-based cache for frequently-accessed read queries. Invalidated on
+// data writes (POST /api/screen-time) per-user to keep reads fresh while
+// avoiding redundant DB hits within the same second.
+
+const _cache = new Map(); // key → { value, expiresAt }
+const CACHE_TTL_MS = 3_000; // 3 seconds — short enough to feel fresh,
+// long enough to collapse burst reads (e.g.
+// badge + goal-check + sync within the same
+// second).
+
+function cacheGet(key) {
+  const entry = _cache.get(key);
+  if (!entry) return undefined;
+  if (entry.expiresAt <= Date.now()) {
+    _cache.delete(key);
+    return undefined;
+  }
+  return entry.value;
+}
+
+function cacheSet(key, value) {
+  _cache.set(key, { value, expiresAt: Date.now() + CACHE_TTL_MS });
+}
+
+/** Invalidate all cached entries for a given user. */
+function cacheInvalidateUser(userId) {
+  const prefix = userId || '';
+  for (const key of _cache.keys()) {
+    if (key.startsWith(prefix + ':')) _cache.delete(key);
+  }
+}
+
+/**
+ * GET /api/today
+ * Lightweight endpoint for toolbar badge updates. Returns only the total
+ * minutes for today — no per-domain breakdown, no available-dates list.
+ * Called every minute by the extension's badge alarm.
+ */
+app.get("/api/today", requireAuth, async (req, res) => {
+  try {
+    const userId = req.query.user || '';
+    const today = new Date().toISOString().slice(0, 10);
+    const cacheKey = `${userId}:today:${today}`;
+    const cached = cacheGet(cacheKey);
+    if (cached) return res.json(cached);
+
+    const row = await driver.get(
+      `SELECT ROUND(CAST(SUM("durationSeconds") / 60.0 AS NUMERIC), 6) AS "totalMinutes"
+       FROM screen_time
+       WHERE date("timestamp") = ? AND user_id = ?`,
+      [today, userId],
+    );
+    const totalMinutes = (row && Number(row.totalMinutes)) || 0;
+    const result = { date: today, totalMinutes: Math.round(totalMinutes * 100) / 100 };
+    cacheSet(cacheKey, result);
+    return res.json(result);
+  } catch (err) {
+    console.error('[today] Error:', err);
+    return res.status(500).json({ status: 'error', message: 'Internal server error' });
+  }
+});
+
+/**
+ * GET /api/domain-breakdown
+ * Server-side aggregation for a single domain's daily breakdown.
+ * Avoids loading ALL logs just to show one domain in the modal.
+ */
+app.get("/api/domain-breakdown", requireAuth, async (req, res) => {
+  try {
+    const userId = req.query.user || '';
+    const domain = req.query.domain || '';
+    if (!domain) {
+      return res.status(400).json({ status: 'error', message: 'Missing domain parameter' });
+    }
+    const cacheKey = `${userId}:breakdown:${domain}`;
+    const cached = cacheGet(cacheKey);
+    if (cached) return res.json(cached);
+
+    const rows = await driver.all(
+      `SELECT date("timestamp") AS d,
+              ROUND(CAST(SUM("durationSeconds") / 60.0 AS NUMERIC), 6) AS "totalMinutes",
+              COUNT(*) AS visits
+       FROM screen_time
+       WHERE domain = ? AND user_id = ?
+       GROUP BY date("timestamp")
+       ORDER BY d DESC`,
+      [domain, userId],
+    );
+
+    const totalSeconds = rows.reduce((s, r) => s + (Number(r.totalMinutes) || 0) * 60, 0);
+    const totalVisits = rows.reduce((s, r) => s + (Number(r.visits) || 0), 0);
+
+    const result = {
+      domain,
+      totalMinutes: Math.round((totalSeconds / 60) * 100) / 100,
+      totalVisits,
+      breakdown: rows.map((r) => ({
+        date: r.d,
+        totalMinutes: Number(r.totalMinutes) || 0,
+        visits: Number(r.visits) || 0,
+      })),
+    };
+    cacheSet(cacheKey, result);
+    return res.json(result);
+  } catch (err) {
+    console.error('[domain-breakdown] Error:', err);
+    return res.status(500).json({ status: 'error', message: 'Internal server error' });
+  }
+});
 
 app.get("/api/logs", requireAuth, async (req, res) => {
   try {
