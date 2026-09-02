@@ -26,14 +26,16 @@
     API_PATH: '/api/screen-time',
     IDLE_THRESHOLD_MS: 60_000,
     CHECKPOINT_INTERVAL_MS: 5_000,
-    // Flush every 2 seconds (instead of 10s) — eliminates sub-5s time leak
-    // 2s balances granularity with IPC/battery impact (~30 msg/min vs 60)
-    FLUSH_INTERVAL_MS: 2_000,
+    // Flush every 30 seconds — time is still tracked client-side every
+    // millisecond; this just batches server updates. Reduces server load
+    // from ~30 req/min/tab to ~2 req/min/tab (93% fewer requests).
+    FLUSH_INTERVAL_MS: 30_000,
     FLUSH_MINIMUM_MS: 1_000,
     STORAGE_KEY: "web_screen_time_tracker",
     USER_TOKEN_KEY: "lisTrackTrackerToken",
     USER_ID_KEY: "user_id",
     OFFLINE_QUEUE_KEY: "lisTrackOfflineQueue",
+    FLUSH_INTERVAL_KEY: "lisTrackFlushIntervalSeconds",
   };
 
   const IGNORED_DOMAIN_PATTERNS = ["localhost", "listrack.onrender.com", "listrack-2.onrender.com"];
@@ -516,6 +518,30 @@
     }
   }
 
+  /**
+   * Read the server-pushed flush interval from chrome.storage.local.
+   * The background worker writes lisTrackFlushIntervalSeconds there on
+   * every /api/screen-time ping response that carries the value.
+   */
+  async function getStoredFlushInterval() {
+    if (typeof chrome === 'undefined' || !chrome.storage || !chrome.storage.local) return 0;
+    try {
+      const result = await chrome.storage.local.get([CONFIG.FLUSH_INTERVAL_KEY]);
+      const val = result[CONFIG.FLUSH_INTERVAL_KEY];
+      if (typeof val === 'number' && val > 0 && isFinite(val)) return val;
+    } catch (_) {}
+    return 0;
+  }
+
+  /**
+   * Dynamically restart the flush interval with a new period (in ms).
+   * Called when the server pushes a different flushIntervalSeconds value.
+   */
+  function restartFlushInterval(newFlushMs) {
+    if (state.flushIntervalId) clearInterval(state.flushIntervalId);
+    state.flushIntervalId = setInterval(onFlushTick, newFlushMs);
+  }
+
   function handleTrackingStateChange(changes, area) {
     // Pause/resume toggles live in chrome.storage.local
     if (area === 'local' && changes.lisTrackPaused) {
@@ -526,6 +552,18 @@
         const elapsed = Date.now() - state.lastActivity;
         if (elapsed < CONFIG.IDLE_THRESHOLD_MS) {
           resumeTimer();
+        }
+      }
+    }
+
+    // Server-pushed flush interval — react live (no extension update needed)
+    if (area === 'local' && changes[CONFIG.FLUSH_INTERVAL_KEY]) {
+      const newSeconds = changes[CONFIG.FLUSH_INTERVAL_KEY].newValue;
+      if (typeof newSeconds === 'number' && newSeconds > 0 && isFinite(newSeconds)) {
+        const newMs = newSeconds * 1000;
+        if (newMs !== CONFIG.FLUSH_INTERVAL_MS) {
+          CONFIG.FLUSH_INTERVAL_MS = newMs;
+          restartFlushInterval(newMs);
         }
       }
     }
@@ -606,8 +644,12 @@
     // Checkpoint interval (5s — crash recovery)
     state.checkpointInterval = setInterval(onCheckpoint, CONFIG.CHECKPOINT_INTERVAL_MS);
 
-    // Flush interval (1s — send >=1s batches)
-    state.flushIntervalId = setInterval(onFlushTick, CONFIG.FLUSH_INTERVAL_MS);
+    // Flush interval — read server-pushed value from storage, fall back to default.
+    // The background worker persists the server's flushIntervalSeconds there,
+    // and chrome.storage.onChanged updates it live (no extension update needed).
+    const storedFlush = await getStoredFlushInterval();
+    const flushMs = (storedFlush > 0 ? storedFlush : CONFIG.FLUSH_INTERVAL_MS);
+    state.flushIntervalId = setInterval(onFlushTick, flushMs);
 
     document.documentElement.dataset.lisTrackInstalled = 'true';
   }

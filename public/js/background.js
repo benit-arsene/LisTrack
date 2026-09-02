@@ -35,6 +35,13 @@ const BADGE_MAX_HOURS_DEFAULT = 10;
 const BADGE_MAX_HOURS_KEY = "lisTrackBadgeMaxHours";
 let _badgeMaxHours = BADGE_MAX_HOURS_DEFAULT;
 
+// Client flush interval — how often the content script sends accumulated
+// screen-time to the server. Server-pushed via flushIntervalSeconds on
+// /api/screen-time responses (same pattern as badgeMaxHours).
+const FLUSH_INTERVAL_KEY = "lisTrackFlushIntervalSeconds";
+const FLUSH_INTERVAL_DEFAULT_SECONDS = 30;
+let _flushIntervalSeconds = FLUSH_INTERVAL_DEFAULT_SECONDS;
+
 const USER_ID_KEY = "user_id";
 const PAUSE_KEY = "lisTrackPaused";
 const OFFLINE_QUEUE_KEY = "lisTrackOfflineQueue";
@@ -457,6 +464,37 @@ async function applyBadgeConfig(data) {
 // Restore the persisted threshold on service-worker start (defaults to 10h).
 void loadBadgeConfig();
 
+/**
+ * Load the server-provided flush interval persisted in chrome.storage.local,
+ * falling back to the compiled-in default (30s).
+ */
+async function loadFlushConfig() {
+  try {
+    const result = await chrome.storage.local.get([FLUSH_INTERVAL_KEY]);
+    const stored = result[FLUSH_INTERVAL_KEY];
+    if (typeof stored === "number" && stored > 0 && isFinite(stored)) {
+      _flushIntervalSeconds = stored;
+    }
+  } catch (_) {}
+}
+
+/**
+ * Apply flush config returned by a server ping response (if present).
+ * Updates in-memory value AND persists it so it survives SW restarts.
+ * Fully additive — a response without flushIntervalSeconds is a no-op.
+ */
+async function applyFlushConfig(data) {
+  if (!data || typeof data.flushIntervalSeconds !== "number") return;
+  if (!(data.flushIntervalSeconds > 0) || !isFinite(data.flushIntervalSeconds)) return;
+  _flushIntervalSeconds = data.flushIntervalSeconds;
+  try {
+    await chrome.storage.local.set({ [FLUSH_INTERVAL_KEY]: data.flushIntervalSeconds });
+  } catch (_) {}
+}
+
+// Restore the persisted flush interval on service-worker start.
+void loadFlushConfig();
+
 async function updateBadge() {
   try {
     const userId = await getUserId();
@@ -761,11 +799,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return;
       }
       if (response.ok) {
-        // The ping response may carry server config (e.g. badgeMaxHours) —
-        // apply it so threshold changes reach installed extensions on the
-        // next ping without a manual reinstall.
+        // The ping response may carry server config (e.g. badgeMaxHours,
+        // flushIntervalSeconds) — apply it so threshold changes reach
+        // installed extensions on the next ping without a manual reinstall.
         try {
-          await applyBadgeConfig(await response.json());
+          const pingData = await response.json();
+          await applyBadgeConfig(pingData);
+          await applyFlushConfig(pingData);
         } catch (_) {}
         console.log('[background] Tracking data sent:', message.domain, response.status);
         sendResponse({ received: true, status: response.status });

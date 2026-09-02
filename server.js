@@ -37,6 +37,12 @@ const USE_PG = !!process.env.DATABASE_URL;
 // their next ping (no manual reinstall required).
 const BADGE_MAX_HOURS = 10;
 
+// Client flush interval — how often the extension sends accumulated
+// screen-time to the server (seconds). Tunable at runtime: change this
+// value and installed extensions pick it up on their next ping with no
+// reinstall required.
+const FLUSH_INTERVAL_SECONDS = 30;
+
 // ─── Middleware ──────────────────────────────────────────────────────────────
 
 app.use(cors());
@@ -1248,6 +1254,7 @@ app.post("/api/screen-time", requireAuth, async (req, res) => {
       status: "ok",
       id: entry._id,
       badgeMaxHours: BADGE_MAX_HOURS,
+      flushIntervalSeconds: FLUSH_INTERVAL_SECONDS,
     });
   } catch (err) {
     console.error("[screen-time] Error processing request:", err);
