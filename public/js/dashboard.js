@@ -744,6 +744,15 @@
       }
     }
 
+    function showAllDomains() {
+      const container = document.getElementById('domainList');
+      const data = window._lastDashboardData;
+      if (data && data.domains) {
+        visibleDomainCount = data.domains.length;
+        renderDomainList(data, container);
+      }
+    }
+
     function updateDomainCount(data) {
       const totalCount = data.totalDomains;
       const showingCount = Math.min(visibleDomainCount, data.domains ? data.domains.length : 0);
