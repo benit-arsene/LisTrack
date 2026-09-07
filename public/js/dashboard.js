@@ -33,6 +33,32 @@
       return `https://www.google.com/s2/favicons?domain=${domain}&sz=${size || 32}`;
     }
 
+    function formatFirstVisit(iso) {
+      if (!iso || typeof iso !== 'string') return null;
+      try {
+        const d = new Date(iso);
+        if (isNaN(d.getTime())) return null;
+        // Local time-of-day from the stored UTC ISO — no timezone travels from the
+        // extension; the dashboard browser is the viewer, so this is the viewer's locale.
+        return d.toLocaleTimeString('en-GB', { hour12: false });
+      } catch (_) {
+        return null;
+      }
+    }
+
+    function updateFirstVisitLine(firstVisitIso) {
+      const el = document.getElementById('firstVisitLine');
+      if (!el) return;
+      const time = formatFirstVisit(firstVisitIso);
+      if (!time) {
+        el.textContent = '';
+        el.classList.add('hidden');
+        return;
+      }
+      el.textContent = 'First visit · ' + time;
+      el.classList.remove('hidden');
+    }
+
     function updateTopSiteFavicon(domain) {
       const star = document.getElementById('topSiteStar');
       const img = document.getElementById('topSiteFavicon');
@@ -1150,6 +1176,8 @@
       const totalMinEl = document.getElementById('totalMinutes');
       if (totalMinEl) totalMinEl.textContent = formatTime(data.totalMinutes || 0);
 
+      updateFirstVisitLine(data.firstVisit);
+
       updateTopSiteName(data.topDomain);
       updateTopSiteFavicon(data.topDomain);
       updateDomainCount(data);
@@ -1294,6 +1322,8 @@
       animateCounter(document.getElementById('totalDomains'), data.totalDomains, '');
       const totalMinEl = document.getElementById('totalMinutes');
       if (totalMinEl) totalMinEl.textContent = formatTime(data.totalMinutes);
+
+      updateFirstVisitLine(data.firstVisit);
 
       updateTopSiteName(data.topDomain);
       updateTopSiteFavicon(data.topDomain);

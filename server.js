@@ -523,6 +523,19 @@ async function createSqliteDriver() {
         db.run("DELETE FROM daily_goals WHERE user_id = ''");
       } catch (_) {}
 
+      // Migration: ensure first_visits table exists (created by base DDL above)
+      // Add any future first_visits migrations here, following the same
+      // "verify column/table then alter" pattern used for user_id / seq_id.
+      try {
+        const fv = db.exec("SELECT name FROM sqlite_master WHERE type='table' AND name='first_visits'");
+        if (!fv[0]?.values?.length) {
+          db.run(sql_schema_first_visits_fragment);
+          console.log("[db] SQLite migration: ensured first_visits table");
+        }
+      } catch (err) {
+        console.error("[db] SQLite migration error (first_visits):", err.message);
+      }
+
       save();
       console.log("[db] SQLite schema ready");
     },
@@ -560,6 +573,49 @@ async function createSqliteDriver() {
       console.log("[db] SQLite saved and closed");
     },
   };
+}
+
+// ─── First-Visit Helpers ────────────────────────────────────────────────────
+// Record the first trackable ping of the day for a user, keyed on UTC date.
+// The *displayed* local time is derived later by the dashboard browser from the
+// stored UTC ISO, so no timezone info needs to travel from the extension.
+
+async function recordFirstVisitIfMissing(userId, pingIso) {
+  if (!userId) return;
+  if (typeof pingIso !== "string" || !pingIso.trim()) return;
+
+  const date = pingIso.slice(0, 10); // YYYY-MM-DD (UTC date of the ping)
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return;
+
+  try {
+    if (driver.isPostgres) {
+      await driver.run(
+        `INSERT INTO first_visits (user_id, date, first_ping_iso)
+         VALUES (?, ?, ?)
+         ON CONFLICT(user_id, date) DO NOTHING`,
+        [userId, date, pingIso],
+      );
+    } else {
+      driver.run(
+        `INSERT INTO first_visits (user_id, date, first_ping_iso)
+         VALUES (?, ?, ?)
+         ON CONFLICT(user_id, date) DO NOTHING`,
+        [userId, date, pingIso],
+      );
+    }
+  } catch (err) {
+    // Never let first-visit bookkeeping break screen-time ingestion.
+    console.error("[first-visit] Failed to record first visit:", err.message);
+  }
+}
+
+async function getFirstVisit(userId, date) {
+  if (!userId || !date) return null;
+  const row = await driver.get(
+    `SELECT first_ping_iso FROM first_visits WHERE user_id = ? AND date = ?`,
+    [userId, date],
+  );
+  return row ? String(row.first_ping_iso) : null;
 }
 
 // ─── PostgreSQL Driver ──────────────────────────────────────────────────────
@@ -711,6 +767,21 @@ async function createPostgresDriver(connectionString) {
         await pool.query(`DELETE FROM daily_goals WHERE user_id = ''`);
       } catch (_) {}
 
+      // Migration: ensure first_visits table exists (created by base DDL above).
+      // Any future first_visits migrations go here, mirroring the SQLite path.
+      try {
+        const fv = await pool.query(`
+          SELECT 1 FROM information_schema.tables
+          WHERE table_name = 'first_visits'
+        `);
+        if (fv.rows.length === 0) {
+          await pool.query(sql_schema_first_visits_fragment_pg);
+          console.log("[db] PostgreSQL migration: ensured first_visits table");
+        }
+      } catch (err) {
+        console.error("[db] PostgreSQL migration error (first_visits):", err.message);
+      }
+
       console.log("[db] PostgreSQL schema ready");
     },
 
@@ -774,6 +845,16 @@ const sql_schema = `
   );
 
   CREATE INDEX IF NOT EXISTS idx_daily_goals_domain ON daily_goals(domain);
+
+  CREATE TABLE IF NOT EXISTS first_visits (
+    user_id         TEXT NOT NULL,
+    date            TEXT NOT NULL,
+    first_ping_iso TEXT NOT NULL,
+    recorded_at    TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (user_id, date)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_first_visits_date ON first_visits(date);
 `;
 
 // PostgreSQL schema uses SERIAL instead of AUTOINCREMENT and BOOLEAN + NOW()
@@ -804,6 +885,42 @@ const sql_schema_pg = `
   );
 
   CREATE INDEX IF NOT EXISTS idx_daily_goals_domain ON daily_goals(domain);
+
+  CREATE TABLE IF NOT EXISTS first_visits (
+    user_id         TEXT NOT NULL,
+    date            TEXT NOT NULL,
+    first_ping_iso TEXT NOT NULL,
+    recorded_at    TIMESTAMP NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (user_id, date)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_first_visits_date ON first_visits(date);
+`;
+
+// ─── first_visits DDL fragments (used by migrations to ensure the table exists)
+// Kept separate from sql_schema / sql_schema_pg so migrations can re-run them
+// safely even if the base DDL was added in a previous version.
+const sql_schema_first_visits_fragment = `
+  CREATE TABLE IF NOT EXISTS first_visits (
+    user_id         TEXT NOT NULL,
+    date            TEXT NOT NULL,
+    first_ping_iso TEXT NOT NULL,
+    recorded_at    TEXT NOT NULL DEFAULT (datetime('now')),\r\n    PRIMARY KEY (user_id, date)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_first_visits_date ON first_visits(date);
+`;
+
+const sql_schema_first_visits_fragment_pg = `
+  CREATE TABLE IF NOT EXISTS first_visits (
+    user_id         TEXT NOT NULL,
+    date            TEXT NOT NULL,
+    first_ping_iso TEXT NOT NULL,
+    recorded_at    TIMESTAMP NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (user_id, date)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_first_visits_date ON first_visits(date);
 `;
 
 // ─── Database Helper Functions ──────────────────────────────────────────────
@@ -1241,6 +1358,11 @@ app.post("/api/screen-time", requireAuth, async (req, res) => {
 
     await insertScreenTimeLog(entry);
 
+    // Record the first trackable ping of the day (UTC date), if this is the first.
+    // The dashboard later converts the stored UTC ISO to the viewer's local time, so
+    // no timezone travels from the extension and users need do nothing.
+    recordFirstVisitIfMissing(entry.userId, entry.timestamp);
+
     // Invalidate cached reads for this user so the next dashboard/badge
     // request reflects the freshly-inserted data.
     cacheInvalidateUser(entry.userId);
@@ -1292,6 +1414,8 @@ app.get("/api/dashboard", requireAuth, async (req, res) => {
     const effectiveDate =
       requestedDate || new Date().toISOString().slice(0, 10);
 
+    const firstVisitIso = await getFirstVisit(userId, effectiveDate);
+
     return res.json({
       date: effectiveDate,
       totalDomains,
@@ -1299,6 +1423,7 @@ app.get("/api/dashboard", requireAuth, async (req, res) => {
       topDomain,
       domains,
       availableDates,
+      firstVisit: firstVisitIso || null,
       allowSeed: !driver.isPostgres,
     });
   } catch (err) {
@@ -1385,6 +1510,7 @@ app.get("/api/summary", requireAuth, async (req, res) => {
       domains,
       dailyBreakdown,
       availableDates,
+      firstVisit: await getFirstVisit(userId, endDate) || null,
       allowSeed: !driver.isPostgres,
     });
   } catch (err) {
