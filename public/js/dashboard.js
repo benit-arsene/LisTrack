@@ -88,6 +88,19 @@
       el.title = domain ? displayName : 'Top Site';
     }
 
+    function updateTopSiteFirstVisit(firstVisitIso, domain) {
+      const el = document.getElementById('topSiteFirstVisit');
+      if (!el) return;
+      const time = formatFirstVisit(firstVisitIso);
+      if (!time || !domain) {
+        el.textContent = '';
+        el.title = '';
+        return;
+      }
+      el.textContent = `First visit · ${domain} · ${time}`;
+      el.title = `First visit to ${domain} · ${time}`;
+    }
+
     function getGradientClass(index) {
       const gradients = [
         'bar-gradient-1', 'bar-gradient-2', 'bar-gradient-3', 'bar-gradient-4',
@@ -1180,6 +1193,7 @@
 
       updateTopSiteName(data.topDomain);
       updateTopSiteFavicon(data.topDomain);
+      updateTopSiteFirstVisit(data.topDomainFirstVisit, data.topDomain);
       updateDomainCount(data);
 
       if (data && data.domains) updateTrackedDomainsList(data);
@@ -1327,6 +1341,7 @@
 
       updateTopSiteName(data.topDomain);
       updateTopSiteFavicon(data.topDomain);
+      updateTopSiteFirstVisit(data.topDomainFirstVisit, data.topDomain);
       updateDomainCount(data);
 
       // Store data for show-more button access

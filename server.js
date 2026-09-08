@@ -532,6 +532,13 @@ async function createSqliteDriver() {
           db.run(sql_schema_first_visits_fragment);
           console.log("[db] SQLite migration: ensured first_visits table");
         }
+        // Migration: ensure first_domain column exists
+        const fvInfo = db.exec("PRAGMA table_info('first_visits')");
+        const fvCols = fvInfo[0]?.values?.map((v) => v[1]) || [];
+        if (!fvCols.includes("first_domain")) {
+          db.run("ALTER TABLE first_visits ADD COLUMN first_domain TEXT NOT NULL DEFAULT ''");
+          console.log("[db] SQLite migration: added first_domain column to first_visits");
+        }
       } catch (err) {
         console.error("[db] SQLite migration error (first_visits):", err.message);
       }
@@ -607,6 +614,39 @@ async function recordFirstVisitIfMissing(userId, pingIso) {
     // Never let first-visit bookkeeping break screen-time ingestion.
     console.error("[first-visit] Failed to record first visit:", err.message);
   }
+}
+
+/**
+ * Get the earliest screen-time timestamp for a specific domain on a given
+ * UTC date — powers the "First visit · site.com" line on the Top Site card.
+ * Reads the earliest recorded ping directly (works retroactively for all
+ * stored data, unlike first_visits which only records the day-wide first ping).
+ */
+async function getFirstVisitForDomain(userId, date, domain) {
+  if (!userId || !date || !domain) return null;
+  const row = await driver.get(
+    `SELECT MIN("timestamp") AS first_iso
+     FROM screen_time
+     WHERE date("timestamp") = ? AND user_id = ? AND domain = ? AND "timestamp" IS NOT NULL`,
+    [date, userId, domain],
+  );
+  return row && row.first_iso ? String(row.first_iso) : null;
+}
+
+/**
+ * Same as getFirstVisitForDomain but scoped to a date range — used by the
+ * week / month / custom period views (the first visit to the top domain
+ * within the viewed period).
+ */
+async function getFirstVisitForDomainInRange(userId, startDate, endDate, domain) {
+  if (!userId || !startDate || !endDate || !domain) return null;
+  const row = await driver.get(
+    `SELECT MIN("timestamp") AS first_iso
+     FROM screen_time
+     WHERE date("timestamp") BETWEEN ? AND ? AND user_id = ? AND domain = ? AND "timestamp" IS NOT NULL`,
+    [startDate, endDate, userId, domain],
+  );
+  return row && row.first_iso ? String(row.first_iso) : null;
 }
 
 async function getFirstVisit(userId, date) {
@@ -1434,6 +1474,9 @@ app.get("/api/dashboard", requireAuth, async (req, res) => {
       requestedDate || new Date().toISOString().slice(0, 10);
 
     const firstVisitIso = await getFirstVisit(userId, effectiveDate);
+    const topDomainFirstVisitIso = topDomain
+      ? await getFirstVisitForDomain(userId, effectiveDate, topDomain)
+      : null;
 
     return res.json({
       date: effectiveDate,
@@ -1443,6 +1486,7 @@ app.get("/api/dashboard", requireAuth, async (req, res) => {
       domains,
       availableDates,
       firstVisit: firstVisitIso || null,
+      topDomainFirstVisit: topDomainFirstVisitIso || null,
       allowSeed: !driver.isPostgres,
     });
   } catch (err) {
@@ -1518,6 +1562,9 @@ app.get("/api/summary", requireAuth, async (req, res) => {
     const totalMinutes = domains.reduce((sum, d) => sum + d.totalMinutes, 0);
     const totalDomains = domains.length;
     const topDomain = domains.length > 0 ? domains[0].domain : null;
+    const topDomainFirstVisitIso = topDomain
+      ? await getFirstVisitForDomainInRange(userId, start, end, topDomain)
+      : null;
 
     return res.json({
       period,
@@ -1530,6 +1577,7 @@ app.get("/api/summary", requireAuth, async (req, res) => {
       dailyBreakdown,
       availableDates,
       firstVisit: await getFirstVisit(userId, end) || null,
+      topDomainFirstVisit: topDomainFirstVisitIso || null,
       allowSeed: !driver.isPostgres,
     });
   } catch (err) {
