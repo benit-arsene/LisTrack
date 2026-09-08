@@ -1510,7 +1510,7 @@ app.get("/api/summary", requireAuth, async (req, res) => {
       domains,
       dailyBreakdown,
       availableDates,
-      firstVisit: await getFirstVisit(userId, endDate) || null,
+      firstVisit: await getFirstVisit(userId, end) || null,
       allowSeed: !driver.isPostgres,
     });
   } catch (err) {
