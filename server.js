@@ -677,6 +677,26 @@ async function getFirstVisit(userId, date) {
   return null;
 }
 
+/**
+ * Get the domain + ISO timestamp of the very first screen-time ping on a
+ * given UTC date — powers the "First site visited" line under the Websites
+ * section. Reads screen_time directly so every recorded domain is eligible
+ * and works retroactively on all existing data.
+ */
+async function getFirstVisitDetails(userId, date) {
+  if (!userId || !date) return null;
+  const row = await driver.get(
+    `SELECT domain, "timestamp" AS first_iso
+     FROM screen_time
+     WHERE date("timestamp") = ? AND user_id = ? AND "timestamp" IS NOT NULL
+     ORDER BY "timestamp"
+     LIMIT 1`,
+    [date, userId],
+  );
+  if (!row || !row.first_iso || !row.domain) return null;
+  return { domain: String(row.domain), iso: String(row.first_iso) };
+}
+
 // ─── PostgreSQL Driver ──────────────────────────────────────────────────────
 
 async function createPostgresDriver(connectionString) {
@@ -1477,6 +1497,7 @@ app.get("/api/dashboard", requireAuth, async (req, res) => {
     const topDomainFirstVisitIso = topDomain
       ? await getFirstVisitForDomain(userId, effectiveDate, topDomain)
       : null;
+    const firstVisitDetails = await getFirstVisitDetails(userId, effectiveDate);
 
     return res.json({
       date: effectiveDate,
@@ -1486,6 +1507,7 @@ app.get("/api/dashboard", requireAuth, async (req, res) => {
       domains,
       availableDates,
       firstVisit: firstVisitIso || null,
+      firstVisitDomain: firstVisitDetails ? firstVisitDetails.domain : null,
       topDomainFirstVisit: topDomainFirstVisitIso || null,
       allowSeed: !driver.isPostgres,
     });
@@ -1565,6 +1587,7 @@ app.get("/api/summary", requireAuth, async (req, res) => {
     const topDomainFirstVisitIso = topDomain
       ? await getFirstVisitForDomainInRange(userId, start, end, topDomain)
       : null;
+    const firstVisitDetails = await getFirstVisitDetails(userId, end);
 
     return res.json({
       period,
@@ -1577,6 +1600,7 @@ app.get("/api/summary", requireAuth, async (req, res) => {
       dailyBreakdown,
       availableDates,
       firstVisit: await getFirstVisit(userId, end) || null,
+      firstVisitDomain: firstVisitDetails ? firstVisitDetails.domain : null,
       topDomainFirstVisit: topDomainFirstVisitIso || null,
       allowSeed: !driver.isPostgres,
     });

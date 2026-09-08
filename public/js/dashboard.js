@@ -101,6 +101,19 @@
       el.title = `First visit to ${domain} · ${time}`;
     }
 
+    function updateFirstSiteVisitedLine(firstVisitDomain, firstVisitIso) {
+      const el = document.getElementById('firstSiteVisitedLine');
+      if (!el) return;
+      const time = formatFirstVisit(firstVisitIso);
+      if (!time || !firstVisitDomain) {
+        el.textContent = '';
+        el.classList.add('hidden');
+        return;
+      }
+      el.textContent = `First site visited · ${firstVisitDomain} · ${time}`;
+      el.classList.remove('hidden');
+    }
+
     function getGradientClass(index) {
       const gradients = [
         'bar-gradient-1', 'bar-gradient-2', 'bar-gradient-3', 'bar-gradient-4',
@@ -1194,6 +1207,7 @@
       updateTopSiteName(data.topDomain);
       updateTopSiteFavicon(data.topDomain);
       updateTopSiteFirstVisit(data.topDomainFirstVisit, data.topDomain);
+      updateFirstSiteVisitedLine(data.firstVisitDomain, data.firstVisit);
       updateDomainCount(data);
 
       if (data && data.domains) updateTrackedDomainsList(data);
@@ -1342,6 +1356,7 @@
       updateTopSiteName(data.topDomain);
       updateTopSiteFavicon(data.topDomain);
       updateTopSiteFirstVisit(data.topDomainFirstVisit, data.topDomain);
+      updateFirstSiteVisitedLine(data.firstVisitDomain, data.firstVisit);
       updateDomainCount(data);
 
       // Store data for show-more button access
