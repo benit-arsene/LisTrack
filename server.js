@@ -615,7 +615,26 @@ async function getFirstVisit(userId, date) {
     `SELECT first_ping_iso FROM first_visits WHERE user_id = ? AND date = ?`,
     [userId, date],
   );
-  return row ? String(row.first_ping_iso) : null;
+  if (row && row.first_ping_iso) return String(row.first_ping_iso);
+
+  // Fallback: If no dedicated first_visit was recorded (e.g. browsing started before
+  // table creation or on older logs), find the earliest timestamp in screen_time for that date.
+  try {
+    const fallbackRow = await driver.get(
+      `SELECT MIN("timestamp") AS first_ping_iso
+       FROM screen_time
+       WHERE date("timestamp") = ? AND user_id = ? AND "timestamp" IS NOT NULL`,
+      [date, userId],
+    );
+    if (fallbackRow && fallbackRow.first_ping_iso) {
+      const iso = String(fallbackRow.first_ping_iso);
+      // Auto-backfill into first_visits for instant subsequent lookups
+      void recordFirstVisitIfMissing(userId, iso);
+      return iso;
+    }
+  } catch (_) {}
+
+  return null;
 }
 
 // ─── PostgreSQL Driver ──────────────────────────────────────────────────────
