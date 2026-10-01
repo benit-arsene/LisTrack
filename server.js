@@ -26,6 +26,7 @@ const express = require("express");
 const cors = require("cors");
 const path = require("path");
 const fs = require("fs");
+const { rateLimit } = require("express-rate-limit");
 const sessionStore = require("./session");
 
 const {
@@ -37,6 +38,43 @@ const {
 const app = express();
 const PORT = process.env.PORT || 3000;
 const USE_PG = !!process.env.DATABASE_URL;
+
+/**
+ * Read a positive integer tuning knob from the environment, falling back to a
+ * safe production default when unset or malformed.
+ *
+ * Used by the H1 rate limiters so that operators can tune thresholds without a
+ * code change, and so tests can raise the ceilings instead of tripping them.
+ */
+function intFromEnv(name, fallback) {
+  const raw = process.env[name];
+  if (raw === undefined || raw === "") return fallback;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || !Number.isInteger(parsed) || parsed <= 0) {
+    console.warn(
+      `[config] Ignoring invalid ${name}=${raw} (expected a positive integer); using ${fallback}.`,
+    );
+    return fallback;
+  }
+  return parsed;
+}
+
+/**
+ * True when this request presents a credential that would be verified against
+ * Google's tokeninfo endpoint — i.e. the request would cause an outbound
+ * third-party call.
+ *
+ * Used to decide which requests count against the tight OAuth limiter. Session
+ * cookie traffic costs no outbound call, so it is deliberately excluded and
+ * keeps its normal, much more generous budget.
+ */
+function isGoogleVerificationCandidate(req) {
+  const auth = req.headers.authorization || "";
+  if (typeof auth === "string" && auth.startsWith("Bearer ")) return true;
+  const query = req.query || {};
+  const token = query.access_token;
+  return typeof token === "string" && token.length > 0;
+}
 
 // Badge color scale — the extension's toolbar badge reaches full red at this
 // many hours of daily screen time. Returned on every /api/screen-time ping
@@ -51,10 +89,118 @@ const BADGE_MAX_HOURS = 10;
 const FLUSH_INTERVAL_SECONDS = 30;
 
 // ─── Middleware ──────────────────────────────────────────────────────────────
+//
+// ORDERING IS LOAD-BEARING (H1). The chain must be:
+//
+//   trust proxy → global rate limiter → body parsers → routes
+//
+// so that a request is throttled BEFORE it can reach any expensive work — in
+// particular before Google OAuth/tokeninfo verification, which performs an
+// outbound third-party request per attempt. Do not move the limiter below the
+// body parsers or below the routes.
+//
+// ── Proxy trust (H1) ───────────────────────────────────────────────────────
+//
+// Production runs on Render, which terminates every inbound connection at a
+// reverse proxy. Without this setting Express derives req.ip from the socket
+// address, so EVERY client appears as the Render proxy — a per-IP rate limiter
+// would then treat all users as one shared bucket and throttle innocent
+// traffic the moment any single client misbehaved.
+//
+// `1` (a fixed hop count) is used deliberately instead of `true`. `true` means
+// "trust the entire X-Forwarded-For chain", which lets a client that can reach
+// the origin directly spoof its own address and escape the limiter entirely.
+// A single hop matches Render's topology: exactly one trusted proxy appends to
+// the header, so the last entry is the real client.
+//
+// This MUST be set before any IP-keyed limiter is created — express-rate-limit
+// captures the trust-proxy setting when the middleware is constructed.
+app.set("trust proxy", 1);
 
+// ── Global rate limiter (H1) ───────────────────────────────────────────────
+//
+// Bounds inbound requests across the whole application, including static
+// assets, so no route — authenticated or not — can be used to generate
+// unbounded traffic.
+//
+// 300 requests / 60 s per client IP. This ceiling is intentionally generous:
+// one user generates on the order of 10-20 requests/minute (badge alarm once
+// a minute, screen-time flush every 30 s, goal checks, and a one-off burst of
+// ~8 requests when the dashboard page loads), and a small office or campus
+// NAT can put dozens of users behind a single address. The limiter exists to
+// stop abuse, not to ration normal use.
+//
+// LIMITATION: the default store is in-process memory, so counters are NOT
+// shared between instances. This deployment runs a single instance, which is
+// correct today; if it is ever scaled horizontally this limiter must be given
+// a shared store (e.g. the optional `rate-limit-redis`) or it will effectively
+// multiply the permitted rate by the instance count.
+const RATE_LIMIT_WINDOW_MS = intFromEnv("RATE_LIMIT_WINDOW_MS", 60_000);
+const RATE_LIMIT_MAX = intFromEnv("RATE_LIMIT_MAX", 300);
+
+const globalLimiter = rateLimit({
+  windowMs: RATE_LIMIT_WINDOW_MS,
+  limit: RATE_LIMIT_MAX,
+  standardHeaders: true, // RateLimit-Limit / -Remaining / -Reset
+  legacyHeaders: false, // do not emit the deprecated X-RateLimit-* form
+  message: {
+    status: "error",
+    message:
+      "Too many requests. Please slow down and try again in a moment.",
+  },
+});
+
+// ── OAuth verification limiter (H1) ───────────────────────────────────────
+//
+// A far tighter budget for the only requests that cause an outbound call to
+// Google. `skip` keeps ordinary authenticated traffic out of this bucket: a
+// request only counts when it actually presents a credential that would be
+// verified against Google's tokeninfo endpoint (a `?access_token=` on
+// /dashboard, or an `Authorization: Bearer` header on the API). Dashboard and
+// extension traffic that authenticates with a session cookie is unaffected.
+//
+// Paired with the negative cache and structural pre-validation in
+// verifyGoogleAccessToken(), this means an attacker cannot turn inbound
+// requests into an unbounded stream of Google tokeninfo calls.
+const OAUTH_RATE_LIMIT_WINDOW_MS = intFromEnv(
+  "OAUTH_RATE_LIMIT_WINDOW_MS",
+  60_000,
+);
+const OAUTH_RATE_LIMIT_MAX = intFromEnv("OAUTH_RATE_LIMIT_MAX", 60);
+
+const oauthVerificationLimiter = rateLimit({
+  windowMs: OAUTH_RATE_LIMIT_WINDOW_MS,
+  limit: OAUTH_RATE_LIMIT_MAX,
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: (req) => !isGoogleVerificationCandidate(req),
+  message: {
+    status: "error",
+    message:
+      "Too many authentication attempts. Please wait a moment and try again.",
+  },
+});
+
+app.use(globalLimiter);
 app.use(cors());
-app.use(express.json({ type: "application/json" }));
-app.use(express.text({ type: "text/plain" }));
+
+// ── Explicit body-size limits (H1) ────────────────────────────────────────
+//
+// 64 kB, chosen deliberately rather than inherited. The largest body this
+// application legitimately accepts is a single screen-time record — a domain,
+// a path, a duration and a sequence id, roughly 200 bytes — plus the small
+// JSON donation form. 64 kB therefore leaves well over two orders of
+// magnitude of headroom while still refusing oversized payloads with 413
+// instead of buffering them into memory.
+//
+// The limit is a valid body-parser size string on purpose: body-parser
+// silently DISABLES size enforcement when handed an unparseable limit value
+// (GHSA-v422-hmwv-36x6), which would turn this into a no-op. The H1 tests
+// assert a real 413 so that regression cannot go unnoticed.
+const REQUEST_BODY_LIMIT = "64kb";
+
+app.use(express.json({ type: "application/json", limit: REQUEST_BODY_LIMIT }));
+app.use(express.text({ type: "text/plain", limit: REQUEST_BODY_LIMIT }));
 
 // Redirect old /dashboard.html links to clean /dashboard (preserves query params like ?user=TOKEN)
 app.use((req, res, next) => {
@@ -153,6 +299,7 @@ function isValidEmail(email) {
 
 const verifiedTokenCache = new Map(); // accessToken → { email, expiresAt }
 const TOKEN_CACHE_MAX_MS = 10 * 60 * 1000;
+const TOKEN_CACHE_MAX_ENTRIES = 500;
 
 function getCachedVerifiedToken(accessToken) {
   const entry = verifiedTokenCache.get(accessToken);
@@ -164,46 +311,150 @@ function getCachedVerifiedToken(accessToken) {
   return entry.email;
 }
 
+/**
+ * Insert with a hard size bound, evicting the OLDEST entry rather than
+ * clearing the whole map. Clearing would let a spammer discard every valid
+ * cached token at once; first-in-first-out eviction keeps the cache useful
+ * while still guaranteeing the bound.
+ *
+ * Callers must only reach here for input that already passed
+ * isStructurallyValidAccessToken(), so keys are length-bounded.
+ */
+function setBounded(cache, key, value) {
+  if (cache.size >= TOKEN_CACHE_MAX_ENTRIES) {
+    const oldestKey = cache.keys().next().value;
+    if (oldestKey !== undefined) cache.delete(oldestKey);
+  }
+  cache.set(key, value);
+}
+
 function cacheVerifiedToken(accessToken, email, ttlMs) {
   // Bound the cache so attacker-spammed garbage tokens can't grow it unbounded.
-  if (verifiedTokenCache.size > 500) verifiedTokenCache.clear();
-  verifiedTokenCache.set(accessToken, {
+  setBounded(verifiedTokenCache, accessToken, {
     email,
     expiresAt: Date.now() + Math.min(Math.max(ttlMs, 1000), TOKEN_CACHE_MAX_MS),
   });
+}
+
+// ─── Negative cache for failed verification (H1) ───────────────────────────
+//
+// Before this, every invalid token produced a fresh outbound call to Google's
+// tokeninfo endpoint: an unauthenticated attacker could convert inbound
+// requests directly into third-party API traffic, each attempt also blocking a
+// server-side socket for roughly a second while Google was queried.
+//
+// Remembering failures briefly makes a repeated attempt free. The TTL is
+// deliberately SHORT (60 s): it exists to absorb a burst or a scripted replay
+// of one token, not to become a durable revocation list. A token that becomes
+// valid again is re-checked within a minute, which is an acceptable trade for
+// removing the amplification path.
+//
+// Memory is bounded twice over — by TOKEN_CACHE_MAX_ENTRIES, and by only
+// caching tokens that passed structural validation, so a key is never
+// attacker-sized. The raw token is used as the in-memory key but is never
+// logged and never persisted.
+const failedTokenCache = new Map(); // accessToken → { expiresAt }
+const NEGATIVE_CACHE_MAX_MS = 60 * 1000;
+
+function getCachedTokenFailure(accessToken) {
+  const entry = failedTokenCache.get(accessToken);
+  if (!entry) return false;
+  if (entry.expiresAt <= Date.now()) {
+    failedTokenCache.delete(accessToken);
+    return false;
+  }
+  return true;
+}
+
+function cacheTokenFailure(accessToken) {
+  setBounded(failedTokenCache, accessToken, {
+    expiresAt: Date.now() + NEGATIVE_CACHE_MAX_MS,
+  });
+}
+
+/**
+ * Conservative structural validation applied BEFORE any cache lookup and
+ * before any outbound request.
+ *
+ * Purpose: reject input that cannot possibly be a Google OAuth access token,
+ * so that obvious garbage never consumes a cache slot and never causes a
+ * tokeninfo round-trip. It is deliberately NOT a token parser:
+ *
+ *   • No prefix requirement. Google has changed token formats before, and
+ *     chrome.identity.getAuthToken() is not contractually bound to one. Only
+ *     lengths and characters are checked.
+ *   • Length window. Empty input is rejected; 2048 characters is far above any
+ *     real Google access token, so it bounds the damage of an absurd key; 20
+ *     characters is far below one, so it rejects short junk without
+ *     constraining the format.
+ *   • Character set. Base64/base64url plus a few separators. This is the widest
+ *     set any plausible encoding could use, so a legitimate token passes, and
+ *     it still excludes whitespace, control characters, quotes and angle
+ *     brackets — the characters that make a request hostile rather than
+ *     merely invalid.
+ *
+ * @returns {boolean} true when the token is worth verifying.
+ */
+function isStructurallyValidAccessToken(token) {
+  if (typeof token !== "string") return false;
+  const value = token.trim();
+  if (value.length === 0 || value.length > 2048 || value.length < 20) {
+    return false;
+  }
+  return /^[A-Za-z0-9._~+/=-]+$/.test(value);
 }
 
 /**
  * Verify a Google OAuth access token against Google's tokeninfo endpoint.
  * Returns the verified (lowercased) email, or null when the token is
  * invalid, expired, or was not issued to our OAuth client.
- * Freshly-verified tokens are cached in memory to keep re-checks cheap.
+ *
+ * H1: verification is now guarded on three sides, in order of cost:
+ *   1. structural validation — garbage never reaches a cache or the network;
+ *   2. positive cache — a known-good token costs nothing;
+ *   3. negative cache — a known-bad token costs nothing for a short window;
+ * and the caller-side oauthVerificationLimiter bounds how many times a
+ * distinct token can reach Google at all.
  */
 async function verifyGoogleAccessToken(accessToken) {
   if (typeof accessToken !== "string" || !accessToken.trim()) return null;
   const token = accessToken.trim();
 
+  // (1) Reject garbage before it can become a cache key or a network call.
+  if (!isStructurallyValidAccessToken(token)) return null;
+
+  // (2) Known-good tokens are free.
   const cached = getCachedVerifiedToken(token);
   if (cached) return cached;
+
+  // (3) Known-bad tokens are free for a short window.
+  if (getCachedTokenFailure(token)) return null;
 
   try {
     const resp = await fetch(
       `${GOOGLE_TOKENINFO_URL}?access_token=${encodeURIComponent(token)}`,
       { signal: AbortSignal.timeout(8000) },
     );
-    if (!resp.ok) return null; // invalid / expired token → HTTP 400
+    if (!resp.ok) {
+      cacheTokenFailure(token);
+      return null; // invalid / expired token → HTTP 400
+    }
     const info = await resp.json();
 
     // Email must be present, verified, and shaped like an email.
     const emailVerified =
       info.email_verified === "true" || info.email_verified === true;
-    if (!emailVerified || !isValidEmail(info.email || "")) return null;
+    if (!emailVerified || !isValidEmail(info.email || "")) {
+      cacheTokenFailure(token);
+      return null;
+    }
 
     // The token must have been issued to OUR OAuth client (extension client_id).
     if (OAUTH_CLIENT_ID && info.aud !== OAUTH_CLIENT_ID) {
       console.warn(
         `[auth] Token audience mismatch: expected ${OAUTH_CLIENT_ID}, got ${info.aud}`,
       );
+      cacheTokenFailure(token);
       return null;
     }
 
@@ -240,8 +491,22 @@ function redirectToLanding(res) {
  * Client-supplied identity is deliberately NOT consulted. `req.query.user`,
  * `req.body.userToken` and `x-user-token` are ignored entirely: routes must
  * authorize against `req.authenticatedUser`, never against request input.
+ *
+ * H1: authentication is preceded by oauthVerificationLimiter, so a request can
+ * never reach Google's tokeninfo endpoint without first passing the tight
+ * credential-attempt budget. The limiter skips requests that present no
+ * bearer credential, so cookie-authenticated dashboard traffic is unaffected.
+ * The limiter's `skip` predicate keeps the throttle in front of the bearer
+ * branch below without penalising session-cookie users.
  */
-async function requireAuth(req, res, next) {
+function requireAuth(req, res, next) {
+  oauthVerificationLimiter(req, res, (err) => {
+    if (err) return next(err);
+    return authenticateRequest(req, res, next);
+  });
+}
+
+async function authenticateRequest(req, res, next) {
   try {
     const cookies = parseCookies(req.headers.cookie);
     const sessionId = cookies[SESSION_COOKIE] ? String(cookies[SESSION_COOKIE]).trim() : "";
@@ -298,7 +563,10 @@ async function requireAuth(req, res, next) {
  *   anything else        → immediately redirect to the landing page.
  *   (missing token, invalid token, or a legacy /dashboard?user=... link)
  */
-app.get("/dashboard", async (req, res) => {
+// H1: the OAuth limiter runs ahead of the handler so that ?access_token=…
+// requests are budgeted before any tokeninfo call is made. It skips requests
+// without that parameter, so a session-cookie dashboard load is unaffected.
+app.get("/dashboard", oauthVerificationLimiter, async (req, res) => {
   const query = req.query || {};
   const cookies = parseCookies(req.headers.cookie);
 
