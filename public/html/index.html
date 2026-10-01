@@ -316,6 +316,45 @@
     </div>
   </div>
 
+  <!-- Open-From-Extension Modal (hidden by default) -->
+  <!--
+    Shown when the extension IS installed. Dashboard sign-in is completed by
+    the extension itself: the service worker opens /dashboard with the Google
+    token attached, the server verifies it, and a secure HttpOnly session
+    cookie is set. This page is never given the token (see the C2 note on
+    openDashboard() below).
+  -->
+  <div id="openFromExtensionModal" class="hidden fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm fade-in">
+    <div class="bg-white dark:bg-gray-800 rounded-2xl shadow-xl border border-gray-200 dark:border-gray-700 max-w-sm mx-4 p-6 text-center">
+      <div class="inline-flex items-center justify-center w-14 h-14 bg-indigo-100 dark:bg-indigo-900/40 rounded-2xl mb-4">
+        <svg class="w-7 h-7 text-indigo-600 dark:text-indigo-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M15.75 5.25a3 3 0 013 3m3 0a6 6 0 01-.75 3M18.75 15.75a3 3 0 01-3 3m0 0a6 6 0 01-3-.75M9.75 18.75a3 3 0 01-3-3m0 0a6 6 0 00.75-3M5.25 8.25a3 3 0 013-3m0 0a6 6 0 013 .75" />
+        </svg>
+      </div>
+      <h3 class="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-2">Open from the Extension</h3>
+      <p class="text-sm text-gray-500 dark:text-gray-400 mb-6">
+        Click the LisTrack icon in your Chrome toolbar, then choose
+        <strong>Open Dashboard</strong>. For security, your Google sign-in is
+        completed inside the extension &mdash; this page never receives your
+        access token.
+      </p>
+      <div class="flex flex-col gap-3">
+        <button
+          onclick="closeOpenFromExtensionModal()"
+          class="inline-flex items-center justify-center gap-2 px-5 py-2.5 text-sm font-semibold text-white bg-indigo-600 rounded-xl hover:bg-indigo-700 transition-all duration-150 shadow-sm"
+        >
+          Got it
+        </button>
+        <button
+          onclick="closeOpenFromExtensionModal()"
+          class="text-sm font-medium text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 transition-colors"
+        >
+          Close
+        </button>
+      </div>
+    </div>
+  </div>
+
   <script>
     // ─── Download Extension (with loading state) ───────────────────────────
     // The buttons fetch the zip, show a spinner while it's being prepared,
@@ -464,11 +503,19 @@
     // ─── Dashboard Access with Extension Detection ──────────────────────────
 
     /**
-     * Check if the LisTrack extension is installed and navigate accordingly.
-     * - Extension IS installed → ask it (via the tracker.js bridge) for the
-     *   Google access token, then open /dashboard?access_token=... so the
-     *   server can verify the token before serving the dashboard.
-     * - Extension is NOT installed → show a modal prompting installation.
+     * Open the LisTrack dashboard.
+     *
+     * This page deliberately does NOT request a Google OAuth token from the
+     * extension. A previous version dispatched a `lisTrack:getAccessToken`
+     * DOM event and received the raw access token back, which meant any
+     * website running this same page could harvest the signed-in user's
+     * token. That bridge has been removed.
+     *
+     * Dashboard authentication is now performed entirely inside the
+     * extension: open it from the LisTrack toolbar icon (or the right-click
+     * context menu), and the service worker navigates to /dashboard with the
+     * token attached, the server verifies it, and a secure HttpOnly session
+     * cookie is set.
      */
     function openDashboard() {
       var isInstalled = document.documentElement.dataset.lisTrackInstalled === 'true';
@@ -478,37 +525,31 @@
         return;
       }
 
-      // Ask the extension for a Google access token. If we can't get one,
-      // the server bounces unauthenticated visits back to the landing page.
-      var requestId = 'lt' + Date.now() + Math.random().toString(36).slice(2);
-      var timedOut = false;
-      var timer = setTimeout(function () {
-        timedOut = true;
-        window.location.href = '/dashboard';
-      }, 3000);
-
-      function onTokenResponse(e) {
-        var detail = e.detail || {};
-        if (detail.requestId !== requestId || timedOut) return;
-        clearTimeout(timer);
-        window.removeEventListener('lisTrack:accessTokenResponse', onTokenResponse);
-        var url = detail.accessToken
-          ? '/dashboard?access_token=' + encodeURIComponent(detail.accessToken)
-          : '/dashboard';
-        window.location.href = url;
+      // Extension is installed — point the user at the extension, which is
+      // the only context allowed to handle the credential.
+      var modal = document.getElementById('openFromExtensionModal');
+      if (modal) {
+        modal.classList.remove('hidden');
+        return;
       }
-
-      window.addEventListener('lisTrack:accessTokenResponse', onTokenResponse);
-      window.dispatchEvent(new CustomEvent('lisTrack:getAccessToken', { detail: { requestId: requestId } }));
+      window.location.href = '/dashboard';
     }
 
     function closeInstallModal() {
       document.getElementById('installModal').classList.add('hidden');
     }
 
+    function closeOpenFromExtensionModal() {
+      var modal = document.getElementById('openFromExtensionModal');
+      if (modal) modal.classList.add('hidden');
+    }
+
     // Close modal on Escape key
     document.addEventListener('keydown', function (e) {
-      if (e.key === 'Escape') closeInstallModal();
+      if (e.key === 'Escape') {
+        closeInstallModal();
+        closeOpenFromExtensionModal();
+      }
     });
 
     // Close modal on backdrop click
@@ -517,6 +558,12 @@
       if (modal) {
         modal.addEventListener('click', function (e) {
           if (e.target === modal) closeInstallModal();
+        });
+      }
+      var extModal = document.getElementById('openFromExtensionModal');
+      if (extModal) {
+        extModal.addEventListener('click', function (e) {
+          if (e.target === extModal) closeOpenFromExtensionModal();
         });
       }
     });

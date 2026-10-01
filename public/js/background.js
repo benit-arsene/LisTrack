@@ -152,7 +152,9 @@ function isBlockedDomain(domain) {
  */
 async function fetchGoalStatus(userId) {
   try {
-    const response = await fetch(`${SERVER_URL}/api/goals/status?user=${encodeURIComponent(userId)}`, {
+    // No `?user=` — the server derives identity from the verified bearer
+    // token. `userId` is still used locally to gate on sign-in.
+    const response = await fetch(`${SERVER_URL}/api/goals/status`, {
       headers: await authedFetchHeaders(),
     });
     if (!response.ok) return null;
@@ -507,7 +509,7 @@ async function updateBadge() {
     // Use the lightweight /api/today endpoint instead of the full dashboard.
     // This avoids fetching the entire per-domain breakdown just for the
     // total minutes needed to render the badge.
-    const resp = await fetch(`${SERVER_URL}/api/today?user=${encodeURIComponent(userId)}`, {
+    const resp = await fetch(`${SERVER_URL}/api/today`, {
       headers: await authedFetchHeaders(),
     });
     if (!resp.ok) return;
@@ -728,8 +730,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           ? { Authorization: `Bearer ${accessToken}` }
           : {};
         const [dashboardResp, goalsResp] = await Promise.all([
-          fetch(`${SERVER_URL}/api/dashboard?user=${encodeURIComponent(userId)}`, { headers }),
-          fetch(`${SERVER_URL}/api/goals/status?user=${encodeURIComponent(userId)}`, { headers }),
+          fetch(`${SERVER_URL}/api/dashboard`, { headers }),
+          fetch(`${SERVER_URL}/api/goals/status`, { headers }),
         ]);
 
         const dashboard = dashboardResp.ok ? await dashboardResp.json() : null;
@@ -737,27 +739,37 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
         sendResponse({
           token: userId,
-          accessToken,
+          // Never return the Google access token to a renderer (C2). The
+          // popup opens the dashboard by asking for 'openDashboard', and
+          // this worker performs the authenticated navigation itself.
           dashboard,
           goals: goals ? goals.goals : null,
         });
       } catch (err) {
         console.error('[background] Failed to fetch dashboard summary:', err);
-        sendResponse({ token: userId, accessToken: null, dashboard: null, goals: null });
+        sendResponse({ token: userId, dashboard: null, goals: null });
       }
     });
     return true;
   }
 
-  // Hand the Google access token to the landing page (via the tracker.js
-  // content-script bridge) so its Dashboard button can open /dashboard
-  // with a verified token instead of the legacy ?user= parameter.
-  if (message && message.type === 'getAccessToken') {
-    getGoogleAccessToken().then((accessToken) => {
-      sendResponse({ accessToken });
-    });
+  // Open the dashboard on behalf of an extension page (the popup).
+  // The token is attached HERE and used by openDashboardWithToken to build the
+  // navigation URL; it is never returned to the caller. This is the secure
+  // replacement for handing a token back to a renderer (C2).
+  if (message && message.type === 'openDashboard') {
+    openDashboardWithToken().then(() => sendResponse({ opened: true }));
     return true;
   }
+
+  // NOTE (C2): the former `getAccessToken` message handler was removed.
+  // It existed only to serve the tracker.js content-script bridge, and it
+  // returned the raw Google OAuth access token. Because tracker.js runs on
+  // every http(s) page, any website could message the extension and receive
+  // that token. No caller remains: dashboard navigation is handled entirely
+  // inside this worker by openDashboardWithToken(), which never discloses the
+  // token to page content. Do not reintroduce a handler that returns a
+  // credential to a content script.
 
   if (!message || !message.domain) return;
 
@@ -778,9 +790,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendResponse({ received: false, requiresAuth: true });
         return;
       }
-      // Forward the payload tagged with the signed-in email so the server
-      // attributes the data to this Google account.
-      const payload = { ...message, userToken: userId };
+      // Forward the payload as-is. No identity field is attached: the server
+      // attributes the data to the account behind the verified bearer token
+      // in the Authorization header.
+      const payload = { ...message };
       let response;
       try {
         response = await fetch(`${SERVER_URL}/api/screen-time`, {
@@ -947,8 +960,8 @@ async function syncServerGoalsToLimits() {
   try {
     const headers = await authedFetchHeaders();
     const [goalsResp, statusResp] = await Promise.all([
-      fetch(`${SERVER_URL}/api/goals?user=${encodeURIComponent(userId)}`, { headers }),
-      fetch(`${SERVER_URL}/api/goals/status?user=${encodeURIComponent(userId)}`, { headers }),
+      fetch(`${SERVER_URL}/api/goals`, { headers }),
+      fetch(`${SERVER_URL}/api/goals/status`, { headers }),
     ]);
 
     // 1) Mirror enabled server goals into local blocker limits.
@@ -1035,7 +1048,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       }
       const headers = await authedFetchHeaders();
       const listResp = await fetch(
-        `${SERVER_URL}/api/goals?user=${encodeURIComponent(userId)}`,
+        `${SERVER_URL}/api/goals`,
         { headers }
       );
       if (!listResp.ok) {
@@ -1052,7 +1065,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return;
       }
       const delResp = await fetch(
-        `${SERVER_URL}/api/goals/${goal.id}?user=${encodeURIComponent(userId)}`,
+        `${SERVER_URL}/api/goals/${goal.id}`,
         { method: "DELETE", headers }
       );
       sendResponse({ deleted: delResp.ok });

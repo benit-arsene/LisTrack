@@ -276,16 +276,14 @@
       }
 
       // ─── Build Payload ──────────────────────────────────────────────
-      // userToken = the signed-in Google email (user_id). No fallback
-      // tokens — the sign-in gate guarantees signedInUserId is present.
-      const token = signedInUserId;
-
+      // No userToken: the server attributes the record to the account behind
+      // the verified Google access token attached by the service worker.
+      // The sign-in gate above still guarantees we only send when signed in.
       const payload = {
         domain,
         path: window.location.pathname,
         durationSeconds: durationSeconds,
         timestamp: new Date().toISOString(),
-        userToken: token,
         seq_id: seqId,
         recovered: false,
       };
@@ -458,7 +456,6 @@
           path: data.path,
           durationSeconds: data.activeTimeMs / 1000,
           timestamp: new Date(data.timestamp).toISOString(),
-          userToken: signedInUserId,
           seq_id: data.seqId || generateUuid(),
           recovered: true,
         };
@@ -654,25 +651,20 @@
     document.documentElement.dataset.lisTrackInstalled = 'true';
   }
 
-  // ─── Landing-Page Bridge ────────────────────────────────────────────────
-  // The web landing page (listrack-2.onrender.com) dispatches
-  // `lisTrack:getAccessToken` when its "Open Dashboard" button is clicked, so
-  // it can pass the Google access token (?access_token=...) instead of the
-  // legacy (now rejected) ?user= email parameter. Content scripts and the page
-  // exchange data across the isolated world through DOM events.
-
-  window.addEventListener('lisTrack:getAccessToken', async function (e) {
-    const requestId = e.detail && e.detail.requestId;
-    if (typeof chrome === 'undefined' || !chrome.runtime || !chrome.runtime.sendMessage) return;
-    let accessToken = null;
-    try {
-      const resp = await chrome.runtime.sendMessage({ type: 'getAccessToken' });
-      accessToken = resp && resp.accessToken ? resp.accessToken : null;
-    } catch (_) {}
-    window.dispatchEvent(new CustomEvent('lisTrack:accessTokenResponse', {
-      detail: { requestId: requestId, accessToken: accessToken },
-    }));
-  });
+  // ─── No Webpage Token Bridge (C2) ────────────────────────────────────────
+  // There is deliberately NO listener here for a page-dispatched event.
+  //
+  // This script is injected into every http(s) page, so anything it exposes
+  // on `window` is readable by arbitrary website JavaScript. A previous
+  // version listened for `lisTrack:getAccessToken` and replied with
+  // `lisTrack:accessTokenResponse` carrying the Google OAuth access token,
+  // which let any site the user visited silently harvest that token and mint
+  // a dashboard session as the victim.
+  //
+  // The OAuth token now never crosses into page context. Dashboard navigation
+  // is performed by the service worker itself (openDashboardWithToken in
+  // background.js), which attaches the token to a URL it opens itself.
+  // ─────────────────────────────────────────────────────────────────────────
 
   // ─── Boot ────────────────────────────────────────────────────────────────
   if (typeof navigator.sendBeacon !== "undefined") {

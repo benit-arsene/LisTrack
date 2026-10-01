@@ -26,6 +26,13 @@ const express = require("express");
 const cors = require("cors");
 const path = require("path");
 const fs = require("fs");
+const sessionStore = require("./session");
+
+const {
+  SESSION_TTL_MS,
+  createSession,
+  getSession,
+} = sessionStore;
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -201,65 +208,58 @@ function redirectToLanding(res) {
 /**
  * Session authentication middleware for sensitive /api/* endpoints.
  *
- * The authenticated identity is resolved from (in order):
- *   1. The `lisTrackSession` cookie — minted by /dashboard after the Google
- *      access token was verified (used by same-origin browser calls).
- *   2. An `Authorization: Bearer <Google access token>` header — used by the
- *      extension's cross-origin calls (service worker, popup).
+ * Two credential types are accepted, and both resolve to the SAME trusted
+ * server-side identity: a lowercase, verified email on `req.authenticatedUser`.
  *
- * The claimed user (req.query.user / req.body.userToken / x-user-token header)
- * must match the authenticated email, otherwise the request is rejected with
- * 401 JSON before the route handler runs.
+ *   1. Session cookie (browser dashboard) — the cookie carries ONLY a random
+ *      session id. It is looked up in the server-side store and only a live,
+ *      unexpired record yields an identity. The email is never read from the
+ *      cookie, so a forged `lisTrackSession=<any email>` authenticates nobody.
+ *
+ *   2. `Authorization: Bearer <Google access token>` (extension service worker
+ *      and popup) — verified against Google's tokeninfo endpoint as before.
+ *
+ * Client-supplied identity is deliberately NOT consulted. `req.query.user`,
+ * `req.body.userToken` and `x-user-token` are ignored entirely: routes must
+ * authorize against `req.authenticatedUser`, never against request input.
  */
 async function requireAuth(req, res, next) {
   try {
     const cookies = parseCookies(req.headers.cookie);
-    const sessionEmail = cookies[SESSION_COOKIE]
-      ? String(cookies[SESSION_COOKIE]).trim().toLowerCase()
-      : "";
+    const sessionId = cookies[SESSION_COOKIE] ? String(cookies[SESSION_COOKIE]).trim() : "";
 
-    let headerEmail = "";
-    const authHeader = req.headers.authorization || "";
-    if (authHeader.startsWith("Bearer ")) {
-      headerEmail =
-        (await verifyGoogleAccessToken(authHeader.slice(7).trim())) || "";
+    // ── Path 1: session cookie ──────────────────────────────────────
+    let authenticatedEmail = "";
+    if (sessionId) {
+      const session = getSession(sessionId);
+      if (!session) {
+        // Unknown id, or a record that has expired and been reaped. Both are
+        // indistinguishable to the client, so probing yields no signal.
+        return res.status(401).json({
+          status: "error",
+          message: "Unauthorized — session is invalid or has expired. Sign in again.",
+        });
+      }
+      authenticatedEmail = session.user;
     }
 
-    const authenticatedEmail = sessionEmail || headerEmail;
-    if (!isValidEmail(authenticatedEmail)) {
+    // ── Path 2: Google access token (extension) ─────────────────────
+    if (!authenticatedEmail) {
+      const authHeader = req.headers.authorization || "";
+      if (authHeader.startsWith("Bearer ")) {
+        authenticatedEmail =
+          (await verifyGoogleAccessToken(authHeader.slice(7).trim())) || "";
+      }
+    }
+
+    if (!authenticatedEmail) {
       return res.status(401).json({
         status: "error",
         message: "Unauthorized — sign in with Google to access your data.",
       });
     }
 
-    // Resolve the user this request claims to act on behalf of.
-    let claimed = (req.query && req.query.user) || "";
-    if (!claimed && req.body && typeof req.body === "object" && req.body.userToken) {
-      claimed = req.body.userToken;
-    }
-    // text/plain bodies (legacy sendBeacon path) keep userToken inside the
-    // string — parse it so the claimed user is still enforced.
-    if (!claimed && req.body && typeof req.body === "string") {
-      try {
-        const parsed = JSON.parse(req.body);
-        if (parsed && parsed.userToken) claimed = parsed.userToken;
-      } catch (_) {}
-    }
-    if (!claimed) claimed = req.headers["x-user-token"] || "";
-
-    if (claimed) {
-      if (String(claimed).trim().toLowerCase() !== authenticatedEmail) {
-        console.warn(
-          `[auth] 401: session is ${authenticatedEmail}, request claims ${claimed}`,
-        );
-        return res.status(401).json({
-          status: "error",
-          message: "Unauthorized — session does not match the requested user.",
-        });
-      }
-    }
-
+    // The single source of truth for authorization on every route below.
     req.authenticatedUser = authenticatedEmail;
     next();
   } catch (err) {
@@ -299,17 +299,22 @@ app.get("/dashboard", async (req, res) => {
       return redirectToLanding(res);
     }
 
-    // HTTP-only session cookie for the verified email. Never readable by JS.
+    // Server-side session for the verified email. The cookie carries ONLY the
+    // random session id — never the email, never the OAuth token. Proof of
+    // identity lives only in this process's session store.
+    const session = createSession(email);
+
     const isSecure =
       req.secure ||
       String(req.headers["x-forwarded-proto"] || "")
         .split(",")[0]
         .trim() === "https";
-    res.cookie(SESSION_COOKIE, email, {
+    res.cookie(SESSION_COOKIE, session.id, {
       httpOnly: true,
       secure: isSecure,
       sameSite: "lax",
       path: "/",
+      maxAge: SESSION_TTL_MS,
     });
     console.log(`[auth] Dashboard session started for ${email}`);
 
@@ -324,14 +329,22 @@ app.get("/dashboard", async (req, res) => {
   }
 
   // ─── Session cookie path ────────────────────────────────────────────
-  const sessionEmail = cookies[SESSION_COOKIE];
-  if (!isValidEmail(sessionEmail || "")) {
+  // The cookie holds only a session id. Identity comes from the server-side
+  // record; a cookie whose id is unknown or expired serves nothing.
+  const sessionId = cookies[SESSION_COOKIE] ? String(cookies[SESSION_COOKIE]).trim() : "";
+  const session = sessionId ? getSession(sessionId) : null;
+  if (!session) {
     console.warn("[auth] Rejected dashboard access — no valid session");
     return redirectToLanding(res);
   }
 
-  // Inject the authenticated identity so dashboard.js can scope its API calls.
-  const email = String(sessionEmail).trim().toLowerCase();
+  // Inject the authenticated identity so dashboard.js can render it.
+  const email = session.user;
+  if (!isValidEmail(email || "")) {
+    console.warn("[auth] Rejected dashboard access — malformed session identity");
+    return redirectToLanding(res);
+  }
+
   const safeEmail = email
     .replace(/&/g, "&amp;")
     .replace(/"/g, "&quot;")
@@ -1390,7 +1403,10 @@ app.post("/api/screen-time", requireAuth, async (req, res) => {
       }
     }
 
-    const userToken = payload.userToken || req.headers["x-user-token"] || "";
+    // Identity comes exclusively from requireAuth. A client-supplied
+    // userToken in the body is ignored — data is always attributed to the
+    // authenticated principal.
+    const userToken = req.authenticatedUser;
 
     if (!payload || !payload.domain || !payload.durationSeconds) {
       return res.status(400).json({
@@ -1482,7 +1498,7 @@ app.get("/api/dashboard", requireAuth, async (req, res) => {
         });
     }
 
-    const userId = req.query.user || "";
+    const userId = req.authenticatedUser;
     const domains = await getAggregatedByDomain(requestedDate, userId);
     const availableDates = await getAvailableDates(userId);
 
@@ -1575,7 +1591,7 @@ app.get("/api/summary", requireAuth, async (req, res) => {
       start = range.start;
       end = range.end;
     }
-    const userId = req.query.user || "";
+    const userId = req.authenticatedUser;
 
     const domains = await getAggregatedByDomainForPeriod(start, end, userId);
     const dailyBreakdown = await getDailyBreakdownForPeriod(start, end, userId);
@@ -1616,7 +1632,7 @@ app.get("/api/summary", requireAuth, async (req, res) => {
 
 app.get("/api/goals", requireAuth, async (req, res) => {
   try {
-    const userId = req.query.user || "";
+    const userId = req.authenticatedUser;
     const goals = await getGoals(userId);
     return res.json({ goals });
   } catch (err) {
@@ -1629,7 +1645,10 @@ app.get("/api/goals", requireAuth, async (req, res) => {
 
 app.post("/api/goals", requireAuth, async (req, res) => {
   try {
-    const { domain, max_minutes, userToken } = req.body;
+    // The goal is always created for the authenticated principal. No client-supplied
+    // identity field is read or required.
+    const { domain, max_minutes } = req.body;
+    const userId = req.authenticatedUser;
 
     if (!domain || !max_minutes) {
       return res
@@ -1649,12 +1668,6 @@ app.post("/api/goals", requireAuth, async (req, res) => {
         });
     }
 
-    if (!userToken) {
-      return res
-        .status(400)
-        .json({ status: "error", message: "Missing userToken" });
-    }
-
     const cleanedDomain = normalizeDomain(domain);
     if (!cleanedDomain) {
       return res
@@ -1665,7 +1678,7 @@ app.post("/api/goals", requireAuth, async (req, res) => {
         });
     }
 
-    const result = await createGoal(cleanedDomain, max_minutes, userToken);
+    const result = await createGoal(cleanedDomain, max_minutes, userId);
     return res.status(201).json({ status: "ok", id: result.id });
   } catch (err) {
     console.error("[goals] Error creating goal:", err);
@@ -1684,7 +1697,7 @@ app.put("/api/goals/:id", requireAuth, async (req, res) => {
         .json({ status: "error", message: "Invalid goal ID" });
     }
 
-    const userId = req.query.user || "";
+    const userId = req.authenticatedUser;
     const result = await updateGoal(id, req.body, userId);
     if (result.invalidDomain) {
       return res
@@ -1715,7 +1728,7 @@ app.delete("/api/goals/:id", requireAuth, async (req, res) => {
         .json({ status: "error", message: "Invalid goal ID" });
     }
 
-    const userId = req.query.user || "";
+    const userId = req.authenticatedUser;
     const result = await deleteGoal(id, userId);
     if (!result.deleted) {
       return res
@@ -1734,7 +1747,7 @@ app.delete("/api/goals/:id", requireAuth, async (req, res) => {
 
 app.get("/api/goals/status", requireAuth, async (req, res) => {
   try {
-    const userId = req.query.user || "";
+    const userId = req.authenticatedUser;
     const statuses = await getGoalStatus(userId);
     return res.json({ goals: statuses });
   } catch (err) {
@@ -1805,7 +1818,7 @@ function cacheInvalidateUser(userId) {
  */
 app.get("/api/today", requireAuth, async (req, res) => {
   try {
-    const userId = req.query.user || '';
+    const userId = req.authenticatedUser;
     const today = new Date().toISOString().slice(0, 10);
     const cacheKey = `${userId}:today:${today}`;
     const cached = cacheGet(cacheKey);
@@ -1834,7 +1847,7 @@ app.get("/api/today", requireAuth, async (req, res) => {
  */
 app.get("/api/domain-breakdown", requireAuth, async (req, res) => {
   try {
-    const userId = req.query.user || '';
+    const userId = req.authenticatedUser;
     const domain = req.query.domain || '';
     if (!domain) {
       return res.status(400).json({ status: 'error', message: 'Missing domain parameter' });
@@ -1877,7 +1890,7 @@ app.get("/api/domain-breakdown", requireAuth, async (req, res) => {
 
 app.get("/api/logs", requireAuth, async (req, res) => {
   try {
-    const userId = req.query.user || "";
+    const userId = req.authenticatedUser;
     const logs = await getAllScreenTimeLogs(userId);
     return res.json({ total: logs.length, logs });
   } catch (err) {
@@ -1921,7 +1934,7 @@ app.get("/api/trends", requireAuth, async (req, res) => {
         });
     }
 
-    const userId = req.query.user || "";
+    const userId = req.authenticatedUser;
 
     // Get current period range
     const currentRange = getPeriodRange(referenceDate, period);
@@ -2117,7 +2130,9 @@ app.post("/api/seed", requireAuth, async (req, res) => {
       });
     }
 
-    const userId = req.query.user || "localhost-dev";
+    // Seeds only the caller's own data — the authenticated principal, never a
+    // client-supplied id.
+    const userId = req.authenticatedUser;
     const today = new Date().toISOString().slice(0, 10);
     const now = new Date();
 
@@ -2201,6 +2216,14 @@ app.post("/api/seed", requireAuth, async (req, res) => {
 
 // ─── Startup ────────────────────────────────────────────────────────────────
 
+/**
+ * Initialize the database driver and start listening.
+ *
+ * Returns the http.Server so tests can read the bound port (PORT=0 picks an
+ * ephemeral one). Auto-start is guarded by `require.main === module` so that
+ * `require("./server")` from a test can drive the app without binding a port
+ * or opening the database.
+ */
 async function start() {
   if (USE_PG) {
     console.log("[db] DATABASE_URL detected — using PostgreSQL");
@@ -2213,8 +2236,16 @@ async function start() {
   await driver.init();
   console.log("[db] Database initialized successfully");
 
-  app.listen(PORT, () => {
-    console.log(`
+  const server = await new Promise((resolve) => {
+    const s = app.listen(PORT, () => resolve(s));
+  });
+
+  server.on("error", (err) => {
+    console.error("Failed to start server:", err);
+    process.exit(1);
+  });
+
+  console.log(`
 ╔══════════════════════════════════════════════════╗
 ║     Web Screen-Time Tracker — Server Running     ║
 ╠══════════════════════════════════════════════════╣
@@ -2227,13 +2258,16 @@ async function start() {
 ║  Database: ${USE_PG ? "PostgreSQL".padEnd(43) : "SQLite (sql.js)".padEnd(43)} ║
 ╚══════════════════════════════════════════════════╝
     `);
-  });
+
+  return server;
 }
 
-start().catch((err) => {
-  console.error("Failed to start server:", err);
-  process.exit(1);
-});
+if (require.main === module) {
+  start().catch((err) => {
+    console.error("Failed to start server:", err);
+    process.exit(1);
+  });
+}
 
 // ─── Graceful Shutdown ──────────────────────────────────────────────────────
 
@@ -2248,3 +2282,6 @@ process.on("SIGTERM", async () => {
   if (driver) await driver.close();
   process.exit(0);
 });
+
+// Exported for tests: drive the app in-process without binding a fixed port.
+module.exports = { app, start, requireAuth, SESSION_COOKIE };

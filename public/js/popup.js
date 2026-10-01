@@ -88,12 +88,10 @@
     const dashboard = data.dashboard;
     const goals = data.goals || [];
     const userEmail = email || "";
-    // Open the dashboard with the Google access token — the server verifies
-    // it and mints an HTTP-only session cookie before serving the page.
-    const accessToken = data.accessToken || "";
-    const dashboardUrl = accessToken
-      ? `https://listrack-2.onrender.com/dashboard?access_token=${encodeURIComponent(accessToken)}`
-      : `https://listrack-2.onrender.com/dashboard`;
+    // Dashboard navigation is delegated to the service worker, which opens
+    // /dashboard?access_token=... itself (openDashboardWithToken). The token
+    // is deliberately NOT placed in this popup's DOM — see the C2 note on
+    // the 'openDashboard' message handler in background.js.
 
     const totalMinutes = dashboard ? dashboard.totalMinutes || 0 : 0;
     const domains = dashboard ? dashboard.domains || [] : [];
@@ -229,12 +227,12 @@
 
       <!-- Actions -->
       <div class="actions">
-        <a href="${dashboardUrl}" target="_blank" class="btn-primary">
+<button id="openDashboardBtn" type="button" class="btn-primary w-full">
           <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-            <path stroke-linecap="round" stroke-linejoin="round" d="M13.5 6H5.25A2.25 2.25 0 003 8.25v10.5A2.25 2.25 0 005.25 21h10.5A2.25 2.25 0 0018 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25" />
+            <path stroke-linecap="round" stroke-linejoin="round" d="M13.5 6H5.25A2.25 2.25 0 003 8.25v10.5A2.25 2.25 0 005.25 21h10.5A2.25 2.25 0 0021 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25" />
           </svg>
           Open Dashboard
-        </a>
+        </button>
       </div>
 
       <!-- Footer -->
@@ -242,6 +240,17 @@
     `;
 
     // ─── Bind Events ────────────────────────────────────────────────────
+
+    // Open Dashboard — the service worker attaches the access token and
+    // opens the tab. Nothing here ever handles or displays a credential.
+    const openBtn = document.getElementById("openDashboardBtn");
+    if (openBtn) {
+      openBtn.addEventListener("click", () => {
+        chrome.runtime.sendMessage({ type: "openDashboard" }, () => {
+          window.close();
+        });
+      });
+    }
 
     // Sign out (subtle icon button in the header)
     document.getElementById("signOutBtn").addEventListener("click", () => {
@@ -306,20 +315,21 @@
       });
       const headers = accessToken ? { Authorization: `Bearer ${accessToken}` } : {};
 
+      // No `?user=` — identity comes from the verified bearer token above.
       const resp = await fetch(
-        `https://listrack-2.onrender.com/api/dashboard?user=${encodeURIComponent(userId)}`,
+        `https://listrack-2.onrender.com/api/dashboard`,
         { headers }
       );
 
       const goalsResp = await fetch(
-        `https://listrack-2.onrender.com/api/goals/status?user=${encodeURIComponent(userId)}`,
+        `https://listrack-2.onrender.com/api/goals/status`,
         { headers }
       );
 
       const dashboard = resp.ok ? await resp.json() : null;
       const goalsData = goalsResp.ok ? await goalsResp.json() : null;
 
-      renderPopup({ dashboard, goals: goalsData ? goalsData.goals : null, token: userId, accessToken: null }, userId);
+      renderPopup({ dashboard, goals: goalsData ? goalsData.goals : null, token: userId }, userId);
     } catch (fallbackErr) {
       showError("Could not connect to the server. Make sure the server is running.");
     }
