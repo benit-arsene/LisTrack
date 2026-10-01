@@ -67,8 +67,26 @@ app.use((req, res, next) => {
   next();
 });
 
+// ─── Static Asset Serving (C3) ─────────────────────────────────────────────
+// ONLY the public/ directory is exposed. The application directory itself is
+// NEVER mounted as a static root: doing so would publish server.js,
+// donation.js, package.json, manifest.json, the SQLite database and its
+// WAL/SHM siblings, server.log, and any *.pem key present in the deployment.
+//
+// Adding files to public/ is therefore an explicit, reviewable decision —
+// anything placed there becomes world-readable. Do not "fix" a missing asset
+// by widening this mount.
 app.use(express.static(path.join(__dirname, "public")));
-app.use(express.static(__dirname));
+
+// The extension bundle lives in the application root (not public/) so it is
+// never mixed with web assets. Serve that one file explicitly instead of
+// re-exposing the whole directory. The path is a fixed constant — no user
+// input reaches res.sendFile here.
+const EXTENSION_ZIP_PATH = path.join(__dirname, "lisTrack-extension.zip");
+app.get("/lisTrack-extension.zip", (req, res, next) => {
+  if (!fs.existsSync(EXTENSION_ZIP_PATH)) return next();
+  res.sendFile(EXTENSION_ZIP_PATH);
+});
 
 // ─── Dashboard Route Protection (Google Token → HTTP-only Session Cookie) ──
 // Opening /dashboard from the extension carries ?access_token=... (the Google
