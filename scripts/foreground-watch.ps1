@@ -68,11 +68,13 @@ function Get-ForegroundProcessName {
 }
 
 # ─── Main loop ──────────────────────────────────────────────────────────────
-$sessionStart = Get-Date
+# Per-app accumulated duration, in seconds, for the current run only.
+# Key = executable name (e.g. "Code.exe"), Value = total seconds active.
+$totals = @{}
+
+$sessionStart = [System.DateTime]::UtcNow
 $currentApp = $null
 $appStart = $sessionStart
-$summary = New-Object System.Collections.Generic.List[string]
-
 $cancel = $false
 try {
     [System.Console]::CancelKeyPress.Add({
@@ -85,13 +87,17 @@ try {
 Write-Host "LisTrack foreground watcher (PoC) - Ctrl+C to stop; switches logged below."
 while (-not $cancel) {
     $app = Get-ForegroundProcessName
-    $now = Get-Date
+    $now = [System.DateTime]::UtcNow
 
     if ($app -ne $currentApp) {
+        # Add the previous app's held duration to its running total.
         if ($currentApp -ne $null) {
-            $duration = [Math]::Round(($now - $appStart).TotalSeconds)
-            $summary.Add("$currentApp`: $duration seconds") | Out-Null
-            Write-Host "$currentApp`: $duration seconds"
+            $held = [Math]::Round(($now - $appStart).TotalSeconds)
+            if (-not $totals.ContainsKey($currentApp)) {
+                $totals[$currentApp] = 0
+            }
+            $totals[$currentApp] += $held
+            Write-Host "$currentApp`: $held seconds"
         }
         Write-Host "[$($now.ToString('HH:mm:ss'))] Active: $app"
         $currentApp = $app
@@ -105,10 +111,21 @@ while (-not $cancel) {
     Start-Sleep -Seconds $IntervalSeconds
 }
 
+# Record the final app's remaining duration before printing the summary.
+if ($currentApp -ne $null) {
+    $held = [Math]::Round(([System.DateTime]::UtcNow - $appStart).TotalSeconds)
+    if (-not $totals.ContainsKey($currentApp)) {
+        $totals[$currentApp] = 0
+    }
+    $totals[$currentApp] += $held
+}
+
 Write-Host ""
 Write-Host "Session summary:"
-if ($summary.Count -eq 0) {
-    Write-Host "(no switches recorded)"
+if ($totals.Count -eq 0) {
+    Write-Host "(no activity recorded)"
 } else {
-    $summary | ForEach-Object { Write-Host $_ }
+    foreach ($app in ($totals.Keys | Sort-Object)) {
+        Write-Host "$app`: $($totals[$app]) seconds"
+    }
 }
