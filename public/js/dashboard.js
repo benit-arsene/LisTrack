@@ -228,9 +228,13 @@
       ctx.scale(dpr, dpr);
 
       const isDark = document.documentElement.classList.contains('dark');
+      // Dark canvas sits on the #0a0a0a card. The old gray-500 grid
+      // (rgba(75,85,99,0.3)) blended down to ~1.4:1 on black and vanished,
+      // so the grid is white-based; bars get a higher alpha because
+      // translucent fills read dimmer against true black.
       const textColor = isDark ? '#9ca3af' : '#6b7280';
-      const gridColor = isDark ? 'rgba(75,85,99,0.3)' : 'rgba(229,231,235,0.8)';
-      const barColor = isDark ? 'rgba(99,102,241,0.7)' : 'rgba(99,102,241,0.6)';
+      const gridColor = isDark ? 'rgba(255,255,255,0.1)' : 'rgba(229,231,235,0.8)';
+      const barColor = isDark ? 'rgba(99,102,241,0.85)' : 'rgba(99,102,241,0.6)';
       const barHoverColor = isDark ? 'rgba(129,140,248,0.9)' : 'rgba(99,102,241,0.85)';
 
       const padding = { top: 16, bottom: 36, left: 36, right: 12 };
@@ -289,9 +293,9 @@
         // Color based on value relative to max
         const ratio = item.totalMinutes / maxVal;
         let color;
-        if (ratio > 0.8) color = isDark ? 'rgba(239,68,68,0.7)' : 'rgba(239,68,68,0.6)';
-        else if (ratio > 0.5) color = isDark ? 'rgba(245,158,11,0.7)' : 'rgba(245,158,11,0.6)';
-        else if (ratio > 0.2) color = isDark ? 'rgba(16,185,129,0.7)' : 'rgba(16,185,129,0.6)';
+        if (ratio > 0.8) color = isDark ? 'rgba(239,68,68,0.85)' : 'rgba(239,68,68,0.6)';
+        else if (ratio > 0.5) color = isDark ? 'rgba(245,158,11,0.85)' : 'rgba(245,158,11,0.6)';
+        else if (ratio > 0.2) color = isDark ? 'rgba(16,185,129,0.85)' : 'rgba(16,185,129,0.6)';
         else color = barColor;
 
         ctx.fillStyle = color;

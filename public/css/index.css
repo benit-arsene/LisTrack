@@ -8,3 +8,41 @@ body { background: #f3f4f6; }
 .step-card:hover { transform: translateY(-2px); box-shadow: 0 12px 20px -8px rgba(0,0,0,0.1); }
 .dark .step-card:hover { box-shadow: 0 12px 20px -8px rgba(0,0,0,0.4); }
 html, body { transition: background-color 0.3s ease, color 0.3s ease; }
+
+/* ─── AMOLED dark theme ────────────────────────────────────────────────
+   Maps the dark Tailwind surface/border utilities onto a true-black
+   palette. Declared with !important because the Tailwind Play CDN injects
+   its stylesheet at runtime, so source order and utility specificity are
+   not reliable. Light mode is untouched: every rule is scoped to `.dark`.
+   Palette: page #000000 · surface #0a0a0a · inner/input #171717 ·
+            active/hover #262626 · border #262626 · input border #404040
+   Keep in sync with public/css/dashboard.css.                            */
+
+.dark body {
+  background-color: #000000 !important;
+  background-image: none !important;
+}
+
+/* Surfaces — cards, panels, buttons */
+.dark .dark\:bg-gray-800 { background-color: #0a0a0a !important; }
+.dark .dark\:bg-gray-700 { background-color: #171717 !important; }
+.dark .dark\:bg-gray-700\/50 { background-color: #171717 !important; }
+.dark .dark\:bg-gray-900\/50 { background-color: #171717 !important; }
+.dark .dark\:bg-gray-600 { background-color: #262626 !important; }
+
+/* Hover / active surfaces */
+.dark .dark\:hover\:bg-gray-700:hover { background-color: #262626 !important; }
+.dark .dark\:hover\:bg-gray-700\/30:hover { background-color: #262626 !important; }
+.dark .dark\:hover\:bg-gray-600:hover { background-color: #262626 !important; }
+
+/* Borders and dividers */
+.dark .dark\:border-gray-700 { border-color: #262626 !important; }
+.dark .dark\:border-gray-700\/50 { border-color: rgba(38, 38, 38, 0.6) !important; }
+.dark .dark\:border-gray-600 { border-color: #404040 !important; }
+.dark .dark\:divide-gray-700\/50 > :not([hidden]) ~ :not([hidden]) {
+  border-color: rgba(38, 38, 38, 0.6) !important;
+}
+
+/* Accessibility: #4b5563 on pure black is only 2.78:1 — step up to
+   #6b7280 (4.34:1) for footer and tertiary text. */
+.dark .dark\:text-gray-600 { color: #6b7280 !important; }
