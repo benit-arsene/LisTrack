@@ -687,16 +687,22 @@ chrome.runtime.onStartup.addListener(() => {
 
 // ─── Site Visit Handling (Most Visited Sites) ───────────────────────────
 // The content script (public/js/visit-tracker.js) sends exactly one message
-// per engaged document: { type: "lisTrack:siteVisit", domain }.
+// per engaged document: { type: "lisTrack:siteVisit", domain, visit_id }.
 //
 // IDENTITY: the sender never learns who is signed in and never names a user.
 // The account is resolved HERE, from the existing chrome.storage.sync
-// user_id, so a content script cannot attribute a visit to anyone else. The
-// server remains the final authority when ingestion lands (req.authenticatedUser
-// → user_id).
+// user_id, and the request is authenticated with the existing Google access
+// token via authedFetchHeaders(). Ownership itself is decided by the server
+// from the verified bearer token (req.authenticatedUser → user_id).
 //
-// SCOPE: the association is kept in memory only. There is deliberately NO
-// network call, no offline-queue entry and no persistence here yet.
+// SUBMISSION: one POST per received visit message. No polling, no timers, no
+// retry loop — the visit-session latch in the content script already limits
+// this to one message per document session.
+//
+// OFFLINE: a failed visit is NOT pushed into lisTrackOfflineQueue. That queue
+// is drained exclusively to /api/screen-time, so queueing a visit there would
+// replay it to the wrong endpoint. A failed visit is dropped; a dedicated
+// durable visit queue is a separate concern.
 
 const VISIT_MEMORY_LIMIT = 50;
 const _recentVisits = [];
@@ -707,8 +713,9 @@ function isValidHostname(domain) {
 }
 
 /**
- * Handle one engaged-visit message. Never throws.
- * @returns {Promise<{received: boolean, requiresAuth?: boolean, visitCounted?: boolean, reason?: string}>}
+ * Handle one engaged-visit message: record it and submit it once.
+ * Never throws.
+ * @returns {Promise<{received: boolean, requiresAuth?: boolean, visitStatus?: string, status?: number, reason?: string}>}
  */
 async function handleSiteVisitMessage(message) {
   // Resolve the authenticated account ourselves. Anything identity-shaped in
@@ -729,12 +736,54 @@ async function handleSiteVisitMessage(message) {
     return { received: false, reason: "invalid domain" };
   }
 
-  // In-memory association only — nothing leaves the worker.
+  const visitId =
+    message && typeof message.visit_id === "string" ? message.visit_id.trim() : "";
+  if (!visitId) {
+    console.warn("[background] Ignoring site visit without a visit_id");
+    return { received: false, reason: "invalid visit_id" };
+  }
+
   _recentVisits.push({ userId, domain, at: Date.now() });
   if (_recentVisits.length > VISIT_MEMORY_LIMIT) _recentVisits.shift();
 
-  console.log(`[background] Recorded engaged site visit for ${domain}`);
-  return { received: true, visitCounted: true };
+  // Exactly two fields travel. `type` is an internal extension routing field
+  // and is deliberately NOT sent: no identity, no path, query, title, event
+  // detail or timestamp.
+  const payload = { domain, visit_id: visitId };
+
+  let response;
+  try {
+    // Same authenticated request mechanism the screen-time collector uses.
+    response = await fetch(`${SERVER_URL}/api/site-visits`, {
+      method: "POST",
+      headers: await authedFetchHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify(payload),
+    });
+  } catch (err) {
+    // authedFetchHeaders throws when no access token is available; a network
+    // failure throws here. Neither is retried and neither is queued.
+    console.warn("[background] Site visit not submitted:", err && err.message);
+    return { received: false, error: "visit-not-sent" };
+  }
+
+  if (response.ok) {
+    // 201 {status:"ok"}, 200 {status:"duplicate"} and 200 {status:"ignored"}
+    // are ALL successful outcomes. A duplicate means the server's
+    // (user_id, visit_id) uniqueness worked — it is not an error and is
+    // never retried.
+    let visitStatus = "ok";
+    try {
+      const data = await response.json();
+      if (data && (data.status === "ok" || data.status === "duplicate" || data.status === "ignored")) {
+        visitStatus = data.status;
+      }
+    } catch (_) {}
+    console.log(`[background] Site visit handled for ${domain}: ${visitStatus}`);
+    return { received: true, visitStatus };
+  }
+
+  console.warn("[background] Site visit rejected with status:", response.status);
+  return { received: false, status: response.status };
 }
 
 // ─── Message Handler ────────────────────────────────────────────────────────

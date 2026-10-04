@@ -76,6 +76,9 @@ function loadBackground() {
   const calls = { fetch: [], storageGet: [], storageSet: [], storageRemove: [] };
   const localStore = {};
   const syncStore = { user_id: SIGNED_IN_USER };
+  // Queue of scripted fetch responses, so a test can drive 201/200-duplicate/
+  // 200-ignored/500 and transport failures deterministically.
+  const fetchScript = [];
 
   const on = (bucket) => (listener) => listeners[bucket].push(listener);
   const noop = () => {};
@@ -120,7 +123,16 @@ function loadBackground() {
   };
   globalThis.fetch = async (url, options) => {
     calls.fetch.push({ url: String(url), options });
-    return { ok: true, status: 200, json: async () => ({}) };
+    const scripted = fetchScript.shift();
+    if (scripted && scripted.throw) {
+      throw new Error(scripted.throw);
+    }
+    const next = scripted || { ok: true, status: 200, body: { status: "ok" } };
+    return {
+      ok: next.ok !== false,
+      status: next.status === undefined ? 200 : next.status,
+      json: async () => (next.body === undefined ? { status: "ok" } : next.body),
+    };
   };
 
   delete require.cache[require.resolve(BACKGROUND_PATH)];
@@ -135,6 +147,7 @@ function loadBackground() {
     calls,
     localStore,
     syncStore,
+    fetchScript,
     restore() {
       globalThis.chrome = previousChrome;
       globalThis.fetch = previousFetch;
@@ -156,6 +169,12 @@ function reset() {
   harness.localStore.lisTrackOfflineQueue = undefined;
   delete harness.localStore.lisTrackOfflineQueue;
   harness.syncStore.user_id = SIGNED_IN_USER;
+  harness.fetchScript.length = 0;
+}
+
+/** Script the next fetch response(s). */
+function scriptFetch(...responses) {
+  harness.fetchScript.push(...responses);
 }
 
 /** A screen-time payload exactly as the existing tracker sends it. */
@@ -203,7 +222,7 @@ test.beforeEach(reset);
 test("a visit message is recognised by its dedicated type", async () => {
   const responses = await dispatch(visitMessage());
   assert.equal(responses.length, 1, "exactly one listener answers");
-  assert.deepEqual(responses[0], { received: true, visitCounted: true });
+  assert.deepEqual(responses[0], { received: true, visitStatus: "ok" });
 });
 
 test("the worker recognises the exact namespaced type constant", () => {
@@ -220,48 +239,175 @@ test("the worker recognises the exact namespaced type constant", () => {
   );
 });
 
+// ─── Submission: the authenticated POST to /api/site-visits ─────────────
+
+test("a visit message is submitted to POST /api/site-visits", async () => {
+  scriptFetch({ ok: true, status: 201, body: { status: "ok", id: 7 } });
+  await dispatch(visitMessage({ domain: "youtube.com", visit_id: "vid-123" }));
+
+  assert.equal(siteVisitCalls().length, 1, "exactly one visit submission");
+  const call = siteVisitCalls()[0];
+  assert.ok(call.url.endsWith("/api/site-visits"));
+  assert.equal(call.options.method, "POST");
+
+  // Exactly the two intended fields — nothing else.
+  const body = JSON.parse(call.options.body);
+  assert.deepEqual(body, { domain: "youtube.com", visit_id: "vid-123" });
+  assert.deepEqual(Object.keys(body).sort(), ["domain", "visit_id"]);
+  assert.ok(!("type" in body), "the internal routing type is not sent to the server");
+});
+
+test("the visit submission uses the existing authenticated request mechanism", async () => {
+  await dispatch(visitMessage());
+
+  const headers = siteVisitCalls()[0].options.headers;
+  assert.equal(headers["Content-Type"], "application/json");
+  assert.match(
+    headers.Authorization,
+    /^Bearer /,
+    "the request must carry the existing bearer token",
+  );
+
+  // And the account came from the existing sync gate, not the message.
+  const userIdReads = harness.calls.storageGet.filter(
+    (call) =>
+      call.area === "sync" &&
+      Array.isArray(call.keys) &&
+      call.keys.includes("user_id"),
+  );
+  assert.ok(userIdReads.length > 0, "getUserId() must have been consulted");
+});
+
+test("the request body carries no identity, page-content or event fields", async () => {
+  await dispatch(
+    visitMessage({
+      domain: "youtube.com",
+      visit_id: "vid-123",
+      user: "victim@example.com",
+      user_id: "victim@example.com",
+      email: "victim@example.com",
+      userToken: "forged",
+      path: "/watch",
+      url: "https://youtube.com/watch?v=1",
+      search: "?v=1",
+      hash: "#x",
+      title: "Secret Title",
+      event: { type: "scroll", clientX: 42, clientY: 7 },
+      timestamp: "2026-01-01T00:00:00.000Z",
+    }),
+  );
+
+  const body = JSON.parse(siteVisitCalls()[0].options.body);
+  assert.deepEqual(Object.keys(body).sort(), ["domain", "visit_id"]);
+  const serialized = JSON.stringify(body);
+  for (const secret of [
+    "victim@example.com",
+    "/watch",
+    "Secret Title",
+    "clientX",
+    "2026-01-01",
+  ]) {
+    assert.ok(!serialized.includes(secret), `"${secret}" must never be sent`);
+  }
+});
+
+test("one visit message produces exactly one API submission", async () => {
+  await dispatch(visitMessage());
+  assert.equal(siteVisitCalls().length, 1, "no polling, no retry, no duplicate send");
+  assert.equal(siteVisitCalls()[0].options.method, "POST");
+});
+
+test("a duplicate response is handled as success and is not retried", async () => {
+  scriptFetch({ ok: true, status: 200, body: { status: "duplicate" } });
+  const responses = await dispatch(visitMessage());
+
+  assert.deepEqual(
+    responses[0],
+    { received: true, visitStatus: "duplicate" },
+    "a duplicate is a handled visit, not an error",
+  );
+  assert.equal(siteVisitCalls().length, 1, "a duplicate must not be retried");
+  assert.equal(offlineQueueWrites().length, 0, "and must not be queued");
+  assert.equal(screenTimeCalls().length, 0);
+});
+
+test("an ignored response is handled as success", async () => {
+  scriptFetch({ ok: true, status: 200, body: { status: "ignored", reason: "localhost" } });
+  const responses = await dispatch(visitMessage());
+
+  assert.deepEqual(responses[0], { received: true, visitStatus: "ignored" });
+  assert.equal(siteVisitCalls().length, 1, "an ignored visit is not retried");
+  assert.equal(offlineQueueWrites().length, 0);
+});
+
+test("a successful 201 response is reported as ok", async () => {
+  scriptFetch({ ok: true, status: 201, body: { status: "ok", id: 42 } });
+  const responses = await dispatch(visitMessage());
+  assert.deepEqual(responses[0], { received: true, visitStatus: "ok" });
+});
+
 // ─── 2 & 3. No fallthrough into the screen-time path ─────────────────────
 
 test("a visit message does NOT enter the screen-time path", async () => {
-  const responses = await dispatch(visitMessage());
-  assert.deepEqual(responses[0], { received: true, visitCounted: true });
+  await dispatch(visitMessage());
   // The screen-time forwarder would have answered { received, status } after
-  // a fetch; nothing may have been fetched at all.
-  assert.deepEqual(harness.calls.fetch, [], "no request may be made");
+  // a fetch to /api/screen-time.
+  assert.deepEqual(screenTimeCalls(), [], "never forwarded as screen time");
+  assert.equal(siteVisitCalls().length, 1, "it went to the visit endpoint instead");
 });
 
 test("a visit message containing a domain is never POSTed to /api/screen-time", async () => {
   await dispatch(visitMessage());
   await dispatch(visitMessage({ domain: "www.example.com" }));
-  const urls = harness.calls.fetch.map((call) => call.url);
-  assert.deepEqual(urls, [], "no request of any kind may be made");
-  assert.ok(
-    !urls.some((url) => url.includes("/api/screen-time")),
-    "/api/screen-time must never be hit by a visit message",
-  );
+
+  const screenTimeUrls = harness.calls.fetch
+    .map((call) => call.url)
+    .filter((url) => url.includes("/api/screen-time"));
+  assert.deepEqual(screenTimeUrls, [], "/api/screen-time must never be hit by a visit");
+  assert.equal(siteVisitCalls().length, 2, "both messages used the visit endpoint");
 });
 
-test("a visit message repeated many times never produces a screen-time request", async () => {
-  for (let i = 0; i < 5; i++) await dispatch(visitMessage());
-  assert.deepEqual(harness.calls.fetch, [], "duplicate visits stay local");
-  assert.equal(
-    harness.localStore.lisTrackOfflineQueue,
-    undefined,
-    "duplicates must not queue anything",
-  );
+test("repeated visit messages each submit exactly once, never to screen time", async () => {
+  for (let i = 0; i < 5; i++) await dispatch(visitMessage({ visit_id: `vid-${i}` }));
+
+  assert.equal(siteVisitCalls().length, 5, "one submission per message, no more");
+  assert.deepEqual(screenTimeCalls(), [], "still never screen time");
+  assert.equal(offlineQueueWrites().length, 0, "nothing queued");
 });
 
-// ─── 4. No offline queue entry ───────────────────────────────────────────
+// ─── 4. The screen-time offline queue is never touched by a visit ─────────
 
 test("a visit message does not create an offline screen-time queue entry", async () => {
   await dispatch(visitMessage());
   assert.equal(harness.localStore.lisTrackOfflineQueue, undefined);
-  for (const write of harness.calls.storageSet) {
-    assert.ok(
-      !("lisTrackOfflineQueue" in write.items),
-      "the visit path must never write the screen-time offline queue",
-    );
-  }
+  assert.deepEqual(offlineQueueWrites(), []);
+});
+
+test("a FAILED visit request does not write to lisTrackOfflineQueue", async () => {
+  scriptFetch({ ok: false, status: 500 });
+  const responses = await dispatch(visitMessage());
+
+  assert.deepEqual(responses[0], { received: false, status: 500 });
+  assert.equal(siteVisitCalls().length, 1, "attempted once, not retried");
+  assert.deepEqual(offlineQueueWrites(), [], "a failed visit must never be queued");
+  assert.equal(harness.localStore.lisTrackOfflineQueue, undefined);
+});
+
+test("a TRANSPORT failure on a visit does not write to lisTrackOfflineQueue", async () => {
+  scriptFetch({ throw: "Failed to fetch" });
+  const responses = await dispatch(visitMessage());
+
+  assert.deepEqual(responses[0], { received: false, error: "visit-not-sent" });
+  assert.deepEqual(offlineQueueWrites(), [], "a dropped connection must never be queued");
+  assert.deepEqual(screenTimeCalls(), []);
+});
+
+test("a 4xx rejection on a visit does not write to lisTrackOfflineQueue", async () => {
+  scriptFetch({ ok: false, status: 400 });
+  const responses = await dispatch(visitMessage());
+
+  assert.deepEqual(responses[0], { received: false, status: 400 });
+  assert.deepEqual(offlineQueueWrites(), []);
 });
 
 // ─── 5. Identity via the existing mechanism ──────────────────────────────
@@ -296,7 +442,7 @@ test("a missing signed-in user causes the visit to be ignored", async () => {
   const responses = await dispatch(visitMessage());
 
   assert.deepEqual(responses[0], { received: false, requiresAuth: true });
-  assert.deepEqual(harness.calls.fetch, [], "nothing is recorded or sent");
+  assert.deepEqual(harness.calls.fetch, [], "no unauthenticated request is attempted");
   assert.equal(harness.localStore.lisTrackOfflineQueue, undefined);
 });
 
@@ -322,16 +468,21 @@ test("a client-supplied identity is ignored and cannot be trusted", async () => 
     }),
   );
 
-  // The visit is accepted on the strength of the WORKER's own sign-in state,
-  // not the body — and nothing forged leaves the worker.
+  // The request is authenticated from the WORKER's own sign-in state, never
+  // from the body, and the body is not forwarded verbatim.
   assert.equal(responses[0].received, true);
-  assert.deepEqual(harness.calls.fetch, []);
+  const body = JSON.parse(siteVisitCalls()[0].options.body);
+  assert.deepEqual(Object.keys(body).sort(), ["domain", "visit_id"]);
   for (const write of harness.calls.storageSet) {
     assert.ok(
       !JSON.stringify(write.items).includes("victim@example.com"),
       "no client-supplied identity may be persisted anywhere",
     );
   }
+  assert.ok(
+    !JSON.stringify(body).includes("victim@example.com"),
+    "no client-supplied identity may reach the server",
+  );
 });
 
 test("the visit handler never reads an identity field from the message", () => {
@@ -368,6 +519,18 @@ function screenTimeCalls() {
   return harness.calls.fetch.filter((call) => call.url.endsWith("/api/screen-time"));
 }
 
+/** Only the visit endpoint's requests. */
+function siteVisitCalls() {
+  return harness.calls.fetch.filter((call) => call.url.endsWith("/api/site-visits"));
+}
+
+/** True when anything was written to the screen-time offline queue. */
+function offlineQueueWrites() {
+  return harness.calls.storageSet.filter((write) =>
+    Object.prototype.hasOwnProperty.call(write.items, "lisTrackOfflineQueue"),
+  );
+}
+
 /** Strip line and block comments so prose cannot be mistaken for code. */
 function codeOnly(src) {
   return src
@@ -386,7 +549,7 @@ function visitHandlerBody() {
   return codeOnly(src.slice(start, end));
 }
 
-test("the visit handler reads only the type and the domain from the message", async () => {
+test("the visit handler reads only the domain and visit_id from the message", async () => {
   const responses = await dispatch(
     visitMessage({ path: "/secret", search: "?token=abc", hash: "#x", title: "Secret Page" }),
   );
@@ -399,7 +562,7 @@ test("the visit handler reads only the type and the domain from the message", as
       [...body.matchAll(/message\s*\??\s*\.\s*([A-Za-z_$][\w$]*)/g)].map((m) => m[1]),
     ),
   ];
-  assert.deepEqual(reads, ["domain"], "only `domain` may be read");
+  assert.deepEqual(reads.sort(), ["domain", "visit_id"], "nothing else may be read");
 });
 
 test("the content script builds a three-field message and nothing more", () => {
@@ -428,17 +591,27 @@ test("the content script builds a three-field message and nothing more", () => {
 });
 
 test("a visit_id in the message does not change the worker's handling", async () => {
-  // The worker must keep deriving ownership itself and keep ignoring every
-  // field except the domain — a client visit_id is just an opaque string here.
+  // The worker keeps deriving ownership itself and keeps reading only the
+  // domain and visit_id — a client visit_id is an opaque string here.
   const signedIn = await dispatch(visitMessage({ visit_id: "uuid-a" }));
-  assert.deepEqual(signedIn[0], { received: true, visitCounted: true });
-  assert.deepEqual(harness.calls.fetch, []);
-  assert.equal(harness.localStore.lisTrackOfflineQueue, undefined);
+  assert.equal(signedIn[0].received, true);
+  assert.equal(siteVisitCalls().length, 1);
+  assert.equal(JSON.parse(siteVisitCalls()[0].options.body).visit_id, "uuid-a");
+  assert.deepEqual(offlineQueueWrites(), []);
 
   harness.syncStore.user_id = undefined;
   const signedOut = await dispatch(visitMessage({ visit_id: "uuid-b" }));
   assert.deepEqual(signedOut[0], { received: false, requiresAuth: true });
-  assert.deepEqual(harness.calls.fetch, []);
+  assert.equal(siteVisitCalls().length, 1, "a signed-out visit is never submitted");
+});
+
+test("a visit without a usable visit_id is never submitted", async () => {
+  for (const bad of [undefined, "", "   ", 42]) {
+    reset();
+    const responses = await dispatch(visitMessage({ visit_id: bad }));
+    assert.deepEqual(responses[0], { received: false, reason: "invalid visit_id" });
+    assert.deepEqual(harness.calls.fetch, [], "nothing is sent without a visit_id");
+  }
 });
 
 test("the content script reports the bare hostname, never a full URL", () => {
@@ -514,20 +687,48 @@ test("excluded domains are still filtered by the existing guard", async () => {
 
 // ─── Static guards on the worker ─────────────────────────────────────────
 
-test("the worker adds no network call or credential use to the visit path", () => {
+test("the visit path never touches the screen-time offline queue or beacon", () => {
   const body = visitHandlerBody();
+
+  // The screen-time retry queue and its key are strictly off-limits here.
   for (const pattern of [
-    /fetch\s*\(/,
-    /sendBeacon/,
-    /XMLHttpRequest/,
-    /OFFLINE_QUEUE_KEY/,
     /pushToOfflineQueue/,
-    /getGoogleAccessToken/,
-    /authedFetchHeaders/,
+    /OFFLINE_QUEUE_KEY/,
+    /sendBeacon/,
+    /lisTrackOfflineQueue/,
+    /drainOfflineQueue/,
   ]) {
     assert.ok(
       !pattern.test(body),
       `handleSiteVisitMessage must not reference ${pattern}`,
+    );
+  }
+});
+
+test("the visit path uses the existing authenticated fetch, with no new auth", () => {
+  const body = visitHandlerBody();
+
+  assert.match(body, /await fetch\(/, "it must submit with the existing fetch");
+  assert.match(
+    body,
+    /authedFetchHeaders\(/,
+    "it must reuse authedFetchHeaders for the bearer token",
+  );
+  assert.match(body, /SERVER_URL\}\/api\/site-visits/, "it must target the visit endpoint");
+  assert.match(body, /await getUserId\(\)/, "the account still comes from getUserId()");
+
+  // No new auth machinery, no timers, no polling.
+  for (const pattern of [
+    /setTimeout/,
+    /setInterval/,
+    /chrome\.alarms/,
+    /clearInterval/,
+    /getGoogleAccessToken\(/,
+    /verifyGoogleAccessToken/,
+  ]) {
+    assert.ok(
+      !pattern.test(body),
+      `the visit path must not introduce ${pattern}`,
     );
   }
 });
