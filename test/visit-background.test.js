@@ -172,7 +172,12 @@ function screenTimePayload(overrides) {
 }
 
 function visitMessage(overrides) {
-  return { type: VISIT_MESSAGE_TYPE, domain: "example.com", ...overrides };
+  return {
+    type: VISIT_MESSAGE_TYPE,
+    domain: "example.com",
+    visit_id: "visit-under-test-1",
+    ...overrides,
+  };
 }
 
 /** Dispatch a message to every registered onMessage listener, as Chrome does. */
@@ -397,21 +402,43 @@ test("the visit handler reads only the type and the domain from the message", as
   assert.deepEqual(reads, ["domain"], "only `domain` may be read");
 });
 
-test("the content script builds a two-field message and nothing more", () => {
+test("the content script builds a three-field message and nothing more", () => {
   const src = fs.readFileSync(VISIT_TRACKER_PATH, "utf8");
-  const match = src.match(
-    /sendMessage\(\s*\{([^}]*)\}/,
-  );
+  const match = src.match(/sendMessage\(\s*\{([^}]*)\}/);
   assert.ok(match, "the content script must send an inline object literal");
   const fields = [...match[1].matchAll(/([A-Za-z_$][\w$]*)\s*:/g)].map((m) => m[1]);
-  assert.deepEqual(fields.sort(), ["domain", "type"]);
+  assert.deepEqual(fields.sort(), ["domain", "type", "visit_id"]);
 
-  for (const forbidden of ["user", "email", "user_id", "path", "url", "search", "hash"]) {
+  for (const forbidden of [
+    "user",
+    "email",
+    "user_id",
+    "path",
+    "url",
+    "search",
+    "hash",
+    "title",
+    "timestamp",
+  ]) {
     assert.ok(
       !new RegExp(`\\b${forbidden}\\s*:`).test(match[1]),
       `the message literal must not include "${forbidden}"`,
     );
   }
+});
+
+test("a visit_id in the message does not change the worker's handling", async () => {
+  // The worker must keep deriving ownership itself and keep ignoring every
+  // field except the domain — a client visit_id is just an opaque string here.
+  const signedIn = await dispatch(visitMessage({ visit_id: "uuid-a" }));
+  assert.deepEqual(signedIn[0], { received: true, visitCounted: true });
+  assert.deepEqual(harness.calls.fetch, []);
+  assert.equal(harness.localStore.lisTrackOfflineQueue, undefined);
+
+  harness.syncStore.user_id = undefined;
+  const signedOut = await dispatch(visitMessage({ visit_id: "uuid-b" }));
+  assert.deepEqual(signedOut[0], { received: false, requiresAuth: true });
+  assert.deepEqual(harness.calls.fetch, []);
 });
 
 test("the content script reports the bare hostname, never a full URL", () => {

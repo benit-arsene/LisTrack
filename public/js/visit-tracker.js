@@ -17,9 +17,10 @@
  *     page reload      -> a new document, so a new session
  *
  * SCOPE: one outbound message, and nothing else. On the first engagement it
- * sends a single namespaced runtime message ({ type, domain }) to the
- * service worker. There is no network call, no persistence and no offline
- * queue here — the service worker owns identity and anything further.
+ * sends a single namespaced runtime message ({ type, domain, visit_id }) to
+ * the service worker, where visit_id identifies this document session. There
+ * is no network call, no persistence and no offline queue here — the service
+ * worker owns identity and anything further.
  *
  * PRIVACY: the handler reads ONLY the event type. It never inspects the
  * event target, key values, coordinates, page contents, form values or any
@@ -63,6 +64,39 @@
   const VISIT_MESSAGE_TYPE = "lisTrack:siteVisit";
 
   /**
+   * Generate the id for one document session.
+   *
+   * Prefers the browser's native crypto.randomUUID(). That is unavailable on
+   * insecure origins (the content script also runs on plain http pages), so
+   * the fallbacks deliberately mirror the existing generateUuid() in
+   * public/js/tracker.js: a hand-built v4 UUID from crypto.getRandomValues,
+   * then a timestamp+random string. No dependency is added.
+   */
+  function generateVisitId() {
+    try {
+      if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+        return crypto.randomUUID();
+      }
+    } catch (_) {}
+
+    try {
+      if (typeof crypto !== "undefined" && crypto.getRandomValues) {
+        const bytes = new Uint8Array(16);
+        crypto.getRandomValues(bytes);
+        bytes[6] = (bytes[6] & 0x0f) | 0x40; // version 4
+        bytes[8] = (bytes[8] & 0x3f) | 0x80; // variant 10
+        const hex = Array.from(bytes, (b) =>
+          b.toString(16).padStart(2, "0")
+        ).join("");
+        return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+      }
+    } catch (_) {}
+
+    // Last resort: timestamp + random suffix (same convention as tracker.js).
+    return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
+  }
+
+  /**
    * Create an independent visit tracker bound to one document.
    *
    * @param {Object} [options]
@@ -78,6 +112,12 @@
     if (!target || typeof target.addEventListener !== "function") {
       throw new Error("[visit-tracker] an event target is required");
     }
+
+    // One id per DOCUMENT session. A reload runs this file again, so a reload
+    // gets a new id, and every interaction within this document reuses it.
+    // In memory only — never persisted to chrome.storage, localStorage,
+    // sessionStorage, a cookie or the backend.
+    const visitId = generateVisitId();
 
     // The bare hostname — never the full URL, path, query or hash.
     const hostname =
@@ -95,11 +135,11 @@
      * Report the engaged visit to the service worker. Called once per
      * document, from the single place a visit becomes true.
      *
-     * Carries only the fact and the bare hostname. NO identity is attached:
-     * this script never learns who is signed in, never calls the identity
-     * API and cannot choose whose visit this is — the service worker
-     * resolves the authenticated account itself. Nothing is written to any
-     * offline queue.
+     * Carries only the fact, the bare hostname and this document's visit_id.
+     * NO identity is attached: this script never learns who is signed in,
+     * never calls the identity API and cannot choose whose visit this is —
+     * the service worker resolves the authenticated account itself. Nothing
+     * is written to any offline queue.
      */
     function reportVisit() {
       if (!hostname) return;
@@ -112,7 +152,7 @@
       }
       try {
         chrome.runtime.sendMessage(
-          { type: VISIT_MESSAGE_TYPE, domain: hostname },
+          { type: VISIT_MESSAGE_TYPE, domain: hostname, visit_id: visitId },
           () => {
             // Reading lastError is how a dropped message stays silent.
             void chrome.runtime.lastError;
@@ -171,6 +211,14 @@
         return session.hasCounted() ? 1 : 0;
       },
 
+      /**
+       * This document session's visit_id. Constant for the lifetime of this
+       * tracker — a reload creates a new tracker with a new id.
+       */
+      getVisitId() {
+        return visitId;
+      },
+
       /** Are the qualifying listeners currently attached? */
       isListening() {
         return listening;
@@ -186,6 +234,11 @@
        * Start a fresh visit-session without reloading: the next qualifying
        * interaction counts again. A page reload achieves this implicitly,
        * because a new document gets a brand new tracker.
+       *
+       * NOTE: this re-arms the SAME document, so a second report would reuse
+       * this tracker's visit_id — which the server deduplicates. It exists for
+       * tests and for an explicit in-page re-arm; a genuine new session
+       * should come from a new document.
        */
       reset() {
         session.reset();
@@ -200,6 +253,7 @@
     QUALIFYING_EVENTS,
     LISTENER_OPTIONS,
     VISIT_MESSAGE_TYPE,
+    generateVisitId,
     createVisitTracker,
     getActiveTracker: () => activeTracker,
   };

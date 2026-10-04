@@ -27,6 +27,7 @@ const VISIT_TRACKER_PATH = path.join(
 const {
   QUALIFYING_EVENTS,
   VISIT_MESSAGE_TYPE,
+  generateVisitId,
   createVisitTracker,
 } = require(VISIT_TRACKER_PATH);
 
@@ -121,6 +122,19 @@ function withFakeChrome(run) {
     if (previous === undefined) delete globalThis.chrome;
     else globalThis.chrome = previous;
   }
+}
+
+/**
+ * Strip comments so prose about a forbidden API cannot satisfy or trip a
+ * static guard. Without this, merely documenting "never touches chrome.storage"
+ * would fail the check that forbids referencing it.
+ */
+function codeOnly(src) {
+  return src
+    .replace(/\/\*[\s\S]*?\*\//g, " ")
+    .split("\n")
+    .filter((line) => !/^\s*\/\//.test(line))
+    .join("\n");
 }
 
 /** A plain, unguarded event for tests that only care about the type. */
@@ -323,22 +337,132 @@ test("the first qualifying interaction sends exactly one namespaced visit messag
     target.dispatch(strictEvent("scroll"));
 
     assert.equal(sent.length, 1, "one message per document session");
-    assert.deepEqual(sent[0], {
-      type: "lisTrack:siteVisit",
-      domain: "example.com",
-    });
+    assert.deepEqual(Object.keys(sent[0]).sort(), [
+      "domain",
+      "type",
+      "visit_id",
+    ]);
+    assert.equal(sent[0].type, "lisTrack:siteVisit");
     assert.equal(sent[0].type, VISIT_MESSAGE_TYPE);
+    assert.equal(sent[0].domain, "example.com");
+    assert.equal(typeof sent[0].visit_id, "string");
+    assert.ok(sent[0].visit_id.length > 0, "visit_id must not be empty");
   });
 });
 
-test("the visit message carries only the type and the bare hostname", () => {
+// ─── visit_id: one per document session ──────────────────────────────────
+
+const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+test("a visit session receives a non-empty visit_id", () => {
+  const { tracker } = setup();
+  const visitId = tracker.getVisitId();
+
+  assert.equal(typeof visitId, "string");
+  assert.ok(visitId.length > 0, "must not be empty");
+  assert.match(visitId, UUID_V4, "expected a v4 UUID from the native generator");
+});
+
+test("the visit_id is generated natively via crypto.randomUUID()", () => {
+  // The native generator is preferred; the value must be exactly what the
+  // platform produced for this call.
+  const { tracker } = setup();
+  const native = globalThis.crypto.randomUUID();
+  assert.notEqual(tracker.getVisitId(), native);
+  assert.match(tracker.getVisitId(), UUID_V4);
+});
+
+test("generateVisitId produces distinct ids", () => {
+  const ids = new Set();
+  for (let i = 0; i < 500; i++) ids.add(generateVisitId());
+  assert.equal(ids.size, 500, "every generated id must be unique");
+  for (const id of ids) assert.match(id, UUID_V4);
+});
+
+test("generateVisitId falls back to a v4 UUID when randomUUID is unavailable", () => {
+  // crypto.randomUUID() only exists in secure contexts, so the fallback must
+  // produce an equally well-formed id. Same convention as tracker.js.
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis.crypto, "randomUUID");
+  Object.defineProperty(globalThis.crypto, "randomUUID", {
+    value: undefined,
+    configurable: true,
+  });
+  try {
+    const fallback = generateVisitId();
+    assert.match(fallback, UUID_V4, "the getRandomValues fallback builds a v4 UUID");
+    assert.notEqual(fallback, generateVisitId());
+  } finally {
+    if (descriptor) Object.defineProperty(globalThis.crypto, "randomUUID", descriptor);
+  }
+});
+
+test("the visit_id is unchanged throughout one document session", () => {
+  withFakeChrome((sent) => {
+    const { target, tracker } = setup();
+    const original = tracker.getVisitId();
+
+    for (const eventType of QUALIFYING_EVENTS) {
+      target.dispatch(strictEvent(eventType));
+    }
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0].visit_id, original, "the message carries the session id");
+
+    // Reading it again — and re-arming the same document — never changes it.
+    assert.equal(tracker.getVisitId(), original);
+    tracker.reset();
+    target.dispatch(strictEvent("scroll"));
+    assert.equal(sent.length, 2);
+    assert.equal(
+      sent[1].visit_id,
+      original,
+      "re-arming the SAME document must not mint a new id",
+    );
+  });
+});
+
+test("a newly created document/session receives a different visit_id", () => {
+  const first = setup();
+  const second = setup();
+
+  const a = first.tracker.getVisitId();
+  const b = second.tracker.getVisitId();
+
+  assert.ok(a && b);
+  assert.notEqual(a, b, "each document session must get its own id");
+  assert.match(b, UUID_V4);
+});
+
+test("many trackers never collide on visit_id", () => {
+  const ids = new Set();
+  for (let i = 0; i < 200; i++) ids.add(setup().tracker.getVisitId());
+  assert.equal(ids.size, 200, "no collisions across document sessions");
+});
+
+test("the visit_id is not persisted anywhere", () => {
+  const src = codeOnly(fs.readFileSync(VISIT_TRACKER_PATH, "utf8"));
+  for (const forbidden of [
+    /chrome\.storage/,
+    /localStorage/,
+    /sessionStorage/,
+    /document\.cookie/,
+    /\bfetch\s*\(/,
+    /sendBeacon/,
+  ]) {
+    assert.ok(
+      !forbidden.test(src),
+      `visit_id must stay in memory — no reference to ${forbidden}`,
+    );
+  }
+});
+
+test("the visit message carries only the type, hostname and visit_id", () => {
   withFakeChrome((sent) => {
     const { target } = setup();
     target.dispatch(strictEvent("click"));
 
     assert.deepEqual(
       Object.keys(sent[0]).sort(),
-      ["domain", "type"],
+      ["domain", "type", "visit_id"],
       "nothing else may travel — no identity, path, query or detail",
     );
     for (const forbidden of [
@@ -354,6 +478,11 @@ test("the visit message carries only the type and the bare hostname", () => {
       "hash",
       "title",
       "event",
+      "timestamp",
+      "visited_at",
+      "time",
+      "x",
+      "y",
     ]) {
       assert.ok(
         !(forbidden in sent[0]),
@@ -436,6 +565,7 @@ test("the tracker exposes no captured interaction data", () => {
   const surface = Object.keys(tracker).sort();
   assert.deepEqual(surface, [
     "getVisitCount",
+    "getVisitId",
     "handleInteraction",
     "hasEngaged",
     "isListening",
@@ -449,7 +579,7 @@ test("the tracker exposes no captured interaction data", () => {
 });
 
 test("the content script performs no network, storage or credential access", () => {
-  const src = fs.readFileSync(VISIT_TRACKER_PATH, "utf8");
+  const src = codeOnly(fs.readFileSync(VISIT_TRACKER_PATH, "utf8"));
   const forbidden = [
     /\bfetch\s*\(/,
     /XMLHttpRequest/,
@@ -473,7 +603,7 @@ test("the content script performs no network, storage or credential access", () 
 });
 
 test("the visit message is the single outbound call in the file", () => {
-  const src = fs.readFileSync(VISIT_TRACKER_PATH, "utf8");
+  const src = codeOnly(fs.readFileSync(VISIT_TRACKER_PATH, "utf8"));
   // One availability guard + exactly one call site.
   const calls = src.match(/chrome\.runtime\.sendMessage\(/g) || [];
   assert.equal(calls.length, 1, "exactly one sendMessage call site");
@@ -484,7 +614,7 @@ test("the visit message is the single outbound call in the file", () => {
 });
 
 test("the content script is independent of the screen-time tracker", () => {
-  const src = fs.readFileSync(VISIT_TRACKER_PATH, "utf8");
+  const src = codeOnly(fs.readFileSync(VISIT_TRACKER_PATH, "utf8"));
   const forbidden = [
     /activeTimeMs/,
     /sessionStart/,
