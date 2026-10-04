@@ -515,18 +515,39 @@ test("the worker keeps the existing screen-time forwarder untouched", () => {
   assert.match(src, /sendResponse\(\{ received: true, status: response\.status \}\);/);
 });
 
-test("server.js, the database layer and the dashboard are untouched by this feature", () => {
+test("the server accepts visits but exposes no visit aggregation yet", () => {
   const serverSrc = fs.readFileSync(path.join(ROOT, "server.js"), "utf8");
-  assert.ok(
-    !/siteVisit|site_visit|most.?visited/i.test(serverSrc),
-    "server.js must not know about visits yet",
+
+  // Ingestion exists…
+  assert.match(
+    serverSrc,
+    /app\.post\("\/api\/site-visits", requireAuth/,
+    "the authenticated visit endpoint must exist",
   );
+
+  // …but nothing beyond ingestion: no read route, no ranking, no aggregation.
+  // Comments are stripped so prose (e.g. this feature's own section header)
+  // cannot satisfy or trip the guard.
+  const serverCode = codeOnly(serverSrc);
+  assert.ok(
+    !/app\.get\("\/api\/site-visits"/.test(serverCode),
+    "there must be no visit READ route yet",
+  );
+  assert.ok(
+    !/most[_ ]?visited/i.test(serverCode),
+    "no Most Visited ranking may exist yet",
+  );
+  assert.ok(
+    !/GROUP BY[\s\S]{0,120}site_visits/.test(serverCode),
+    "site_visits must not be aggregated yet",
+  );
+
   const dashboardSrc = fs.readFileSync(
     path.join(ROOT, "public", "js", "dashboard.js"),
     "utf8",
   );
   assert.ok(
-    !/lisTrack:siteVisit/.test(dashboardSrc),
+    !/site-visits|lisTrack:siteVisit/.test(dashboardSrc),
     "the dashboard must not consume visits yet",
   );
 });

@@ -842,6 +842,25 @@ async function createSqliteDriver() {
         console.error("[db] SQLite migration error (first_visits):", err.message);
       }
 
+      // Migration: ensure site_visits table exists (created by base DDL above)
+      try {
+        const sv = db.exec("SELECT name FROM sqlite_master WHERE type='table' AND name='site_visits'");
+        if (!sv[0]?.values?.length) {
+          db.run(sql_schema_site_visits_fragment);
+          console.log("[db] SQLite migration: ensured site_visits table");
+        }
+      } catch (err) {
+        console.error("[db] SQLite migration error (site_visits):", err.message);
+      }
+      // Indexes are issued unconditionally: the unique index is what makes
+      // visit dedup (ON CONFLICT) work, so an older database missing it must
+      // still get it.
+      try {
+        db.run(sql_site_visits_indexes);
+      } catch (err) {
+        console.error("[db] SQLite index migration error (site_visits):", err.message);
+      }
+
       save();
       console.log("[db] SQLite schema ready");
     },
@@ -1160,6 +1179,27 @@ async function createPostgresDriver(connectionString) {
         console.error("[db] PostgreSQL migration error (first_visits):", err.message);
       }
 
+      // Migration: ensure site_visits table exists (created by base DDL above).
+      try {
+        const sv = await pool.query(`
+          SELECT 1 FROM information_schema.tables
+          WHERE table_name = 'site_visits'
+        `);
+        if (sv.rows.length === 0) {
+          await pool.query(sql_schema_site_visits_fragment_pg);
+          console.log("[db] PostgreSQL migration: ensured site_visits table");
+        }
+      } catch (err) {
+        console.error("[db] PostgreSQL migration error (site_visits):", err.message);
+      }
+      // Indexes are issued unconditionally — the unique index is what makes
+      // visit dedup (ON CONFLICT) work on an existing database too.
+      try {
+        await pool.query(sql_site_visits_indexes);
+      } catch (err) {
+        console.error("[db] PostgreSQL index migration error (site_visits):", err.message);
+      }
+
       console.log("[db] PostgreSQL schema ready");
     },
 
@@ -1233,6 +1273,18 @@ const sql_schema = `
   );
 
   CREATE INDEX IF NOT EXISTS idx_first_visits_date ON first_visits(date);
+
+  CREATE TABLE IF NOT EXISTS site_visits (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id     TEXT NOT NULL,
+    domain      TEXT NOT NULL,
+    visit_id    TEXT NOT NULL,
+    visited_at  TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_site_visits_user_visit ON site_visits(user_id, visit_id);
+  CREATE INDEX IF NOT EXISTS idx_site_visits_user_domain ON site_visits(user_id, domain);
+  CREATE INDEX IF NOT EXISTS idx_site_visits_visited_at ON site_visits(visited_at);
 `;
 
 // PostgreSQL schema uses SERIAL instead of AUTOINCREMENT and BOOLEAN + NOW()
@@ -1273,6 +1325,18 @@ const sql_schema_pg = `
   );
 
   CREATE INDEX IF NOT EXISTS idx_first_visits_date ON first_visits(date);
+
+  CREATE TABLE IF NOT EXISTS site_visits (
+    id          SERIAL PRIMARY KEY,
+    user_id     TEXT NOT NULL,
+    domain      TEXT NOT NULL,
+    visit_id    TEXT NOT NULL,
+    visited_at  TIMESTAMP NOT NULL DEFAULT NOW()
+  );
+
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_site_visits_user_visit ON site_visits(user_id, visit_id);
+  CREATE INDEX IF NOT EXISTS idx_site_visits_user_domain ON site_visits(user_id, domain);
+  CREATE INDEX IF NOT EXISTS idx_site_visits_visited_at ON site_visits(visited_at);
 `;
 
 // ─── first_visits DDL fragments (used by migrations to ensure the table exists)
@@ -1299,6 +1363,41 @@ const sql_schema_first_visits_fragment_pg = `
   );
 
   CREATE INDEX IF NOT EXISTS idx_first_visits_date ON first_visits(date);
+`;
+
+// ─── site_visits DDL fragments (used by migrations to ensure the table exists)
+// Mirrors the first_visits fragment pattern: the base DDL above creates the
+// table on a fresh database, and these fragments bring an EXISTING database
+// up to the same shape. The unique index is what makes
+// `ON CONFLICT(user_id, visit_id) DO NOTHING` work, so it is re-issued
+// unconditionally by the migrations rather than only on creation.
+
+const sql_schema_site_visits_fragment = `
+  CREATE TABLE IF NOT EXISTS site_visits (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id     TEXT NOT NULL,
+    domain      TEXT NOT NULL,
+    visit_id    TEXT NOT NULL,
+    visited_at  TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+`;
+
+const sql_schema_site_visits_fragment_pg = `
+  CREATE TABLE IF NOT EXISTS site_visits (
+    id          SERIAL PRIMARY KEY,
+    user_id     TEXT NOT NULL,
+    domain      TEXT NOT NULL,
+    visit_id    TEXT NOT NULL,
+    visited_at  TIMESTAMP NOT NULL DEFAULT NOW()
+  );
+`;
+
+// Index DDL is identical on both engines (both accept IF NOT EXISTS), so it
+// is shared by the two migration paths.
+const sql_site_visits_indexes = `
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_site_visits_user_visit ON site_visits(user_id, visit_id);
+  CREATE INDEX IF NOT EXISTS idx_site_visits_user_domain ON site_visits(user_id, domain);
+  CREATE INDEX IF NOT EXISTS idx_site_visits_visited_at ON site_visits(visited_at);
 `;
 
 // ─── Database Helper Functions ──────────────────────────────────────────────
@@ -1514,6 +1613,63 @@ async function getDailyBreakdownForPeriod(startDate, endDate, userId) {
     date: row.d,
     totalMinutes: Number(row.totalMinutes) || 0,
   }));
+}
+
+// ─── Site Visit Helpers ────────────────────────────────────────────────────
+// One row per engaged visit. DEDUP mirrors insertScreenTimeLog: a UNIQUE
+// index on (user_id, visit_id) plus INSERT ... ON CONFLICT DO NOTHING, so
+// the check-and-insert is a single atomic statement and two users may safely
+// share the same visit_id.
+
+/** Longest accepted visit_id. Keeps a hostile payload out of the index. */
+const VISIT_ID_MAX_LENGTH = 128;
+
+/**
+ * Validate + normalize a client-supplied visit identifier.
+ * Returns the trimmed id, or null when it is not usable.
+ */
+function normalizeVisitId(raw) {
+  if (typeof raw !== "string") return null;
+  const trimmed = raw.trim();
+  // URN-ish charset: UUIDs, base36 timestamps, opaque client ids.
+  if (!/^[A-Za-z0-9._:-]+$/.test(trimmed)) return null;
+  if (trimmed.length > VISIT_ID_MAX_LENGTH) return null;
+  return trimmed;
+}
+
+/**
+ * Insert one engaged site visit, duplicate-safe on (user_id, visit_id).
+ *
+ * `userId` MUST be the authenticated principal — never a client-supplied
+ * value. `domain` is already normalized by the route.
+ *
+ * @returns {Promise<{inserted: boolean, id: number|string|null}>}
+ */
+async function insertSiteVisit({ userId, domain, visitId, visitedAt }) {
+  const result = await driver.run(
+    `INSERT INTO site_visits (user_id, domain, visit_id, visited_at)
+     VALUES (?, ?, ?, ?)
+     ON CONFLICT(user_id, visit_id) DO NOTHING`,
+    [userId || "", domain, visitId, visitedAt],
+  );
+  // changes === 0 means the row already existed for this user + visit_id.
+  return { inserted: result.changes > 0, id: result.lastInsertRowid ?? null };
+}
+
+/**
+ * Read a user's stored site visits. Used by the focused tests (and available
+ * to the future aggregation work) — there is deliberately no HTTP read route
+ * for visits yet.
+ */
+async function getSiteVisitsForUser(userId) {
+  if (!userId) return [];
+  return driver.all(
+    `SELECT id, user_id, domain, visit_id, visited_at
+     FROM site_visits
+     WHERE user_id = ?
+     ORDER BY id ASC`,
+    [userId],
+  );
 }
 
 // ─── Daily Goals Helper Functions ───────────────────────────────────────────
@@ -1761,6 +1917,90 @@ app.post("/api/screen-time", requireAuth, async (req, res) => {
     });
   } catch (err) {
     console.error("[screen-time] Error processing request:", err);
+    return res
+      .status(500)
+      .json({ status: "error", message: "Internal server error" });
+  }
+});
+
+// ─── Site Visits Route (Most Visited Sites) ───────────────────────────
+//
+// POST /api/site-visits
+// Records ONE engaged visit for the authenticated user. The client sends a
+// visit_id and nothing else of consequence: the user comes exclusively from
+// requireAuth (req.authenticatedUser), the domain is normalized here, and the
+// timestamp is generated by the server. Storing is duplicate-safe, so a
+// retried request for the same (user, visit_id) is a no-op rather than a
+// second row.
+//
+// Deliberately NOT implemented here: aggregation, rankings, read routes,
+// dashboard presentation. This endpoint only accepts and stores a visit.
+
+app.post("/api/site-visits", requireAuth, async (req, res) => {
+  try {
+    let payload = req.body;
+    if (typeof payload === "string") {
+      try {
+        payload = JSON.parse(payload);
+      } catch (parseErr) {
+        return res.status(400).json({
+          status: "error",
+          message: "Invalid JSON in request body",
+        });
+      }
+    }
+
+    // Identity comes exclusively from requireAuth. A client-supplied
+    // `user` / `user_id` / `email` is ignored by construction — no such field
+    // is read anywhere below.
+    const userId = req.authenticatedUser;
+
+    if (!payload || typeof payload.domain !== "string" || !payload.domain.trim()) {
+      return res.status(400).json({
+        status: "error",
+        message: "Missing required field: domain",
+      });
+    }
+
+    const visitId = normalizeVisitId(payload.visit_id);
+    if (!visitId) {
+      return res.status(400).json({
+        status: "error",
+        message: "Missing or invalid field: visit_id",
+      });
+    }
+
+    // A bare hostname only. Scheme, www., port, path, query and hash are all
+    // stripped by normalizeDomain(); a value that is not a hostname at all is
+    // rejected outright. No path, query, title or page data is accepted.
+    const domain = normalizeDomain(payload.domain);
+    if (!domain) {
+      return res.status(400).json({
+        status: "error",
+        message: "Invalid domain. Use a bare hostname like gemini.google.com",
+      });
+    }
+
+    // Same exclusion the screen-time collector applies.
+    if (domain === "localhost" || domain === "127.0.0.1") {
+      return res.status(200).json({ status: "ignored", reason: "localhost" });
+    }
+
+    // Server-generated timestamp — a client clock is never trusted.
+    const visitedAt = new Date().toISOString();
+
+    const result = await insertSiteVisit({ userId, domain, visitId, visitedAt });
+
+    if (!result.inserted) {
+      // Same visit_id already recorded for this user: report it, store nothing.
+      console.log(`[site-visits] Duplicate visit ignored for ${domain}`);
+      return res.status(200).json({ status: "duplicate" });
+    }
+
+    console.log(`[site-visits] ${domain} — visit recorded`);
+    return res.status(201).json({ status: "ok", id: result.id });
+  } catch (err) {
+    console.error("[site-visits] Error processing request:", err);
     return res
       .status(500)
       .json({ status: "error", message: "Internal server error" });
@@ -2570,4 +2810,12 @@ process.on("SIGTERM", async () => {
 });
 
 // Exported for tests: drive the app in-process without binding a fixed port.
-module.exports = { app, start, requireAuth, SESSION_COOKIE };
+// getSiteVisitsForUser is exported so the visit tests can assert on stored
+// rows without adding an HTTP read route for visits (none exists by design).
+module.exports = {
+  app,
+  start,
+  requireAuth,
+  SESSION_COOKIE,
+  getSiteVisitsForUser,
+};
