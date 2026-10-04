@@ -32,6 +32,8 @@ const VISIT_TRACKER_PATH = path.join(ROOT, "public", "js", "visit-tracker.js");
 
 const VISIT_MESSAGE_TYPE = "lisTrack:siteVisit";
 const SIGNED_IN_USER = "owner@example.com";
+const USER_A = SIGNED_IN_USER;
+const USER_B = "other@example.com";
 
 // ─── Harness ──────────────────────────────────────────────────────────────
 
@@ -76,9 +78,15 @@ function loadBackground() {
   const calls = { fetch: [], storageGet: [], storageSet: [], storageRemove: [] };
   const localStore = {};
   const syncStore = { user_id: SIGNED_IN_USER };
-  // Queue of scripted fetch responses, so a test can drive 201/200-duplicate/
-  // 200-ignored/500 and transport failures deterministically.
-  const fetchScript = [];
+  // Per-ENDPOINT script of fetch responses, so a test can drive
+  // 201/200-duplicate/200-ignored/4xx/5xx/transport-failure deterministically
+  // even when the screen-time drain interleaves its own requests.
+  const fetchScript = new Map();
+
+  const readQueue = (store, key) => {
+    const value = store[key];
+    return Array.isArray(value) ? value : [];
+  };
 
   const on = (bucket) => (listener) => listeners[bucket].push(listener);
   const noop = () => {};
@@ -122,16 +130,18 @@ function loadBackground() {
     globalThis.LisTrackBlocker = require(path.join(ROOT, "public", "js", rel));
   };
   globalThis.fetch = async (url, options) => {
-    calls.fetch.push({ url: String(url), options });
-    const scripted = fetchScript.shift();
+    const key = String(url);
+    calls.fetch.push({ url: key, options });
+    const script = fetchScript.get(key);
+    const scripted = script && script.length ? script.shift() : null;
     if (scripted && scripted.throw) {
       throw new Error(scripted.throw);
     }
-    const next = scripted || { ok: true, status: 200, body: { status: "ok" } };
+    const next = scripted || { ok: true, status: 200, body: {} };
     return {
       ok: next.ok !== false,
       status: next.status === undefined ? 200 : next.status,
-      json: async () => (next.body === undefined ? { status: "ok" } : next.body),
+      json: async () => (next.body === undefined ? {} : next.body),
     };
   };
 
@@ -148,6 +158,16 @@ function loadBackground() {
     localStore,
     syncStore,
     fetchScript,
+    readQueue: (key) => readQueue(localStore, key),
+    /** Simulate an MV3 service-worker restart: fresh module state, same storage. */
+    reloadWorker() {
+      listeners.message.length = 0;
+      listeners.alarm.length = 0;
+      listeners.installed.length = 0;
+      listeners.startup.length = 0;
+      delete require.cache[require.resolve(BACKGROUND_PATH)];
+      require(BACKGROUND_PATH);
+    },
     restore() {
       globalThis.chrome = previousChrome;
       globalThis.fetch = previousFetch;
@@ -168,13 +188,40 @@ function reset() {
   harness.calls.storageRemove.length = 0;
   harness.localStore.lisTrackOfflineQueue = undefined;
   delete harness.localStore.lisTrackOfflineQueue;
+  delete harness.localStore.lisTrackSiteVisitQueue;
   harness.syncStore.user_id = SIGNED_IN_USER;
-  harness.fetchScript.length = 0;
+  harness.fetchScript.clear();
 }
 
-/** Script the next fetch response(s). */
-function scriptFetch(...responses) {
-  harness.fetchScript.push(...responses);
+const VISIT_URL = "https://listrack-2.onrender.com/api/site-visits";
+const SCREEN_TIME_URL = "https://listrack-2.onrender.com/api/screen-time";
+
+/** Script responses for one endpoint, consumed in order. */
+function scriptFetch(url, ...responses) {
+  harness.fetchScript.set(url, responses);
+}
+
+/** The persisted site-visit queue. */
+function visitQueue() {
+  return harness.readQueue("lisTrackSiteVisitQueue");
+}
+
+/** The persisted screen-time offline queue. */
+function screenTimeQueue() {
+  return harness.readQueue("lisTrackOfflineQueue");
+}
+
+/** Fire the existing 2-minute alarm that drives both drains. */
+function triggerDrainAlarm() {
+  for (const listener of harness.listeners.alarm) {
+    listener({ name: "drainOfflineQueue" });
+  }
+  return settle();
+}
+
+/** Let pending async work complete. */
+function settle(ms = 60) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /** A screen-time payload exactly as the existing tracker sends it. */
@@ -242,7 +289,7 @@ test("the worker recognises the exact namespaced type constant", () => {
 // ─── Submission: the authenticated POST to /api/site-visits ─────────────
 
 test("a visit message is submitted to POST /api/site-visits", async () => {
-  scriptFetch({ ok: true, status: 201, body: { status: "ok", id: 7 } });
+  scriptFetch(VISIT_URL, { ok: true, status: 201, body: { status: "ok", id: 7 } });
   await dispatch(visitMessage({ domain: "youtube.com", visit_id: "vid-123" }));
 
   assert.equal(siteVisitCalls().length, 1, "exactly one visit submission");
@@ -318,7 +365,7 @@ test("one visit message produces exactly one API submission", async () => {
 });
 
 test("a duplicate response is handled as success and is not retried", async () => {
-  scriptFetch({ ok: true, status: 200, body: { status: "duplicate" } });
+  scriptFetch(VISIT_URL, { ok: true, status: 200, body: { status: "duplicate" } });
   const responses = await dispatch(visitMessage());
 
   assert.deepEqual(
@@ -332,7 +379,7 @@ test("a duplicate response is handled as success and is not retried", async () =
 });
 
 test("an ignored response is handled as success", async () => {
-  scriptFetch({ ok: true, status: 200, body: { status: "ignored", reason: "localhost" } });
+  scriptFetch(VISIT_URL, { ok: true, status: 200, body: { status: "ignored", reason: "localhost" } });
   const responses = await dispatch(visitMessage());
 
   assert.deepEqual(responses[0], { received: true, visitStatus: "ignored" });
@@ -341,7 +388,7 @@ test("an ignored response is handled as success", async () => {
 });
 
 test("a successful 201 response is reported as ok", async () => {
-  scriptFetch({ ok: true, status: 201, body: { status: "ok", id: 42 } });
+  scriptFetch(VISIT_URL, { ok: true, status: 201, body: { status: "ok", id: 42 } });
   const responses = await dispatch(visitMessage());
   assert.deepEqual(responses[0], { received: true, visitStatus: "ok" });
 });
@@ -383,31 +430,48 @@ test("a visit message does not create an offline screen-time queue entry", async
   assert.deepEqual(offlineQueueWrites(), []);
 });
 
-test("a FAILED visit request does not write to lisTrackOfflineQueue", async () => {
-  scriptFetch({ ok: false, status: 500 });
+test("a FAILED visit request buffers in the VISIT queue, never the screen-time one", async () => {
+  scriptFetch(VISIT_URL, { ok: false, status: 500 });
   const responses = await dispatch(visitMessage());
 
-  assert.deepEqual(responses[0], { received: false, status: 500 });
+  assert.deepEqual(responses[0], { received: false, status: 500, queued: true });
   assert.equal(siteVisitCalls().length, 1, "attempted once, not retried");
-  assert.deepEqual(offlineQueueWrites(), [], "a failed visit must never be queued");
-  assert.equal(harness.localStore.lisTrackOfflineQueue, undefined);
+  assert.equal(visitQueue().length, 1, "buffered in the dedicated visit queue");
+  assert.deepEqual(offlineQueueWrites(), [], "never the screen-time queue");
+  assert.deepEqual(screenTimeQueue(), [], "the screen-time queue stays empty");
+  assert.deepEqual(screenTimeCalls(), [], "and no screen-time request was made");
 });
 
-test("a TRANSPORT failure on a visit does not write to lisTrackOfflineQueue", async () => {
-  scriptFetch({ throw: "Failed to fetch" });
+test("a TRANSPORT failure on a visit never touches the screen-time queue", async () => {
+  scriptFetch(VISIT_URL, { throw: "Failed to fetch" });
   const responses = await dispatch(visitMessage());
 
-  assert.deepEqual(responses[0], { received: false, error: "visit-not-sent" });
-  assert.deepEqual(offlineQueueWrites(), [], "a dropped connection must never be queued");
-  assert.deepEqual(screenTimeCalls(), []);
+  assert.deepEqual(responses[0], {
+    received: false,
+    error: "visit-not-sent",
+    queued: true,
+  });
+  assert.equal(visitQueue().length, 1, "buffered for a later retry");
+  assert.deepEqual(offlineQueueWrites(), []);
+  assert.deepEqual(screenTimeQueue(), []);
 });
 
 test("a 4xx rejection on a visit does not write to lisTrackOfflineQueue", async () => {
-  scriptFetch({ ok: false, status: 400 });
+  scriptFetch(VISIT_URL, { ok: false, status: 400 });
   const responses = await dispatch(visitMessage());
 
-  assert.deepEqual(responses[0], { received: false, status: 400 });
+  assert.deepEqual(responses[0], { received: false, status: 400, queued: false });
   assert.deepEqual(offlineQueueWrites(), []);
+  assert.deepEqual(visitQueue(), [], "a permanent error is never retried");
+});
+
+test("a 401 rejection is not queued", async () => {
+  scriptFetch(VISIT_URL, { ok: false, status: 401 });
+  const responses = await dispatch(visitMessage());
+
+  assert.deepEqual(responses[0], { received: false, status: 401, queued: false });
+  assert.deepEqual(visitQueue(), [], "an unauthorized visit is not retried blindly");
+  assert.deepEqual(screenTimeQueue(), []);
 });
 
 // ─── 5. Identity via the existing mechanism ──────────────────────────────
@@ -685,7 +749,595 @@ test("excluded domains are still filtered by the existing guard", async () => {
   assert.deepEqual(harness.calls.fetch, [], "excluded domains never forward");
 });
 
-// ─── Static guards on the worker ─────────────────────────────────────────
+// ─── Excluded domains are not site visits either ───────────────────────
+// The visit path reuses the EXISTING screen-time exclusion rule — the same
+// BLOCKED_DOMAINS list behind isBlockedDomain(). Nothing new is defined here,
+// and no domain is added to or removed from that list.
+
+/** The existing exclusion list, as declared in the worker. */
+const EXISTING_BLOCKED_DOMAINS = [
+  "localhost",
+  "listrack.onrender.com",
+  "listrack-2.onrender.com",
+];
+
+test("an excluded domain produces no site-visit API request", async () => {
+  for (const domain of EXISTING_BLOCKED_DOMAINS) {
+    reset();
+    const responses = await dispatch(
+      visitMessage({ domain, visit_id: `vid-excluded-${domain}` }),
+    );
+    assert.deepEqual(
+      siteVisitCalls(),
+      [],
+      `${domain} must never reach POST /api/site-visits`,
+    );
+    assert.equal(responses[0].received, false, `${domain} is not recorded`);
+    assert.equal(responses[0].reason, "excluded domain");
+  }
+});
+
+test("an excluded domain does not enter lisTrackSiteVisitQueue", async () => {
+  // Even a visit that WOULD have failed (and therefore been buffered) stops at
+  // the boundary: the scripted failures are never consumed.
+  scriptFetch(VISIT_URL, { throw: "Failed to fetch" }, { ok: false, status: 503 });
+  await dispatch(
+    visitMessage({ domain: "listrack-2.onrender.com", visit_id: "vid-excluded" }),
+  );
+
+  assert.deepEqual(siteVisitCalls(), [], "no request was attempted at all");
+  assert.deepEqual(visitQueue(), [], "an excluded visit is never buffered");
+  assert.deepEqual(screenTimeQueue(), [], "nor does it leak into screen time");
+});
+
+test("the exclusion rule matches subdomains, exactly as the screen-time rule does", async () => {
+  for (const domain of ["www.listrack.onrender.com", "app.listrack-2.onrender.com"]) {
+    reset();
+    await dispatch(visitMessage({ domain, visit_id: `vid-${domain}` }));
+    assert.deepEqual(siteVisitCalls(), [], `${domain} is excluded too`);
+  }
+});
+
+test("a normal non-excluded domain still submits normally", async () => {
+  scriptFetch(VISIT_URL, { ok: true, status: 201, body: { status: "ok", id: 7 } });
+  const responses = await dispatch(
+    visitMessage({ domain: "youtube.com", visit_id: "vid-ok" }),
+  );
+
+  assert.deepEqual(responses[0], { received: true, visitStatus: "ok" });
+  assert.equal(siteVisitCalls().length, 1, "one submission, as before");
+  assert.deepEqual(JSON.parse(siteVisitCalls()[0].options.body), {
+    domain: "youtube.com",
+    visit_id: "vid-ok",
+  });
+  assert.deepEqual(visitQueue(), [], "a delivered visit is not queued");
+});
+
+test("exclusion does not change normalization, which runs first", async () => {
+  // www. stripping and lowercasing still happen, and the normalized value is
+  // what is both checked and sent.
+  scriptFetch(VISIT_URL, { ok: true, status: 201, body: { status: "ok" } });
+  await dispatch(visitMessage({ domain: "WWW.YouTube.com", visit_id: "vid-norm" }));
+
+  assert.deepEqual(JSON.parse(siteVisitCalls()[0].options.body).domain, "youtube.com");
+
+  // And an excluded host is still caught once normalized.
+  reset();
+  await dispatch(visitMessage({ domain: "WWW.Listrack.onrender.com", visit_id: "v" }));
+  assert.deepEqual(siteVisitCalls(), [], "the normalized host is the one filtered");
+});
+
+test("the exclusion check happens before the network request", () => {
+  const body = visitHandlerBody();
+  const guard = body.indexOf("isBlockedDomain(domain)");
+  const request = body.indexOf("await fetch(");
+  assert.ok(guard !== -1, "the handler must apply the existing exclusion helper");
+  assert.ok(request !== -1, "the handler must still submit visits");
+  assert.ok(guard < request, "the guard must run before the POST");
+  // It also precedes the only two buffering calls, so an excluded visit can
+  // never reach the durable queue.
+  for (const marker of ["pushSiteVisitToQueue(", "_recentVisits.push("]) {
+    assert.ok(guard < body.indexOf(marker), `the guard must run before ${marker}`);
+  }
+});
+
+test("the visit path reuses the one existing exclusion rule", () => {
+  const src = fs.readFileSync(BACKGROUND_PATH, "utf8");
+  const body = visitHandlerBody();
+
+  // Same helper the screen-time forwarder, the blocker paths and the goal sync
+  // already use — not a visit-specific variant.
+  assert.match(body, /if \(isBlockedDomain\(domain\)\)/);
+  assert.equal(
+    (src.match(/const BLOCKED_DOMAINS = \[/g) || []).length,
+    1,
+    "there is exactly one exclusion list",
+  );
+  assert.equal(
+    (src.match(/function isBlockedDomain\(/g) || []).length,
+    1,
+    "there is exactly one exclusion helper",
+  );
+  assert.deepEqual(
+    [...src.matchAll(/^\s*"([a-z0-9.-]+)",$/gm)].map((m) => m[1]),
+    EXISTING_BLOCKED_DOMAINS,
+    "no domain was added to or removed from the existing list",
+  );
+  // The rule itself is untouched: exact match or a subdomain of a pattern.
+  assert.match(
+    src,
+    /domain === pattern \|\| domain\.endsWith\("\." \+ pattern\)/,
+    "isBlockedDomain must keep its original semantics",
+  );
+});
+
+test("screen-time exclusion behaviour is unchanged for both paths", async () => {
+  // Screen time: still dropped before the forwarder.
+  scriptFetch(SCREEN_TIME_URL, { ok: true, status: 201, body: {} });
+  const screenTime = await dispatch(screenTimePayload({ domain: "listrack.onrender.com" }));
+  assert.deepEqual(screenTime, [], "screen time is still dropped");
+  assert.deepEqual(screenTimeCalls(), [], "and still never posted");
+
+  // Screen time for an ordinary domain: still forwarded, unaffected.
+  const forwarded = await dispatch(screenTimePayload({ domain: "example.com" }));
+  assert.equal(forwarded.length, 1);
+  assert.equal(screenTimeCalls().length, 1, "ordinary screen time still forwards");
+});
+
+test("the visit queue behaviour is unchanged for non-excluded domains", async () => {
+  scriptFetch(VISIT_URL, { ok: false, status: 503 });
+  await dispatch(visitMessage({ domain: "github.com", visit_id: "vid-retry" }));
+  assert.deepEqual(visitQueue(), [{ domain: "github.com", visit_id: "vid-retry" }]);
+
+  // And it still drains normally.
+  reset();
+  harness.localStore.lisTrackSiteVisitQueue = [
+    { domain: "github.com", visit_id: "vid-retry" },
+  ];
+  scriptFetch(VISIT_URL, { ok: true, status: 201, body: { status: "ok" } });
+  await triggerDrainAlarm();
+
+  assert.equal(siteVisitCalls().length, 1, "the queued visit was retried");
+  assert.deepEqual(visitQueue(), [], "and removed once delivered");
+});
+
+// ─── Durable site-visit queue ───────────────────────────────────────────
+// Storage key, record shape and bounds. The queue holds ONLY what a retry
+// needs; the account is resolved at drain time from the existing sign-in gate.
+
+const SITE_VISIT_QUEUE_KEY = "lisTrackSiteVisitQueue";
+
+test("a network failure queues the visit in chrome.storage.local", async () => {
+  scriptFetch(VISIT_URL, { throw: "Failed to fetch" });
+  await dispatch(visitMessage({ domain: "youtube.com", visit_id: "vid-q" }));
+
+  const queue = visitQueue();
+  assert.equal(queue.length, 1);
+  assert.deepEqual(queue[0], { domain: "youtube.com", visit_id: "vid-q" });
+});
+
+test("a 5xx queues the visit", async () => {
+  scriptFetch(VISIT_URL, { ok: false, status: 503 });
+  await dispatch(visitMessage({ visit_id: "vid-q" }));
+  assert.equal(visitQueue().length, 1, "a server error is worth retrying");
+});
+
+test("a queued record contains only domain and visit_id", async () => {
+  scriptFetch(VISIT_URL, { throw: "offline" });
+  await dispatch(
+    visitMessage({
+      domain: "youtube.com",
+      visit_id: "vid-q",
+      user: "victim@example.com",
+      path: "/watch",
+      title: "Secret",
+      event: { clientX: 1, clientY: 2 },
+      timestamp: "2026-01-01T00:00:00.000Z",
+    }),
+  );
+
+  const record = visitQueue()[0];
+  assert.deepEqual(
+    Object.keys(record).sort(),
+    ["domain", "visit_id"],
+    "nothing but the two retry fields may be stored",
+  );
+  const serialized = JSON.stringify(record);
+  for (const forbidden of [
+    "victim@example.com",
+    "Bearer",
+    "Authorization",
+    "ya29.",
+    "/watch",
+    "Secret",
+    "clientX",
+    "2026-01-01",
+  ]) {
+    assert.ok(!serialized.includes(forbidden), `"${forbidden}" must never be stored`);
+  }
+});
+
+test("no credential is ever written alongside the visit queue", async () => {
+  scriptFetch(VISIT_URL, { throw: "offline" });
+  await dispatch(visitMessage({ visit_id: "vid-q" }));
+
+  for (const write of harness.calls.storageSet) {
+    if (!("lisTrackSiteVisitQueue" in write.items)) continue;
+    const serialized = JSON.stringify(write.items);
+    assert.ok(!serialized.includes("Bearer"), "no Authorization value may be stored");
+    assert.ok(!serialized.includes("ya29."), "no access token may be stored");
+    assert.ok(!serialized.includes("user_id"), "no account may be stored");
+    assert.ok(!serialized.includes("mock-google-access-token"), "no token, at all");
+  }
+});
+
+test("a 201 response does not queue", async () => {
+  scriptFetch(VISIT_URL, { ok: true, status: 201, body: { status: "ok" } });
+  await dispatch(visitMessage());
+  assert.deepEqual(visitQueue(), [], "a delivered visit is never buffered");
+});
+
+test("a duplicate response does not queue", async () => {
+  scriptFetch(VISIT_URL, { ok: true, status: 200, body: { status: "duplicate" } });
+  await dispatch(visitMessage());
+  assert.deepEqual(visitQueue(), [], "a duplicate is terminal, not retried");
+});
+
+test("an ignored response does not queue", async () => {
+  scriptFetch(VISIT_URL, { ok: true, status: 200, body: { status: "ignored" } });
+  await dispatch(visitMessage());
+  assert.deepEqual(visitQueue(), []);
+});
+
+test("the same visit is never queued twice", async () => {
+  scriptFetch(
+    VISIT_URL,
+    { ok: false, status: 500 },
+    { ok: false, status: 500 },
+    { ok: false, status: 500 },
+  );
+  for (let i = 0; i < 3; i++) {
+    await dispatch(visitMessage({ visit_id: "same-id" }));
+  }
+  assert.equal(visitQueue().length, 1, "one logical visit, one record");
+});
+
+// ─── Persistence ─────────────────────────────────────────────────────────
+
+test("queued records are readable back from chrome.storage.local", async () => {
+  scriptFetch(VISIT_URL, { throw: "offline" }, { throw: "offline" });
+  await dispatch(visitMessage({ domain: "a.com", visit_id: "id-a" }));
+  await dispatch(visitMessage({ domain: "b.com", visit_id: "id-b" }));
+
+  const read = await chrome.storage.local.get([SITE_VISIT_QUEUE_KEY]);
+  assert.deepEqual(read[SITE_VISIT_QUEUE_KEY], [
+    { domain: "a.com", visit_id: "id-a" },
+    { domain: "b.com", visit_id: "id-b" },
+  ]);
+});
+
+test("the queue survives a simulated service-worker restart", async () => {
+  scriptFetch(VISIT_URL, { throw: "offline" });
+  await dispatch(visitMessage({ domain: "youtube.com", visit_id: "vid-restart" }));
+
+  // A restart drops all in-memory worker state but keeps chrome.storage.local.
+  harness.reloadWorker();
+  await settle();
+
+  assert.deepEqual(visitQueue(), [
+    { domain: "youtube.com", visit_id: "vid-restart" },
+  ]);
+
+  // …and the fresh worker can still deliver it.
+  scriptFetch(VISIT_URL, { ok: true, status: 201, body: { status: "ok" } });
+  await triggerDrainAlarm();
+  assert.deepEqual(visitQueue(), [], "the restarted worker drained the queue");
+  const call = siteVisitCalls().slice(-1)[0];
+  assert.deepEqual(JSON.parse(call.options.body), {
+    domain: "youtube.com",
+    visit_id: "vid-restart",
+  });
+});
+
+test("the queue is bounded and drops the oldest record on overflow", async () => {
+  // Fill past the documented maximum (100). Every attempt fails.
+  scriptFetch(VISIT_URL, ...Array.from({ length: 106 }, () => ({ ok: false, status: 500 })));
+  for (let i = 0; i < 106; i++) {
+    await dispatch(visitMessage({ visit_id: `bulk-${i}` }));
+  }
+
+  const queue = visitQueue();
+  assert.equal(queue.length, 100, "storage must not grow without bound");
+  assert.ok(
+    queue.some((e) => e.visit_id === "bulk-105"),
+    "the newest record is kept",
+  );
+  assert.ok(
+    !queue.some((e) => e.visit_id === "bulk-0"),
+    "the oldest record is dropped first",
+  );
+});
+
+// ─── Draining ────────────────────────────────────────────────────────────
+
+/** Forget recorded fetches so a drain's own requests can be counted alone. */
+function clearFetches() {
+  harness.calls.fetch.length = 0;
+}
+
+/** Queue one visit without waiting for a drain. */
+async function queueVisit(overrides) {
+  scriptFetch(VISIT_URL, { throw: "offline" });
+  await dispatch(visitMessage({ visit_id: "vid-q", ...overrides }));
+  scriptFetch(VISIT_URL);
+  assert.equal(visitQueue().length, 1, "precondition: the visit is queued");
+}
+
+test("a queued visit is submitted and removed on success", async () => {
+  await queueVisit({ domain: "youtube.com" });
+  scriptFetch(VISIT_URL, { ok: true, status: 201, body: { status: "ok" } });
+
+  await triggerDrainAlarm();
+
+  const calls = siteVisitCalls();
+  const drained = calls[calls.length - 1];
+  assert.deepEqual(JSON.parse(drained.options.body), {
+    domain: "youtube.com",
+    visit_id: "vid-q",
+  });
+  assert.deepEqual(visitQueue(), [], "a delivered record is removed");
+});
+
+test("a duplicate response during a drain removes the record and does not retry", async () => {
+  await queueVisit();
+  clearFetches();
+  scriptFetch(VISIT_URL, { ok: true, status: 200, body: { status: "duplicate" } });
+
+  await triggerDrainAlarm();
+
+  assert.deepEqual(visitQueue(), [], "a duplicate is terminal — the record is dropped");
+  assert.equal(siteVisitCalls().length, 1, "the duplicate was not retried");
+});
+
+test("an ignored response during a drain removes the record", async () => {
+  await queueVisit();
+  scriptFetch(VISIT_URL, { ok: true, status: 200, body: { status: "ignored" } });
+  await triggerDrainAlarm();
+  assert.deepEqual(visitQueue(), []);
+});
+
+test("a still-failing queued visit remains queued", async () => {
+  await queueVisit();
+  scriptFetch(VISIT_URL, { ok: false, status: 500 });
+  await triggerDrainAlarm();
+
+  assert.equal(visitQueue().length, 1, "a 5xx keeps the record for the next drain");
+});
+
+test("a transport failure during a drain keeps the record", async () => {
+  await queueVisit();
+  scriptFetch(VISIT_URL, { throw: "offline again" });
+  await triggerDrainAlarm();
+  assert.equal(visitQueue().length, 1);
+});
+
+test("a permanent 4xx during a drain removes the record", async () => {
+  await queueVisit();
+  scriptFetch(VISIT_URL, { ok: false, status: 400 });
+  await triggerDrainAlarm();
+  assert.deepEqual(visitQueue(), [], "a permanent error is never retried forever");
+});
+
+test("multiple queued visits are all drained, and partial failure is per-record", async () => {
+  scriptFetch(
+    VISIT_URL,
+    { throw: "offline" },
+    { throw: "offline" },
+    { throw: "offline" },
+  );
+  await dispatch(visitMessage({ domain: "a.com", visit_id: "id-a" }));
+  await dispatch(visitMessage({ domain: "b.com", visit_id: "id-b" }));
+  await dispatch(visitMessage({ domain: "c.com", visit_id: "id-c" }));
+  scriptFetch(VISIT_URL);
+  assert.equal(visitQueue().length, 3);
+
+  // a and c succeed, b still fails.
+  scriptFetch(
+    VISIT_URL,
+    { ok: true, status: 201, body: { status: "ok" } },
+    { ok: false, status: 500 },
+    { ok: true, status: 201, body: { status: "ok" } },
+  );
+  await triggerDrainAlarm();
+
+  assert.deepEqual(visitQueue(), [{ domain: "b.com", visit_id: "id-b" }]);
+});
+
+test("the drain is a no-op when the queue is empty", async () => {
+  await triggerDrainAlarm();
+  assert.equal(siteVisitCalls().length, 0, "an empty queue costs no requests");
+  assert.deepEqual(visitQueue(), []);
+});
+
+test("concurrent drain triggers do not double-submit", async () => {
+  await queueVisit();
+  clearFetches();
+  scriptFetch(VISIT_URL, { ok: true, status: 201, body: { status: "ok" } });
+
+  // Fire several drains at once; the single-flight lock must collapse them.
+  await Promise.all([triggerDrainAlarm(), triggerDrainAlarm(), triggerDrainAlarm()]);
+
+  assert.equal(siteVisitCalls().length, 1, "one record, one submission");
+  assert.deepEqual(visitQueue(), []);
+});
+
+test("a visit queued during a drain is preserved, not overwritten", async () => {
+  await queueVisit({ domain: "old.com", visit_id: "id-old" });
+  scriptFetch(VISIT_URL, { ok: true, status: 201, body: { status: "ok" } });
+  await triggerDrainAlarm();
+  assert.deepEqual(visitQueue(), [], "precondition: drained");
+});
+
+// ─── Authentication / account switching ──────────────────────────────────
+
+test("the drain does nothing when no account is signed in", async () => {
+  await queueVisit();
+  harness.syncStore.user_id = undefined;
+  scriptFetch(VISIT_URL, { ok: true, status: 201, body: { status: "ok" } });
+
+  await triggerDrainAlarm();
+
+  assert.equal(siteVisitCalls().length, 1, "only the original failed attempt — no drain request");
+  assert.equal(visitQueue().length, 1, "the queue is left intact for its own account");
+});
+
+test("a drain authenticates with the existing mechanism, not a stored identity", async () => {
+  await queueVisit();
+  scriptFetch(VISIT_URL, { ok: true, status: 201, body: { status: "ok" } });
+  await triggerDrainAlarm();
+
+  const drained = siteVisitCalls().slice(-1)[0];
+  assert.match(drained.options.headers.Authorization, /^Bearer /);
+  assert.deepEqual(JSON.parse(drained.options.body), {
+    domain: "example.com",
+    visit_id: "vid-q",
+  });
+});
+
+test("signing out clears buffered visits so another account cannot inherit them", async () => {
+  await queueVisit();
+  assert.equal(visitQueue().length, 1, "precondition: queued");
+
+  await dispatch({ type: "signOut" });
+
+  assert.deepEqual(visitQueue(), [], "sign-out must not leave visits for the next account");
+  assert.equal(harness.syncStore.user_id, undefined);
+});
+
+test("an account switch between queueing and draining discards, never re-attributes", async () => {
+  // Account A queues a visit that failed.
+  await queueVisit({ domain: "private-a.com", visit_id: "id-a" });
+  assert.equal(harness.syncStore.user_id, USER_A);
+
+  // Account B is now signed in (without a local signOut, e.g. sync changed).
+  harness.syncStore.user_id = USER_B;
+  scriptFetch(VISIT_URL, { ok: true, status: 201, body: { status: "ok" } });
+
+  await triggerDrainAlarm();
+
+  const submitted = siteVisitCalls()
+    .filter((c) => JSON.parse(c.options.body).visit_id === "id-a")
+    .map((c) => JSON.parse(c.options.body));
+  assert.equal(submitted.length, 1, "only the original attempt under account A");
+  assert.deepEqual(visitQueue(), [], "the record is discarded rather than sent as B's");
+});
+
+test("a fresh worker adopts a pre-existing queue and says so", async () => {
+  await queueVisit();
+  harness.reloadWorker();
+  await settle();
+
+  // In-memory owner knowledge is gone after a restart, so the drain adopts the
+  // current account rather than guessing — and logs that it did.
+  scriptFetch(VISIT_URL, { ok: true, status: 201, body: { status: "ok" } });
+  await triggerDrainAlarm();
+
+  assert.deepEqual(visitQueue(), [], "the adopted record is delivered");
+});
+
+// ─── Screen-time regression: the two queues stay separate ───────────────
+
+test("a visit failure and a screen-time failure land in different queues", async () => {
+  scriptFetch(VISIT_URL, { ok: false, status: 500 });
+  await dispatch(visitMessage({ visit_id: "vid-q" }));
+  assert.equal(visitQueue().length, 1);
+  assert.deepEqual(screenTimeQueue(), [], "the visit did not touch the screen-time queue");
+
+  // Now a screen-time failure.
+  reset();
+  scriptFetch(SCREEN_TIME_URL, { ok: false, status: 500 });
+  await dispatch(screenTimePayload({ seq_id: "st-seq-1" }));
+  assert.equal(screenTimeQueue().length, 1, "screen time buffered as before");
+  assert.deepEqual(visitQueue(), [], "the screen-time failure did not touch the visit queue");
+});
+
+test("the two queues use distinct storage keys and record shapes", () => {
+  const src = fs.readFileSync(BACKGROUND_PATH, "utf8");
+  assert.match(
+    src,
+    /const SITE_VISIT_QUEUE_KEY = "lisTrackSiteVisitQueue";/,
+    "a dedicated key must exist",
+  );
+  assert.notEqual(SITE_VISIT_QUEUE_KEY, "lisTrackOfflineQueue");
+});
+
+test("the screen-time queue code never references the visit queue", () => {
+  const src = fs.readFileSync(BACKGROUND_PATH, "utf8");
+  const start = src.indexOf("async function pushToOfflineQueue");
+  const end = src.indexOf("async function drainOfflineQueue", start);
+  const screenTimeQueueCode = codeOnly(src.slice(start, end));
+  assert.ok(
+    !screenTimeQueueCode.includes(SITE_VISIT_QUEUE_KEY),
+    "pushToOfflineQueue must not know about visits",
+  );
+
+  const drainStart = src.indexOf("async function drainOfflineQueue");
+  const drainEnd = src.indexOf("// ─── Dedup", drainStart);
+  const screenTimeDrainCode = codeOnly(src.slice(drainStart, drainEnd));
+  assert.ok(
+    !screenTimeDrainCode.includes(SITE_VISIT_QUEUE_KEY),
+    "the screen-time drain must not touch the visit queue",
+  );
+  assert.match(
+    screenTimeDrainCode,
+    /api\/screen-time/,
+    "the screen-time drain still targets only /api/screen-time",
+  );
+});
+
+test("the screen-time drain still never submits a visit", async () => {
+  await queueVisit();
+  // The alarm drains BOTH queues; screen-time requests must stay on their
+  // endpoint only.
+  scriptFetch(VISIT_URL, { ok: true, status: 201, body: { status: "ok" } });
+  await triggerDrainAlarm();
+
+  for (const call of screenTimeCalls()) {
+    assert.ok(
+      call.url.endsWith("/api/screen-time"),
+      "screen-time requests keep their endpoint",
+    );
+  }
+  assert.deepEqual(visitQueue(), [], "the visit queue drained independently");
+});
+
+// ─── Performance guards ──────────────────────────────────────────────────
+
+test("no polling, timers or new alarms were added for the visit queue", () => {
+  const raw = fs.readFileSync(BACKGROUND_PATH, "utf8");
+  // Slice on the RAW source — the section markers are comments, which
+  // codeOnly() removes.
+  const start = raw.indexOf("async function pushSiteVisitToQueue");
+  const end = raw.indexOf("// ─── Daily Site-Limit Blocker", start);
+  assert.ok(start !== -1 && end > start, "the visit queue section must exist");
+  const section = codeOnly(raw.slice(start, end));
+
+  for (const forbidden of [/setInterval/, /setTimeout/, /chrome\.alarms/, /while\s*\(/]) {
+    assert.ok(!forbidden.test(section), `the visit queue must not use ${forbidden}`);
+  }
+  assert.match(section, /SITE_VISIT_QUEUE_MAX/, "the bound must be enforced in code");
+});
+
+test("the existing drain alarm is reused, not duplicated", () => {
+  const src = fs.readFileSync(BACKGROUND_PATH, "utf8");
+  const created = src.match(/chrome\.alarms\.create\(/g) || [];
+  assert.equal(created.length, 5, "no new alarm may be registered");
+  assert.equal(
+    (src.match(/void drainSiteVisitQueue\(\);/g) || []).length,
+    3,
+    "the visit drain hangs off existing lifecycle hooks only",
+  );
+});
 
 test("the visit path never touches the screen-time offline queue or beacon", () => {
   const body = visitHandlerBody();

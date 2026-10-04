@@ -45,6 +45,10 @@ let _flushIntervalSeconds = FLUSH_INTERVAL_DEFAULT_SECONDS;
 const USER_ID_KEY = "user_id";
 const PAUSE_KEY = "lisTrackPaused";
 const OFFLINE_QUEUE_KEY = "lisTrackOfflineQueue";
+// The site-visit retry queue is deliberately a SEPARATE key: the
+// screen-time queue is drained exclusively to /api/screen-time, so a visit
+// parked in it would be replayed to the wrong endpoint.
+const SITE_VISIT_QUEUE_KEY = "lisTrackSiteVisitQueue";
 
 // ─── Namespaced Message Types ─────────────────────────────────────────────
 // Every message this extension sends carries an explicit `type`. Messages
@@ -643,6 +647,9 @@ chrome.alarms.onAlarm.addListener((alarm) => {
     updateBadge();
   } else if (alarm.name === 'drainOfflineQueue') {
     drainOfflineQueue();
+    // Reuse the SAME wake-up (no new alarm, no polling) to retry any
+    // buffered site visits. It is a no-op when the queue is empty.
+    void drainSiteVisitQueue();
   }
 });
 
@@ -663,6 +670,8 @@ chrome.runtime.onInstalled.addListener((details) => {
 
   // Drain any offline-queued payloads that accumulated
   setTimeout(drainOfflineQueue, 5_000);
+  // Buffered site visits retry immediately — no timer, no extra wake-up.
+  void drainSiteVisitQueue();
 });
 
 // ─── MV3 Lifecycle: onStartup ───────────────────────────────────────────────
@@ -676,6 +685,7 @@ chrome.runtime.onStartup.addListener(() => {
   setTimeout(updateBadge, 1_000);
   setTimeout(checkGoals, 5_000);
   setTimeout(drainOfflineQueue, 3_000);
+  void drainSiteVisitQueue();
 });
 
 // ─── Keep Alive (via alarms) ────────────────────────────────────────────────
@@ -736,6 +746,20 @@ async function handleSiteVisitMessage(message) {
     return { received: false, reason: "invalid domain" };
   }
 
+  // Excluded domains are filtered by the EXISTING screen-time rule: the same
+  // BLOCKED_DOMAINS list and the same isBlockedDomain() helper the screen-time
+  // forwarder applies. No second exclusion system is defined here. The check
+  // runs on the already-normalized domain, exactly as the blocker paths do, so
+  // LisTrack's own hosts can never become a Most Visited Site.
+  //
+  // Placement: at the background boundary, BEFORE the POST and before any
+  // buffering — an excluded visit is neither submitted to /api/site-visits nor
+  // written to lisTrackSiteVisitQueue.
+  if (isBlockedDomain(domain)) {
+    console.log("[background] Ignoring excluded domain site visit:", domain);
+    return { received: false, reason: "excluded domain" };
+  }
+
   const visitId =
     message && typeof message.visit_id === "string" ? message.visit_id.trim() : "";
   if (!visitId) {
@@ -761,9 +785,12 @@ async function handleSiteVisitMessage(message) {
     });
   } catch (err) {
     // authedFetchHeaders throws when no access token is available; a network
-    // failure throws here. Neither is retried and neither is queued.
+    // failure throws here. Both are transient from the queue's point of view:
+    // remember who the visit belongs to, buffer it, and retry on a drain.
     console.warn("[background] Site visit not submitted:", err && err.message);
-    return { received: false, error: "visit-not-sent" };
+    _siteVisitQueueOwnerId = userId;
+    const queued = await pushSiteVisitToQueue(domain, visitId);
+    return { received: false, error: "visit-not-sent", queued };
   }
 
   if (response.ok) {
@@ -782,8 +809,205 @@ async function handleSiteVisitMessage(message) {
     return { received: true, visitStatus };
   }
 
-  console.warn("[background] Site visit rejected with status:", response.status);
-  return { received: false, status: response.status };
+  // Non-OK. Only a server-side/transient failure is worth retrying; a
+  // permanent client error (4xx, including 401 and 400) is dropped rather
+  // than retried forever — the same conservative policy the screen-time
+  // drain applies to its queue.
+  if (response.status >= 500) {
+    _siteVisitQueueOwnerId = userId;
+    const queued = await pushSiteVisitToQueue(domain, visitId);
+    console.warn(
+      `[background] Site visit failed with ${response.status} — ${queued ? "queued for retry" : "could not be queued"}`,
+    );
+    return { received: false, status: response.status, queued };
+  }
+
+  console.warn(
+    "[background] Site visit rejected permanently:",
+    response.status,
+  );
+  return { received: false, status: response.status, queued: false };
+}
+
+// ─── Site Visit Queue (durable retry) ───────────────────────────────────
+// A visit whose request failed is buffered here and retried later. This queue
+// is completely independent of lisTrackOfflineQueue: different storage key,
+// different endpoint, different record shape, and the two never merge.
+//
+// RECORDS hold ONLY what the retry request needs — { domain, visit_id }.
+// Never an account, a token, a header, a URL, a path or any page data. The
+// account is resolved from the existing sign-in mechanism at drain time.
+
+/**
+ * Bound on stored visits. Visits are far rarer than screen-time pings (one
+ * per ENGAGED document, not one per flush), so this is smaller than the
+ * screen-time queue's 500 while still ample. Overflow policy: DROP OLDEST,
+ * keeping the most recent activity. Storage never grows unbounded.
+ */
+const SITE_VISIT_QUEUE_MAX = 100;
+
+// Single-flight guard so two drains cannot submit the same record twice.
+let _siteVisitDrainInFlight = false;
+
+// The account the queue belongs to. HELD IN MEMORY ONLY — never persisted,
+// never written into a record. It exists solely so a drain can notice that
+// the signed-in account changed and refuse to mis-attribute buffered visits.
+let _siteVisitQueueOwnerId = null;
+
+/**
+ * Buffer one failed visit for a later retry.
+ * @returns {Promise<boolean>} whether the record is now queued
+ */
+async function pushSiteVisitToQueue(domain, visitId) {
+  try {
+    const record = { domain, visit_id: visitId };
+    const result = await chrome.storage.local.get([SITE_VISIT_QUEUE_KEY]);
+    const stored = result[SITE_VISIT_QUEUE_KEY];
+    const queue = Array.isArray(stored) ? stored : [];
+
+    // The same visit may already be waiting (e.g. two failed attempts). Do
+    // not let the queue grow with duplicates of a single logical visit.
+    if (queue.some((e) => e && e.domain === domain && e.visit_id === visitId)) {
+      return true;
+    }
+
+    const next = queue.concat([record]);
+    const overflow = next.length - SITE_VISIT_QUEUE_MAX;
+    if (overflow > 0) {
+      console.warn(
+        `[background] Site visit queue full (${SITE_VISIT_QUEUE_MAX}) — dropping ${overflow} oldest record(s)`,
+      );
+    }
+    await chrome.storage.local.set({
+      [SITE_VISIT_QUEUE_KEY]: next.slice(-SITE_VISIT_QUEUE_MAX),
+    });
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+/** Read the queue as a plain array (tolerates a missing or corrupt value). */
+async function readSiteVisitQueue() {
+  try {
+    const result = await chrome.storage.local.get([SITE_VISIT_QUEUE_KEY]);
+    const stored = result[SITE_VISIT_QUEUE_KEY];
+    return Array.isArray(stored) ? stored : [];
+  } catch (_) {
+    return [];
+  }
+}
+
+/**
+ * Retry buffered visits, oldest first.
+ *
+ * Triggered from the extension lifecycle (install/update and browser start)
+ * and from the existing 2-minute alarm that already drains the screen-time
+ * queue — no new alarm, no polling loop, no timer is introduced here.
+ *
+ * Removal rules:
+ *   ok / duplicate / ignored  → removed (all are terminal successes; a
+ *                               duplicate is the server's uniqueness guard
+ *                               working, so it is never retried)
+ *   4xx                       → removed (permanent; retrying cannot help)
+ *   5xx / network failure     → kept for the next drain
+ */
+async function drainSiteVisitQueue() {
+  if (_siteVisitDrainInFlight) return;
+  _siteVisitDrainInFlight = true;
+  try {
+    const queue = await readSiteVisitQueue();
+    if (queue.length === 0) return;
+
+    // Ownership is resolved HERE, from the existing sign-in gate — never from
+    // a stored record.
+    const userId = await getUserId();
+    if (!userId) {
+      // Signed out: leave the queue untouched so it can be retried for its
+      // own account once that account is back.
+      return;
+    }
+
+    if (_siteVisitQueueOwnerId === null) {
+      // First drain since this worker started. We cannot verify which account
+      // queued these records without persisting identity, so adopt the
+      // current one and say so loudly.
+      _siteVisitQueueOwnerId = userId;
+      console.warn(
+        `[background] Adopting ${queue.length} queued site visit(s) for the signed-in account (owner unknown after restart)`,
+      );
+    } else if (_siteVisitQueueOwnerId !== userId) {
+      // The signed-in account changed after these records were buffered.
+      // Submitting them now would silently attribute one account's browsing
+      // to another, so they are DISCARDED rather than mis-attributed.
+      console.warn(
+        "[background] Account changed — discarding queued site visits instead of mis-attributing them",
+      );
+      await chrome.storage.local.set({ [SITE_VISIT_QUEUE_KEY]: [] });
+      _siteVisitQueueOwnerId = userId;
+      return;
+    }
+
+    const headers = await authedFetchHeaders({ "Content-Type": "application/json" });
+    const snapshot = new Set(queue.map((e) => JSON.stringify(e)));
+    const remaining = [];
+
+    for (const record of queue) {
+      if (!record || typeof record.domain !== "string" || !record.visit_id) {
+        continue; // Unusable record — drop rather than resend forever.
+      }
+      if (isBlockedDomain(record.domain)) {
+        // Same existing exclusion rule as the live path. An excluded domain can
+        // no longer be queued; this only stops a record buffered by an earlier
+        // build from ever being sent.
+        console.warn(
+          "[background] Dropping queued site visit for excluded domain:",
+          record.domain,
+        );
+        continue;
+      }
+      try {
+        const response = await fetch(`${SERVER_URL}/api/site-visits`, {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ domain: record.domain, visit_id: record.visit_id }),
+        });
+        if (response.ok) continue; // ok / duplicate / ignored → delivered
+        if (response.status >= 400 && response.status < 500) {
+          console.warn(
+            "[background] Dropping permanently-invalid queued site visit:",
+            response.status,
+          );
+          continue;
+        }
+        remaining.push(record); // 5xx — try again later
+      } catch (_) {
+        remaining.push(record); // transport failure — try again later
+      }
+    }
+
+    // Merge with anything buffered WHILE this drain was in flight, because
+    // chrome.storage.local.set replaces the whole key.
+    const current = await readSiteVisitQueue();
+    const addedDuringDrain = current.filter((e) => !snapshot.has(JSON.stringify(e)));
+    await chrome.storage.local.set({
+      [SITE_VISIT_QUEUE_KEY]: remaining
+        .concat(addedDuringDrain)
+        .slice(-SITE_VISIT_QUEUE_MAX),
+    });
+
+    const delivered = queue.length - remaining.length;
+    if (delivered > 0) {
+      console.log(
+        `[background] Drained site visit queue: ${delivered} delivered, ${remaining.length} still queued`,
+      );
+    }
+  } catch (err) {
+    // A failure here (e.g. no access token) leaves the queue untouched.
+    console.warn("[background] Site visit queue drain failed:", err && err.message);
+  } finally {
+    _siteVisitDrainInFlight = false;
+  }
 }
 
 // ─── Message Handler ────────────────────────────────────────────────────────
@@ -821,6 +1045,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       try {
         await chrome.storage.sync.remove([USER_ID_KEY]);
       } catch (_) {}
+      // Buffered site visits belong to the account signing out. They are
+      // dropped here rather than left behind, because the next account to
+      // sign in would otherwise inherit them as its own activity. (The
+      // screen-time queue is deliberately left untouched by this handler.)
+      try {
+        await chrome.storage.local.set({ [SITE_VISIT_QUEUE_KEY]: [] });
+      } catch (_) {}
+      _siteVisitQueueOwnerId = null;
       chrome.action.setBadgeText({ text: '' });
       console.log('[background] User signed out — tracking paused');
       sendResponse({ signedOut: true });
