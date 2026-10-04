@@ -24,7 +24,11 @@ const VISIT_TRACKER_PATH = path.join(
   "visit-tracker.js",
 );
 
-const { QUALIFYING_EVENTS, createVisitTracker } = require(VISIT_TRACKER_PATH);
+const {
+  QUALIFYING_EVENTS,
+  VISIT_MESSAGE_TYPE,
+  createVisitTracker,
+} = require(VISIT_TRACKER_PATH);
 
 // ─── Stubs ─────────────────────────────────────────────────────────────────
 
@@ -88,10 +92,35 @@ function strictEvent(type) {
 }
 
 /** A tracker wired to a fresh fake target. */
-function setup() {
+function setup(options) {
   const target = createFakeTarget();
-  const tracker = createVisitTracker({ target });
+  const tracker = createVisitTracker({ target, hostname: "example.com", ...options });
   return { target, tracker };
+}
+
+/**
+ * A fake chrome.runtime.sendMessage recorder. Installed on globalThis for the
+ * duration of a test and removed afterwards, so the content script sees the
+ * extension runtime exactly as it would in a browser.
+ */
+function withFakeChrome(run) {
+  const sent = [];
+  const previous = globalThis.chrome;
+  globalThis.chrome = {
+    runtime: {
+      sendMessage(message, callback) {
+        sent.push(message);
+        if (typeof callback === "function") callback({ received: true });
+      },
+      lastError: null,
+    },
+  };
+  try {
+    return run(sent);
+  } finally {
+    if (previous === undefined) delete globalThis.chrome;
+    else globalThis.chrome = previous;
+  }
 }
 
 /** A plain, unguarded event for tests that only care about the type. */
@@ -276,6 +305,116 @@ test("stop detaches the listeners and re-start re-attaches them", () => {
   assert.equal(target.listenerCount(), 0);
 });
 
+// ─── The outbound visit message ──────────────────────────────────────────
+
+test("no visit message is sent before an interaction", () => {
+  withFakeChrome((sent) => {
+    const { target } = setup();
+    for (const other of ["focus", "blur", "load", "resize"]) {
+      target.dispatch(event(other));
+    }
+    assert.deepEqual(sent, [], "nothing is reported for an idle page");
+  });
+});
+
+test("the first qualifying interaction sends exactly one namespaced visit message", () => {
+  withFakeChrome((sent) => {
+    const { target } = setup();
+    target.dispatch(strictEvent("scroll"));
+
+    assert.equal(sent.length, 1, "one message per document session");
+    assert.deepEqual(sent[0], {
+      type: "lisTrack:siteVisit",
+      domain: "example.com",
+    });
+    assert.equal(sent[0].type, VISIT_MESSAGE_TYPE);
+  });
+});
+
+test("the visit message carries only the type and the bare hostname", () => {
+  withFakeChrome((sent) => {
+    const { target } = setup();
+    target.dispatch(strictEvent("click"));
+
+    assert.deepEqual(
+      Object.keys(sent[0]).sort(),
+      ["domain", "type"],
+      "nothing else may travel — no identity, path, query or detail",
+    );
+    for (const forbidden of [
+      "user",
+      "userId",
+      "user_id",
+      "email",
+      "token",
+      "path",
+      "url",
+      "href",
+      "search",
+      "hash",
+      "title",
+      "event",
+    ]) {
+      assert.ok(
+        !(forbidden in sent[0]),
+        `the visit message must not carry "${forbidden}"`,
+      );
+    }
+  });
+});
+
+test("further interactions send no further messages", () => {
+  withFakeChrome((sent) => {
+    const { target } = setup();
+    target.dispatch(strictEvent("scroll"));
+    for (let round = 0; round < 20; round++) {
+      for (const eventType of QUALIFYING_EVENTS) {
+        target.dispatch(strictEvent(eventType));
+      }
+      target.dispatch(strictEvent("mousemove"));
+      target.dispatch(strictEvent("touchmove"));
+    }
+    assert.equal(sent.length, 1, "still exactly one message for the document");
+  });
+});
+
+test("the latch is the single sender: a reset session reports its own visit", () => {
+  withFakeChrome((sent) => {
+    const { target, tracker } = setup();
+    target.dispatch(strictEvent("wheel"));
+    assert.equal(sent.length, 1);
+
+    tracker.reset();
+    target.dispatch(strictEvent("wheel"));
+    assert.equal(sent.length, 2, "a fresh session sends its own single message");
+  });
+});
+
+test("movement alone never sends a visit message", () => {
+  withFakeChrome((sent) => {
+    const { target } = setup();
+    for (let i = 0; i < 200; i++) {
+      target.dispatch(strictEvent("mousemove"));
+      target.dispatch(strictEvent("touchmove"));
+    }
+    assert.deepEqual(sent, []);
+  });
+});
+
+test("no visit message is sent when the hostname is unknown", () => {
+  withFakeChrome((sent) => {
+    const { target } = setup({ hostname: "" });
+    target.dispatch(strictEvent("scroll"));
+    assert.deepEqual(sent, [], "without a hostname there is nothing to report");
+  });
+});
+
+test("no visit message is sent when the extension runtime is unavailable", () => {
+  // No globalThis.chrome installed — the reporter must stay silent.
+  const { target } = setup();
+  assert.doesNotThrow(() => target.dispatch(strictEvent("scroll")));
+});
+
 // ─── Privacy and isolation (static guards) ────────────────────────────────
 
 test("the handler needs nothing but the event type", () => {
@@ -309,7 +448,7 @@ test("the tracker exposes no captured interaction data", () => {
   }
 });
 
-test("the content script performs no network, storage or messaging", () => {
+test("the content script performs no network, storage or credential access", () => {
   const src = fs.readFileSync(VISIT_TRACKER_PATH, "utf8");
   const forbidden = [
     /\bfetch\s*\(/,
@@ -317,7 +456,9 @@ test("the content script performs no network, storage or messaging", () => {
     /sendBeacon/,
     /navigator\.send/,
     /chrome\.storage/,
-    /sendMessage/,
+    /chrome\.identity/,
+    /getAuthToken/,
+    /clearAllCachedAuthTokens/,
     /localStorage/,
     /sessionStorage/,
     /chrome\.tabs/,
@@ -326,9 +467,20 @@ test("the content script performs no network, storage or messaging", () => {
   for (const pattern of forbidden) {
     assert.ok(
       !pattern.test(src),
-      `visit-tracker.js must not reference ${pattern} (no network, storage or messaging yet)`,
+      `visit-tracker.js must not reference ${pattern} (no network, storage or credentials)`,
     );
   }
+});
+
+test("the visit message is the single outbound call in the file", () => {
+  const src = fs.readFileSync(VISIT_TRACKER_PATH, "utf8");
+  // One availability guard + exactly one call site.
+  const calls = src.match(/chrome\.runtime\.sendMessage\(/g) || [];
+  assert.equal(calls.length, 1, "exactly one sendMessage call site");
+  assert.ok(
+    !/\.sendMessage\s*\(/.test(src.replace(/chrome\.runtime\.sendMessage\(/g, "")),
+    "no other messaging entry point may exist",
+  );
 });
 
 test("the content script is independent of the screen-time tracker", () => {

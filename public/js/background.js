@@ -46,6 +46,16 @@ const USER_ID_KEY = "user_id";
 const PAUSE_KEY = "lisTrackPaused";
 const OFFLINE_QUEUE_KEY = "lisTrackOfflineQueue";
 
+// ─── Namespaced Message Types ─────────────────────────────────────────────
+// Every message this extension sends carries an explicit `type`. Messages
+// whose type starts with this namespace are claimed and routed BY TYPE in
+// the message handler, and can never fall through into the screen-time
+// forwarder — which dispatches on the mere presence of `domain`, so a
+// domain-bearing feature message would otherwise be mistaken for screen time
+// and POSTed to /api/screen-time.
+const TYPE_NAMESPACE = "lisTrack:";
+const VISIT_MESSAGE_TYPE = "lisTrack:siteVisit";
+
 // ─── User Identity (Mandatory Google Sign-In) ──────────────────────────────
 // The signed-in Google email is stored in chrome.storage.sync under
 // `user_id`. Every network request to the server is gated on its presence.
@@ -675,6 +685,58 @@ chrome.runtime.onStartup.addListener(() => {
 // setInterval is not persisted across SW termination and gives false confidence.
 // The alarms API is the canonical MV3 pattern for periodic wake-ups.
 
+// ─── Site Visit Handling (Most Visited Sites) ───────────────────────────
+// The content script (public/js/visit-tracker.js) sends exactly one message
+// per engaged document: { type: "lisTrack:siteVisit", domain }.
+//
+// IDENTITY: the sender never learns who is signed in and never names a user.
+// The account is resolved HERE, from the existing chrome.storage.sync
+// user_id, so a content script cannot attribute a visit to anyone else. The
+// server remains the final authority when ingestion lands (req.authenticatedUser
+// → user_id).
+//
+// SCOPE: the association is kept in memory only. There is deliberately NO
+// network call, no offline-queue entry and no persistence here yet.
+
+const VISIT_MEMORY_LIMIT = 50;
+const _recentVisits = [];
+
+/** A conservative hostname shape check — the server normalizes for real. */
+function isValidHostname(domain) {
+  return typeof domain === "string" && /^[a-z0-9][a-z0-9.-]*$/.test(domain);
+}
+
+/**
+ * Handle one engaged-visit message. Never throws.
+ * @returns {Promise<{received: boolean, requiresAuth?: boolean, visitCounted?: boolean, reason?: string}>}
+ */
+async function handleSiteVisitMessage(message) {
+  // Resolve the authenticated account ourselves. Anything identity-shaped in
+  // the message body is ignored by construction — it is never read.
+  const userId = await getUserId();
+  if (!userId) {
+    console.log("[background] Ignoring site visit — user not signed in");
+    return { received: false, requiresAuth: true };
+  }
+
+  // Bare hostname only; normalizeDomain lowercases and strips a leading www.
+  const domain = LisTrackBlocker.normalizeDomain(message && message.domain);
+  if (!isValidHostname(domain)) {
+    console.warn(
+      "[background] Ignoring site visit with invalid domain:",
+      message && message.domain,
+    );
+    return { received: false, reason: "invalid domain" };
+  }
+
+  // In-memory association only — nothing leaves the worker.
+  _recentVisits.push({ userId, domain, at: Date.now() });
+  if (_recentVisits.length > VISIT_MEMORY_LIMIT) _recentVisits.shift();
+
+  console.log(`[background] Recorded engaged site visit for ${domain}`);
+  return { received: true, visitCounted: true };
+}
+
 // ─── Message Handler ────────────────────────────────────────────────────────
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -770,6 +832,41 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   // inside this worker by openDashboardWithToken(), which never discloses the
   // token to page content. Do not reintroduce a handler that returns a
   // credential to a content script.
+
+  // ── Namespaced typed messages (routed by type, never by domain) ────────
+  // The screen-time forwarder below dispatches on the mere presence of
+  // `domain`, so without this guard a domain-bearing feature message (e.g. a
+  // site visit) would be swallowed by it and could even be POSTed to
+  // /api/screen-time. Every lisTrack: message is therefore claimed here by
+  // its exact type; unknown namespaced types are dropped explicitly instead
+  // of falling through.
+  if (
+    message &&
+    typeof message.type === "string" &&
+    message.type.startsWith(TYPE_NAMESPACE)
+  ) {
+    if (message.type === VISIT_MESSAGE_TYPE) {
+      handleSiteVisitMessage(message).then(
+        (result) => {
+          try {
+            sendResponse(result);
+          } catch (_) {}
+        },
+        () => {
+          try {
+            sendResponse({ received: false });
+          } catch (_) {}
+        },
+      );
+      return true; // Keep the worker alive until sendResponse resolves
+    }
+
+    console.warn(
+      "[background] Ignoring unknown namespaced message type:",
+      message.type,
+    );
+    return;
+  }
 
   if (!message || !message.domain) return;
 

@@ -16,16 +16,17 @@
  *     anything after   -> still 1 visit
  *     page reload      -> a new document, so a new session
  *
- * SCOPE: purely local. It records the FACT that an engagement happened, in
- * memory, and nothing else — no reporting, no persistence and no messaging
- * are implemented here. Reporting is a separate concern and is deliberately
- * not present in this file.
+ * SCOPE: one outbound message, and nothing else. On the first engagement it
+ * sends a single namespaced runtime message ({ type, domain }) to the
+ * service worker. There is no network call, no persistence and no offline
+ * queue here — the service worker owns identity and anything further.
  *
  * PRIVACY: the handler reads ONLY the event type. It never inspects the
  * event target, key values, coordinates, page contents, form values or any
  * other interaction detail, and nothing about the page or the person is
  * retained. Pointer movement (mousemove / touchmove) is not an interaction
  * and is never listened for, so passive mouse drift cannot open a visit.
+ * The reported domain is the bare hostname — no URL, path, query or hash.
  *
  * ISOLATION: this file holds its own session state via visit-session.js and
  * shares nothing with the existing timing content script. It does not read
@@ -58,11 +59,16 @@
   const QUALIFYING_EVENTS = visitSession.QUALIFYING_EVENTS;
   const LISTENER_OPTIONS = { passive: true, capture: true };
 
+  // The one dedicated message type this script is allowed to send.
+  const VISIT_MESSAGE_TYPE = "lisTrack:siteVisit";
+
   /**
    * Create an independent visit tracker bound to one document.
    *
    * @param {Object} [options]
    * @param {EventTarget} [options.target] listener host (defaults to window)
+   * @param {string} [options.hostname] bare hostname to report (defaults to
+   *   the document's own hostname)
    * @returns {Object} tracker handle — see the methods below. Listeners are
    *   attached before this returns; call stop() to detach them.
    */
@@ -73,9 +79,47 @@
       throw new Error("[visit-tracker] an event target is required");
     }
 
+    // The bare hostname — never the full URL, path, query or hash.
+    const hostname =
+      opts.hostname !== undefined
+        ? opts.hostname
+        : typeof window !== "undefined" && window.location
+          ? window.location.hostname
+          : "";
+
     // One tracker owns one visit-session. This is the ONLY state here.
     const session = visitSession.createVisitSession();
     let listening = false;
+
+    /**
+     * Report the engaged visit to the service worker. Called once per
+     * document, from the single place a visit becomes true.
+     *
+     * Carries only the fact and the bare hostname. NO identity is attached:
+     * this script never learns who is signed in, never calls the identity
+     * API and cannot choose whose visit this is — the service worker
+     * resolves the authenticated account itself. Nothing is written to any
+     * offline queue.
+     */
+    function reportVisit() {
+      if (!hostname) return;
+      if (
+        typeof chrome === "undefined" ||
+        !chrome.runtime ||
+        !chrome.runtime.sendMessage
+      ) {
+        return;
+      }
+      try {
+        chrome.runtime.sendMessage(
+          { type: VISIT_MESSAGE_TYPE, domain: hostname },
+          () => {
+            // Reading lastError is how a dropped message stays silent.
+            void chrome.runtime.lastError;
+          },
+        );
+      } catch (_) {}
+    }
 
     /**
      * The single listener for every qualifying event.
@@ -89,6 +133,8 @@
       // The single place a visit becomes true for this document. Constant
       // message only — no domain, identity or interaction detail is logged.
       console.log("[visit-tracker] engaged visit recorded");
+
+      reportVisit();
     }
 
     function start() {
@@ -153,6 +199,7 @@
   const api = {
     QUALIFYING_EVENTS,
     LISTENER_OPTIONS,
+    VISIT_MESSAGE_TYPE,
     createVisitTracker,
     getActiveTracker: () => activeTracker,
   };
