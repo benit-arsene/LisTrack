@@ -610,10 +610,11 @@
         nameEl.textContent = String(item.domain);
         row.appendChild(nameEl);
 
-        // Visit count
+// Visit count
         const countEl = document.createElement('span');
-        countEl.className = 'flex-shrink-0 text-sm font-semibold text-gray-700 dark:text-gray-300 ml-2';
-        countEl.textContent = String(item.visitCount);
+        countEl.className = 'flex-shrink-0 text-sm font-medium text-gray-600 dark:text-gray-400 ml-2 whitespace-nowrap';
+        const visits = Number(item.visitCount);
+        countEl.textContent = visits === 1 ? '1 visit' : visits + ' visits';
         row.appendChild(countEl);
 
         fragment.appendChild(row);
