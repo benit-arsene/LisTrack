@@ -5,22 +5,20 @@
  *
  * This script answers one question per document: did the user engage with
  * this page? It registers the six qualifying interaction events and, on the
- * first one, asks the visit-session state machine whether a visit should be
- * counted. After that first interaction every later interaction is ignored
- * for the lifetime of the document, so one browsing session yields exactly
- * one engaged visit.
+ * first one, sends a message to the background service worker. The background
+ * owns visitId generation, 30-minute visit windows, cross-tab deduplication,
+ * and persistence. The tracker does NOT create or persist a visit_id.
  *
  *     page load        -> 0 visits
  *     idle on the page -> 0 visits
- *     first scroll etc -> 1 visit
- *     anything after   -> still 1 visit
- *     page reload      -> a new document, so a new session
+ *     first scroll etc -> 1 message sent to background
+ *     anything after   -> no further messages (background is authoritative)
+ *     page reload      -> a new document, so a new message may be sent
  *
  * SCOPE: one outbound message, and nothing else. On the first engagement it
- * sends a single namespaced runtime message ({ type, domain, visit_id }) to
- * the service worker, where visit_id identifies this document session. There
- * is no network call, no persistence and no offline queue here — the service
- * worker owns identity and anything further.
+ * sends a single namespaced runtime message ({ type, domain }) to
+ * the service worker. There is no network call, no persistence and no offline
+ * queue here — the service worker owns identity and anything further.
  *
  * PRIVACY: the handler reads ONLY the event type. It never inspects the
  * event target, key values, coordinates, page contents, form values or any
@@ -29,72 +27,29 @@
  * and is never listened for, so passive mouse drift cannot open a visit.
  * The reported domain is the bare hostname — no URL, path, query or hash.
  *
- * ISOLATION: this file holds its own session state via visit-session.js and
- * shares nothing with the existing timing content script. It does not read
- * or call any timing, idle, pause, visibility or sign-in state, and it does
- * not send anything to the service worker or the network. Listeners are
- * passive and capture-phase so that site scripts cannot suppress detection
- * by stopping propagation, and they never cancel or alter page behaviour.
- *
- * Depends on: public/js/visit-session.js (loaded immediately before this
- * file in the same content-script world — see manifest.json).
+ * ISOLATION: this file holds its own minimal state and shares nothing with
+ * the existing timing content script. It does not read or call any timing,
+ * idle, pause, visibility or sign-in state, and it does not send anything
+ * to the network. Listeners are passive and capture-phase so that site
+ * scripts cannot suppress detection by stopping propagation, and they never
+ * cancel or alter page behaviour.
  */
 (function () {
   "use strict";
 
-  // The state machine. In the browser it is already on globalThis because
-  // visit-session.js runs first in this same isolated world; under Node
-  // (tests) it is pulled in as a CommonJS module.
-  const visitSession =
-    typeof module !== "undefined" && module.exports
-      ? require("./visit-session.js")
-      : globalThis.LisTrackVisitSession;
-
-  if (!visitSession || typeof visitSession.createVisitSession !== "function") {
-    throw new Error(
-      "[visit-tracker] visit-session.js must be loaded before visit-tracker.js",
-    );
-  }
-
   // Only the six engaged interactions. Pointer/touch movement is excluded.
-  const QUALIFYING_EVENTS = visitSession.QUALIFYING_EVENTS;
+  const QUALIFYING_EVENTS = [
+    "scroll",
+    "mousedown",
+    "click",
+    "keydown",
+    "touchstart",
+    "wheel",
+  ];
   const LISTENER_OPTIONS = { passive: true, capture: true };
 
   // The one dedicated message type this script is allowed to send.
   const VISIT_MESSAGE_TYPE = "lisTrack:siteVisit";
-
-  /**
-   * Generate the id for one document session.
-   *
-   * Prefers the browser's native crypto.randomUUID(). That is unavailable on
-   * insecure origins (the content script also runs on plain http pages), so
-   * the fallbacks deliberately mirror the existing generateUuid() in
-   * public/js/tracker.js: a hand-built v4 UUID from crypto.getRandomValues,
-   * then a timestamp+random string. No dependency is added.
-   */
-  function generateVisitId() {
-    try {
-      if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
-        return crypto.randomUUID();
-      }
-    } catch (_) {}
-
-    try {
-      if (typeof crypto !== "undefined" && crypto.getRandomValues) {
-        const bytes = new Uint8Array(16);
-        crypto.getRandomValues(bytes);
-        bytes[6] = (bytes[6] & 0x0f) | 0x40; // version 4
-        bytes[8] = (bytes[8] & 0x3f) | 0x80; // variant 10
-        const hex = Array.from(bytes, (b) =>
-          b.toString(16).padStart(2, "0")
-        ).join("");
-        return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
-      }
-    } catch (_) {}
-
-    // Last resort: timestamp + random suffix (same convention as tracker.js).
-    return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
-  }
 
   /**
    * Create an independent visit tracker bound to one document.
@@ -113,35 +68,28 @@
       throw new Error("[visit-tracker] an event target is required");
     }
 
-    // One id per DOCUMENT session. A reload runs this file again, so a reload
-    // gets a new id, and every interaction within this document reuses it.
-    // In memory only — never persisted to chrome.storage, localStorage,
-    // sessionStorage, a cookie or the backend.
-    const visitId = generateVisitId();
-
     // The bare hostname — never the full URL, path, query or hash.
     const hostname =
       opts.hostname !== undefined
         ? opts.hostname
         : typeof window !== "undefined" && window.location
-          ? window.location.hostname
-          : "";
+        ? window.location.hostname
+        : "";
 
-    // One tracker owns one visit-session. This is the ONLY state here.
-    const session = visitSession.createVisitSession();
+    // Local latch: has this document already sent its message?
+    // The background remains the authority on whether it counts as a visit.
+    let hasSent = false;
     let listening = false;
 
     /**
      * Report the engaged visit to the service worker. Called once per
      * document, from the single place a visit becomes true.
      *
-     * Carries only the fact, the bare hostname and this document's visit_id.
-     * NO identity is attached: this script never learns who is signed in,
-     * never calls the identity API and cannot choose whose visit this is —
-     * the service worker resolves the authenticated account itself. Nothing
-     * is written to any offline queue.
+     * Carries only the fact and the bare hostname. NO visit_id, no identity.
+     * The background resolves the authenticated account and generates the visitId.
      */
     function reportVisit() {
+      if (hasSent) return;
       if (!hostname) return;
       if (
         typeof chrome === "undefined" ||
@@ -152,12 +100,13 @@
       }
       try {
         chrome.runtime.sendMessage(
-          { type: VISIT_MESSAGE_TYPE, domain: hostname, visit_id: visitId },
+          { type: VISIT_MESSAGE_TYPE, domain: hostname },
           () => {
             // Reading lastError is how a dropped message stays silent.
             void chrome.runtime.lastError;
           },
         );
+        hasSent = true;
       } catch (_) {}
     }
 
@@ -167,11 +116,10 @@
      */
     function handleInteraction(event) {
       // PRIVACY: `event.type` is the only property read here, by design.
-      if (!session.shouldCountVisit(event.type)) return;
-      if (!session.markVisit()) return;
+      if (!QUALIFYING_EVENTS.includes(event.type)) return;
+      if (hasSent) return;
 
-      // The single place a visit becomes true for this document. Constant
-      // message only — no domain, identity or interaction detail is logged.
+      // The single place a visit message is sent for this document.
       console.log("[visit-tracker] engaged visit recorded");
 
       reportVisit();
@@ -201,22 +149,14 @@
       /** The listener itself (exposed so it can be driven directly). */
       handleInteraction,
 
-      /** Has this document recorded an engaged visit? */
+      /** Has this document sent its visit message? */
       hasEngaged() {
-        return session.hasCounted();
+        return hasSent;
       },
 
-      /** Visits recorded for this document: 0 or 1. */
+      /** Messages sent for this document: 0 or 1. */
       getVisitCount() {
-        return session.hasCounted() ? 1 : 0;
-      },
-
-      /**
-       * This document session's visit_id. Constant for the lifetime of this
-       * tracker — a reload creates a new tracker with a new id.
-       */
-      getVisitId() {
-        return visitId;
+        return hasSent ? 1 : 0;
       },
 
       /** Are the qualifying listeners currently attached? */
@@ -231,17 +171,13 @@
       stop,
 
       /**
-       * Start a fresh visit-session without reloading: the next qualifying
-       * interaction counts again. A page reload achieves this implicitly,
-       * because a new document gets a brand new tracker.
-       *
-       * NOTE: this re-arms the SAME document, so a second report would reuse
-       * this tracker's visit_id — which the server deduplicates. It exists for
-       * tests and for an explicit in-page re-arm; a genuine new session
-       * should come from a new document.
+       * Reset the local latch so the next qualifying interaction sends again.
+       * A page reload achieves this implicitly, because a new document gets
+       * a brand new tracker. The background remains authoritative on whether
+       * the new message counts as a new visit (30-minute window logic).
        */
       reset() {
-        session.reset();
+        hasSent = false;
       },
     };
   }
@@ -253,7 +189,6 @@
     QUALIFYING_EVENTS,
     LISTENER_OPTIONS,
     VISIT_MESSAGE_TYPE,
-    generateVisitId,
     createVisitTracker,
     getActiveTracker: () => activeTracker,
   };
