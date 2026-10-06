@@ -1490,6 +1490,90 @@ test("D. Same domain after >3 min → second POST with DIFFERENT visitId", async
    assert.notEqual(r2.visitId, r1.visitId, "different visitId for new visit window");
 });
 
+// ─── Concurrency: the race that previously created duplicate visits ─────────
+// Two engagement messages for the SAME user + SAME domain can arrive before the
+// first has finished persisting its window (rapid navigations or two open tabs).
+// They must be serialized per (user, domain) so only one new visit is POSTed and
+// both reuse the same visitId. These tests start the handlers WITHOUT awaiting
+// the first, so they genuinely overlap.
+
+test("L. Concurrent same-domain messages (same user) coalesce into ONE visit", async () => {
+   scriptFetch(
+     VISIT_URL,
+     { ok: true, status: 201, body: { status: "ok" } },
+     { ok: true, status: 201, body: { status: "ok" } },
+   );
+
+   const [res1, res2] = await Promise.all([
+     dispatch(visitMessage({ domain: "procyclingstats.com", visit_id: "vid-a" })),
+     dispatch(visitMessage({ domain: "procyclingstats.com", visit_id: "vid-b" })),
+   ]);
+   await settle();
+
+   const r1 = res1[0];
+   const r2 = res2[0];
+   assert.ok(r1 && r2, "both messages were answered");
+   assert.equal(r1.received, true, "first message succeeds");
+   assert.equal(r2.received, true, "second message succeeds");
+   assert.equal(r1.isNewVisit, true, "first message opens the visit");
+   assert.equal(r2.isNewVisit, false, "second message reuses the visit");
+   assert.equal(siteVisitCalls().length, 1, "only one POST for the concurrent pair");
+   assert.equal(r1.visitId, r2.visitId, "both resolve to the same visitId");
+
+   const windows = await getSiteVisitWindowsFromStorage(SIGNED_IN_USER);
+   assert.equal(
+     windows["procyclingstats.com"].visitId,
+     r1.visitId,
+     "the persisted window holds the single visitId",
+   );
+});
+
+test("concurrent messages for DIFFERENT domains do not block each other", async () => {
+   scriptFetch(
+     VISIT_URL,
+     { ok: true, status: 201, body: { status: "ok" } },
+     { ok: true, status: 201, body: { status: "ok" } },
+   );
+
+   const [res1, res2] = await Promise.all([
+     dispatch(visitMessage({ domain: "site-a.com", visit_id: "vid-a" })),
+     dispatch(visitMessage({ domain: "site-b.com", visit_id: "vid-b" })),
+   ]);
+   await settle();
+
+   const r1 = res1[0];
+   const r2 = res2[0];
+   assert.equal(r1.received, true);
+   assert.equal(r2.received, true);
+   assert.equal(r1.isNewVisit, true);
+   assert.equal(r2.isNewVisit, true);
+   assert.equal(siteVisitCalls().length, 2, "each domain opens its own visit");
+   assert.notEqual(r1.visitId, r2.visitId, "independent visitIds");
+});
+
+test("concurrent same-domain messages with a FAILED first POST queue only once", async () => {
+   // First new visit POSTs and fails (5xx) → buffered once. The second message
+   // (same domain) reuses the window and must NOT POST or queue again.
+   scriptFetch(VISIT_URL, { ok: false, status: 500 }, { ok: true, status: 201 });
+
+   const [res1, res2] = await Promise.all([
+     dispatch(visitMessage({ domain: "retry.com", visit_id: "vid-a" })),
+     dispatch(visitMessage({ domain: "retry.com", visit_id: "vid-b" })),
+   ]);
+   await settle();
+
+   const r1 = res1[0];
+   const r2 = res2[0];
+   assert.equal(r1.received, false, "first visit was not confirmed");
+   assert.equal(r1.status, 500, "first visit hit the server");
+   assert.equal(r1.queued, true, "the failed new visit is buffered once");
+   assert.equal(r2.received, true, "second message reused the existing visit");
+   assert.equal(r2.isNewVisit, false, "second message did not open a new visit");
+   assert.equal(siteVisitCalls().length, 1, "only the new visit POSTed once");
+   assert.equal(visitQueue().length, 1, "exactly one record buffered");
+   assert.equal(visitQueue()[0].visit_id, r1.visitId, "the queued record is the single visitId");
+});
+
 test("E. Different domains → independent visit windows", async () => {
   scriptFetch(VISIT_URL, { ok: true, status: 201, body: { status: "ok", id: 1 } });
   scriptFetch(VISIT_URL, { ok: true, status: 201, body: { status: "ok", id: 2 } });

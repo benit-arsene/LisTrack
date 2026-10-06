@@ -719,6 +719,41 @@ chrome.runtime.onStartup.addListener(() => {
 const VISIT_MEMORY_LIMIT = 50;
 const _recentVisits = [];
 
+// ─── Per-(user, domain) visit-window lock ───────────────────────────────────
+// In MV3 the service worker is single-threaded but async, so two messages for
+// the same user + domain can interleave their getSiteVisitWindows →
+// decide → setSiteVisitWindows → POST sequence. Without serialization both can
+// observe an empty/expired window and both POST a new visit (one per page
+// navigation). This map holds an in-flight promise per key; the next waiter
+// chains onto it, so the read-decide-write-POST block runs to completion
+// before the next same-key message proceeds. Different (user, domain) pairs
+// are independent and never block each other. Entries are resolved promises
+// retained by the map for the lifetime of the worker; they are tiny and
+// bounded by the number of distinct (user, domain) pairs seen.
+const _visitWindowLocks = new Map();
+
+/**
+ * Acquire a per (userId, domain) lock. The returned `wait` promise resolves
+ * once every prior same-key holder has released. `release()` must be called
+ * (in a `finally`) when the holder is done — it frees the next waiter.
+ */
+function acquireVisitWindowLock(userId, domain) {
+  const key = `${userId}:${domain}`;
+  const prev = _visitWindowLocks.get(key);
+  let release;
+  const tail = new Promise((res) => { release = res; });
+  _visitWindowLocks.set(key, prev ? prev.then(() => tail, () => tail) : tail);
+  return {
+    wait: prev ? prev.then(() => undefined, () => undefined) : Promise.resolve(),
+    release() {
+      if (typeof release === "function") {
+        release();
+        release = null;
+      }
+    },
+  };
+}
+
 /** A conservative hostname shape check — the server normalizes for real. */
 function isValidHostname(domain) {
   return typeof domain === "string" && /^[a-z0-9][a-z0-9.-]*$/.test(domain);
@@ -846,95 +881,105 @@ async function handleSiteVisitMessage(message) {
     return { received: false, reason: "excluded domain" };
   }
 
-  // Look up the current user's visit window for this domain
-  const windows = await getSiteVisitWindows(userId);
-  console.log("[DEBUG handleSiteVisitMessage] windows:", windows);
-  const window = windows[domain];
-  const now = Date.now();
-
-  let visitId;
-  let isNewVisit = false;
-
-  if (!window) {
-    // No active window — create a new visit
-    visitId = generateVisitId();
-    windows[domain] = { visitId, lastInteractionAt: now };
-    isNewVisit = true;
-   } else if (now - window.lastInteractionAt >= SITE_VISIT_WINDOW_MS) {
-    // At or past the 3-minute boundary — the window has expired; start a new visit
-    visitId = generateVisitId();
-    windows[domain] = { visitId, lastInteractionAt: now };
-    isNewVisit = true;
-  } else {
-    // Active window — reuse existing visitId, update timestamp
-    visitId = window.visitId;
-    window.lastInteractionAt = now;
-    isNewVisit = false;
-  }
-
-  console.log("[DEBUG handleSiteVisitMessage] visitId:", visitId, "isNewVisit:", isNewVisit);
-
-  // Persist the updated window
-  await setSiteVisitWindows(userId, windows);
-
-  _recentVisits.push({ userId, domain, at: now });
-  if (_recentVisits.length > VISIT_MEMORY_LIMIT) _recentVisits.shift();
-
-  // If not a new visit, we're done — no POST needed
-  if (!isNewVisit) {
-    console.log(`[background] Site visit for ${domain}: existing visit (window active)`);
-    return { received: true, isNewVisit: false, visitId };
-  }
-
-  // New visit — POST to server
-  const payload = { domain, visit_id: visitId };
-
-  let response;
+  // Serialize the read-decide-write-POST sequence per (user, domain) so that
+  // concurrent engagement messages for the same user + domain (e.g. rapid
+  // navigations or two tabs) cannot both observe an empty/expired window and
+  // both POST a new visit. Different domains are independent.
+  const visitWindowLock = acquireVisitWindowLock(userId, domain);
+  await visitWindowLock.wait;
   try {
-    response = await fetch(`${SERVER_URL}/api/site-visits`, {
-      method: "POST",
-      headers: await authedFetchHeaders({ "Content-Type": "application/json" }),
-      body: JSON.stringify(payload),
-    });
-  } catch (err) {
-    console.warn("[background] Site visit not submitted:", err && err.message);
-    _siteVisitQueueOwnerId = userId;
-    const queued = await pushSiteVisitToQueue(domain, visitId);
-    return { received: false, error: "visit-not-sent", queued, isNewVisit: true, visitId };
-  }
+    // Look up the current user's visit window for this domain
+    const windows = await getSiteVisitWindows(userId);
+    console.log("[DEBUG handleSiteVisitMessage] windows:", windows);
+    const window = windows[domain];
+    const now = Date.now();
 
-  if (response.ok) {
-    let visitStatus = "ok";
+    let visitId;
+    let isNewVisit = false;
+
+    if (!window) {
+      // No active window — create a new visit
+      visitId = generateVisitId();
+      windows[domain] = { visitId, lastInteractionAt: now };
+      isNewVisit = true;
+    } else if (now - window.lastInteractionAt >= SITE_VISIT_WINDOW_MS) {
+      // At or past the 3-minute boundary — the window has expired; start a new visit
+      visitId = generateVisitId();
+      windows[domain] = { visitId, lastInteractionAt: now };
+      isNewVisit = true;
+    } else {
+      // Active window — reuse existing visitId, update timestamp
+      visitId = window.visitId;
+      window.lastInteractionAt = now;
+      isNewVisit = false;
+    }
+
+    console.log("[DEBUG handleSiteVisitMessage] visitId:", visitId, "isNewVisit:", isNewVisit);
+
+    // Persist the updated window
+    await setSiteVisitWindows(userId, windows);
+
+    _recentVisits.push({ userId, domain, at: now });
+    if (_recentVisits.length > VISIT_MEMORY_LIMIT) _recentVisits.shift();
+
+    // If not a new visit, we're done — no POST needed
+    if (!isNewVisit) {
+      console.log(`[background] Site visit for ${domain}: existing visit (window active)`);
+      return { received: true, isNewVisit: false, visitId };
+    }
+
+    // New visit — POST to server
+    const payload = { domain, visit_id: visitId };
+
+    let response;
     try {
-      const data = await response.json();
-      if (data && (data.status === "ok" || data.status === "duplicate" || data.status === "ignored")) {
-        visitStatus = data.status;
-      }
-    } catch (_) {}
-    console.log(`[background] Site visit handled for ${domain}: ${visitStatus}`);
-    const result = { received: true, isNewVisit: true, visitId, visitStatus };
-    console.log("[DEBUG handleSiteVisitMessage] returning:", result);
-    return result;
-  }
+      response = await fetch(`${SERVER_URL}/api/site-visits`, {
+        method: "POST",
+        headers: await authedFetchHeaders({ "Content-Type": "application/json" }),
+        body: JSON.stringify(payload),
+      });
+    } catch (err) {
+      console.warn("[background] Site visit not submitted:", err && err.message);
+      _siteVisitQueueOwnerId = userId;
+      const queued = await pushSiteVisitToQueue(domain, visitId);
+      return { received: false, error: "visit-not-sent", queued, isNewVisit: true, visitId };
+    }
 
-  // Non-OK. Only a server-side/transient failure is worth retrying; a
-  // permanent client error (4xx, including 401 and 400) is dropped rather
-  // than retried forever — the same conservative policy the screen-time
-  // drain applies to its queue.
-  if (response.status >= 500) {
-    _siteVisitQueueOwnerId = userId;
-    const queued = await pushSiteVisitToQueue(domain, visitId);
+    if (response.ok) {
+      let visitStatus = "ok";
+      try {
+        const data = await response.json();
+        if (data && (data.status === "ok" || data.status === "duplicate" || data.status === "ignored")) {
+          visitStatus = data.status;
+        }
+      } catch (_) {}
+      console.log(`[background] Site visit handled for ${domain}: ${visitStatus}`);
+      const result = { received: true, isNewVisit: true, visitId, visitStatus };
+      console.log("[DEBUG handleSiteVisitMessage] returning:", result);
+      return result;
+    }
+
+    // Non-OK. Only a server-side/transient failure is worth retrying; a
+    // permanent client error (4xx, including 401 and 400) is dropped rather
+    // than retried forever — the same conservative policy the screen-time
+    // drain applies to its queue.
+    if (response.status >= 500) {
+      _siteVisitQueueOwnerId = userId;
+      const queued = await pushSiteVisitToQueue(domain, visitId);
+      console.warn(
+        `[background] Site visit failed with ${response.status} — ${queued ? "queued for retry" : "could not be queued"}`,
+      );
+      return { received: false, status: response.status, queued, isNewVisit: true, visitId };
+    }
+
     console.warn(
-      `[background] Site visit failed with ${response.status} — ${queued ? "queued for retry" : "could not be queued"}`,
+      "[background] Site visit rejected permanently:",
+      response.status,
     );
-    return { received: false, status: response.status, queued, isNewVisit: true, visitId };
+    return { received: false, status: response.status, queued: false, isNewVisit: true, visitId };
+  } finally {
+    visitWindowLock.release();
   }
-
-  console.warn(
-    "[background] Site visit rejected permanently:",
-    response.status,
-  );
-  return { received: false, status: response.status, queued: false, isNewVisit: true, visitId };
 }
 
 // ─── Site Visit Queue (durable retry) ───────────────────────────────────
