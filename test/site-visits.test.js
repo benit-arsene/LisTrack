@@ -38,6 +38,7 @@ let server;
 let baseUrl;
 let getSiteVisitsForUser;
 let getSiteVisitCountsForUser;
+let insertSiteVisit;
 
 const USER_A = "alice@example.com";
 const USER_B = "bob@example.com";
@@ -49,6 +50,7 @@ test.before(async () => {
   baseUrl = `http://127.0.0.1:${server.address().port}`;
   getSiteVisitsForUser = mod.getSiteVisitsForUser;
   getSiteVisitCountsForUser = mod.getSiteVisitCountsForUser;
+  insertSiteVisit = mod.insertSiteVisit;
 });
 
 test.after(async () => {
@@ -527,6 +529,26 @@ async function getVisits(user) {
   return { status: res.status, data };
 }
 
+/** GET /api/site-visits with a range parameter. */
+async function getVisitsWithRange(user, range) {
+  const id = sessionStore.createSession(user).id;
+  const url = new URL(`${baseUrl}/api/site-visits`);
+  if (range) url.searchParams.set("range", range);
+  const res = await fetch(url, {
+    headers: { Cookie: cookieHeader(id) },
+  });
+  let data = null;
+  const text = await res.text();
+  if (text) {
+    try {
+      data = JSON.parse(text);
+    } catch (_) {
+      data = text;
+    }
+  }
+  return { status: res.status, data };
+}
+
 /** GET /api/site-visits without auth (for 401 test). */
 async function getVisitsUnauth() {
   const res = await fetch(`${baseUrl}/api/site-visits`, {
@@ -719,4 +741,198 @@ test("getSiteVisitCountsForUser does not leak across users", async () => {
 
   assert.equal(aDomain?.visitCount, 1);
   assert.equal(bDomain?.visitCount, 2);
+});
+
+// ─── Time-range filtering tests ────────────────────────────────────────────────
+
+/** Insert a visit with a specific date for testing. */
+async function insertVisitWithDate(userId, domain, visitId, visitedAt) {
+  return insertSiteVisit({ userId, domain, visitId, visitedAt });
+}
+
+test("range=today includes today's visits but excludes older visits", async () => {
+  const USER_TODAY = "today@example.com";
+  const today = new Date().toISOString().slice(0, 10);
+  const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+
+  // Insert visits with specific dates using the helper
+  await insertVisitWithDate(USER_TODAY, "today-site.example.com", nextVisitId(), today + "T12:00:00Z");
+  await insertVisitWithDate(USER_TODAY, "today-site.example.com", nextVisitId(), today + "T14:00:00Z");
+  await insertVisitWithDate(USER_TODAY, "yesterday-site.example.com", nextVisitId(), yesterday + "T12:00:00Z");
+
+  // range=today should only include today's visits
+  const res = await getVisitsWithRange(USER_TODAY, "today");
+  assert.equal(res.status, 200);
+  assert.equal(res.data.domains.length, 1);
+  assert.equal(res.data.domains[0].domain, "today-site.example.com");
+  assert.equal(res.data.domains[0].visitCount, 2);
+});
+
+test("range=week includes visits in current week but excludes older visits", async () => {
+  const USER_WEEK = "week@example.com";
+  const today = new Date();
+  const todayStr = today.toISOString().slice(0, 10);
+
+  // Calculate Monday of this week (UTC)
+  const day = today.getUTCDay(); // 0 = Sunday
+  const diff = day === 0 ? -6 : 1 - day;
+  const monday = new Date(today);
+  monday.setUTCDate(today.getUTCDate() + diff);
+  const mondayStr = monday.toISOString().slice(0, 10);
+
+  // Calculate last week's Monday
+  const lastMonday = new Date(monday);
+  lastMonday.setUTCDate(monday.getUTCDate() - 7);
+  const lastMondayStr = lastMonday.toISOString().slice(0, 10);
+
+  // This week's visits
+  await insertVisitWithDate(USER_WEEK, "this-week.example.com", nextVisitId(), mondayStr + "T12:00:00Z");
+  await insertVisitWithDate(USER_WEEK, "this-week.example.com", nextVisitId(), todayStr + "T12:00:00Z");
+
+  // Last week's visit (should be excluded)
+  await insertVisitWithDate(USER_WEEK, "last-week.example.com", nextVisitId(), lastMondayStr + "T12:00:00Z");
+
+  const res = await getVisitsWithRange(USER_WEEK, "week");
+  assert.equal(res.status, 200);
+  // Should only have this-week.example.com (2 visits)
+  assert.equal(res.data.domains.length, 1);
+  assert.equal(res.data.domains[0].domain, "this-week.example.com");
+  assert.equal(res.data.domains[0].visitCount, 2);
+});
+
+test("range=month includes visits in current month but excludes older visits", async () => {
+  const USER_MONTH = "month@example.com";
+  const today = new Date();
+  const todayStr = today.toISOString().slice(0, 10);
+
+  // First day of current month (UTC)
+  const firstOfMonth = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), 1));
+  const firstOfMonthStr = firstOfMonth.toISOString().slice(0, 10);
+
+  // First day of last month (UTC)
+  const firstOfLastMonth = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth() - 1, 1));
+  const firstOfLastMonthStr = firstOfLastMonth.toISOString().slice(0, 10);
+
+  // This month's visits
+  await insertVisitWithDate(USER_MONTH, "this-month.example.com", nextVisitId(), firstOfMonthStr + "T12:00:00Z");
+  await insertVisitWithDate(USER_MONTH, "this-month.example.com", nextVisitId(), todayStr + "T12:00:00Z");
+
+  // Last month's visit (should be excluded)
+  await insertVisitWithDate(USER_MONTH, "last-month.example.com", nextVisitId(), firstOfLastMonthStr + "T12:00:00Z");
+
+  const res = await getVisitsWithRange(USER_MONTH, "month");
+  assert.equal(res.status, 200);
+  // Should only have this-month.example.com (2 visits)
+  assert.equal(res.data.domains.length, 1);
+  assert.equal(res.data.domains[0].domain, "this-month.example.com");
+  assert.equal(res.data.domains[0].visitCount, 2);
+});
+
+test("range=all includes all visits", async () => {
+  const USER_ALL = "all@example.com";
+  const today = new Date().toISOString().slice(0, 10);
+  const lastMonth = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
+
+  await insertVisitWithDate(USER_ALL, "recent.example.com", nextVisitId(), today + "T12:00:00Z");
+  await insertVisitWithDate(USER_ALL, "old.example.com", nextVisitId(), lastMonth + "T12:00:00Z");
+
+  const res = await getVisitsWithRange(USER_ALL, "all");
+  assert.equal(res.status, 200);
+  assert.equal(res.data.domains.length, 2);
+});
+
+test("omitted range behaves like all (backward compatibility)", async () => {
+  const USER_COMPAT = "compat@example.com";
+  const today = new Date().toISOString().slice(0, 10);
+  const lastMonth = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
+
+  await insertVisitWithDate(USER_COMPAT, "recent.example.com", nextVisitId(), today + "T12:00:00Z");
+  await insertVisitWithDate(USER_COMPAT, "old.example.com", nextVisitId(), lastMonth + "T12:00:00Z");
+
+  // No range parameter - should return all
+  const res = await getVisits(USER_COMPAT);
+  assert.equal(res.status, 200);
+  assert.equal(res.data.domains.length, 2);
+});
+
+test("invalid range returns 400", async () => {
+  const USER_INVALID = "invalid@example.com";
+  await postVisit(USER_INVALID, { domain: "test.example.com", visit_id: nextVisitId() });
+
+  const res = await getVisitsWithRange(USER_INVALID, "invalid-range");
+  assert.equal(res.status, 400);
+  assert.equal(res.data.status, "error");
+  assert.ok(res.data.message.includes("Invalid range"));
+});
+
+test("boundary timestamps are handled correctly (start of day)", async () => {
+  const USER_BOUNDARY = "boundary@example.com";
+  const today = new Date().toISOString().slice(0, 10);
+
+  // Visit at exactly 00:00:00 UTC today
+  await insertVisitWithDate(USER_BOUNDARY, "boundary.example.com", nextVisitId(), today + "T00:00:00Z");
+  // Visit at 23:59:59 UTC today
+  await insertVisitWithDate(USER_BOUNDARY, "boundary.example.com", nextVisitId(), today + "T23:59:59Z");
+
+  const res = await getVisitsWithRange(USER_BOUNDARY, "today");
+  assert.equal(res.status, 200);
+  assert.equal(res.data.domains.length, 1);
+  assert.equal(res.data.domains[0].visitCount, 2);
+});
+
+test("different users remain isolated with range filtering", async () => {
+  const USER_X = "userx@example.com";
+  const USER_Y = "usery@example.com";
+  const today = new Date().toISOString().slice(0, 10);
+
+  await insertVisitWithDate(USER_X, "shared.example.com", nextVisitId(), today + "T12:00:00Z");
+  await insertVisitWithDate(USER_Y, "shared.example.com", nextVisitId(), today + "T12:00:00Z");
+  await insertVisitWithDate(USER_Y, "shared.example.com", nextVisitId(), today + "T14:00:00Z");
+
+  const resX = await getVisitsWithRange(USER_X, "today");
+  const resY = await getVisitsWithRange(USER_Y, "today");
+
+  assert.equal(resX.status, 200);
+  assert.equal(resY.status, 200);
+  assert.equal(resX.data.domains[0].visitCount, 1);
+  assert.equal(resY.data.domains[0].visitCount, 2);
+});
+
+test("domains remain ordered by count descending with range filtering", async () => {
+  const USER_ORDER = "order@example.com";
+  const today = new Date().toISOString().slice(0, 10);
+
+  await insertVisitWithDate(USER_ORDER, "low.example.com", nextVisitId(), today + "T12:00:00Z");
+  await insertVisitWithDate(USER_ORDER, "mid.example.com", nextVisitId(), today + "T12:00:00Z");
+  await insertVisitWithDate(USER_ORDER, "mid.example.com", nextVisitId(), today + "T14:00:00Z");
+  await insertVisitWithDate(USER_ORDER, "high.example.com", nextVisitId(), today + "T12:00:00Z");
+  await insertVisitWithDate(USER_ORDER, "high.example.com", nextVisitId(), today + "T14:00:00Z");
+  await insertVisitWithDate(USER_ORDER, "high.example.com", nextVisitId(), today + "T16:00:00Z");
+
+  const res = await getVisitsWithRange(USER_ORDER, "today");
+  assert.equal(res.status, 200);
+  assert.equal(res.data.domains[0].domain, "high.example.com");
+  assert.equal(res.data.domains[0].visitCount, 3);
+  assert.equal(res.data.domains[1].domain, "mid.example.com");
+  assert.equal(res.data.domains[1].visitCount, 2);
+  assert.equal(res.data.domains[2].domain, "low.example.com");
+  assert.equal(res.data.domains[2].visitCount, 1);
+});
+
+test("existing POST /api/site-visits behavior still passes with range feature", async () => {
+  const USER_POST = "posttest@example.com";
+  const visitId = nextVisitId();
+  const res = await postVisit(USER_POST, { domain: "post-works.example.com", visit_id: visitId });
+  assert.equal(res.status, 201);
+  assert.equal(res.data.status, "ok");
+
+  const rows = await getSiteVisitsForUser(USER_POST);
+  const row = rows.find((r) => r.visit_id === visitId);
+  assert.ok(row, "POST must still store the visit");
+  assert.equal(row.domain, "post-works.example.com");
+
+  // Duplicate still returns 200 with duplicate status
+  const dup = await postVisit(USER_POST, { domain: "post-works.example.com", visit_id: visitId });
+  assert.equal(dup.status, 200);
+  assert.equal(dup.data.status, "duplicate");
 });

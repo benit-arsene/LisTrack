@@ -1580,6 +1580,50 @@ function getPeriodRange(dateStr, period) {
 }
 
 /**
+ * Calculate the start and end date for a visit time range.
+ * Uses UTC dates consistently with the rest of the codebase.
+ * Returns { start, end } as YYYY-MM-DD strings, or null for "all" (no filter).
+ */
+function getVisitDateRange(range) {
+  const today = new Date().toISOString().slice(0, 10);
+  const d = new Date(today + "T00:00:00Z");
+
+  if (range === "today") {
+    return { start: today, end: today };
+  }
+
+  if (range === "week") {
+    // Week: Monday to Sunday (UTC)
+    const day = d.getUTCDay(); // 0 = Sunday
+    const diff = day === 0 ? -6 : 1 - day; // Monday is day 1
+    const start = new Date(d);
+    start.setUTCDate(d.getUTCDate() + diff);
+    const end = new Date(start);
+    end.setUTCDate(start.getUTCDate() + 6);
+    return {
+      start: start.toISOString().slice(0, 10),
+      end: end.toISOString().slice(0, 10),
+    };
+  }
+
+  if (range === "month") {
+    // Month: first to last day of current month (UTC)
+    const start = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1));
+    const end = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0));
+    return {
+      start: start.toISOString().slice(0, 10),
+      end: end.toISOString().slice(0, 10),
+    };
+  }
+
+  if (range === "all" || range === undefined || range === null) {
+    return null; // No filter
+  }
+
+  throw new Error(`Invalid range: ${range}`);
+}
+
+/**
  * Aggregate screen-time logs grouped by domain for a date range.
  */
 async function getAggregatedByDomainForPeriod(startDate, endDate, userId) {
@@ -1675,17 +1719,27 @@ async function getSiteVisitsForUser(userId) {
 /**
  * Get visit counts grouped by domain for a user.
  * Returns domains with their visit counts, ordered by count descending.
+ * @param {string} userId - The user ID
+ * @param {string} [range] - Optional time range: "today", "week", "month", "all"
  */
-async function getSiteVisitCountsForUser(userId) {
+async function getSiteVisitCountsForUser(userId, range) {
   if (!userId) return [];
-  const rows = await driver.all(
-    `SELECT domain, COUNT(*) AS visit_count
-     FROM site_visits
-     WHERE user_id = ?
-     GROUP BY domain
-     ORDER BY visit_count DESC`,
-    [userId],
-  );
+
+  const dateRange = getVisitDateRange(range);
+
+  let sql = `SELECT domain, COUNT(*) AS visit_count
+      FROM site_visits
+      WHERE user_id = ?`;
+  const params = [userId];
+
+  if (dateRange) {
+    sql += ` AND date(visited_at) >= ? AND date(visited_at) <= ?`;
+    params.push(dateRange.start, dateRange.end);
+  }
+
+  sql += ` GROUP BY domain ORDER BY visit_count DESC`;
+
+  const rows = await driver.all(sql, params);
   return rows.map((row) => ({
     domain: row.domain,
     visitCount: Number(row.visit_count) || 0,
@@ -2031,11 +2085,22 @@ app.post("/api/site-visits", requireAuth, async (req, res) => {
  * GET /api/site-visits
  * Returns visit counts grouped by domain for the authenticated user.
  * Ordered by visit count descending (most visited first).
+ * Query param: ?range=today|week|month|all (default: all)
  */
 app.get("/api/site-visits", requireAuth, async (req, res) => {
   try {
     const userId = req.authenticatedUser;
-    const counts = await getSiteVisitCountsForUser(userId);
+    const range = req.query.range;
+
+    const validRanges = ["today", "week", "month", "all"];
+    if (range && !validRanges.includes(range)) {
+      return res.status(400).json({
+        status: "error",
+        message: `Invalid range. Use one of: ${validRanges.join(", ")}`,
+      });
+    }
+
+    const counts = await getSiteVisitCountsForUser(userId, range);
     return res.json({ domains: counts });
   } catch (err) {
     console.error("[site-visits] Error fetching visit counts:", err);
@@ -2851,6 +2916,7 @@ process.on("SIGTERM", async () => {
 // getSiteVisitsForUser is exported so the visit tests can assert on stored
 // rows without adding an HTTP read route for visits (none exists by design).
 // getSiteVisitCountsForUser is exported for the aggregation tests.
+// insertSiteVisit is exported for tests to create visits with specific dates.
 module.exports = {
   app,
   start,
@@ -2858,4 +2924,5 @@ module.exports = {
   SESSION_COOKIE,
   getSiteVisitsForUser,
   getSiteVisitCountsForUser,
+  insertSiteVisit,
 };
