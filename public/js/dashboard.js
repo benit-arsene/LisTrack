@@ -435,6 +435,8 @@
 
     // Most Visited Sites state
     let mvCurrentRange = 'today';
+    let mvAbortController = null;
+    let mvLastFetchId = 0;
 
     // ─── Period Button Styling ──────────────────────────────────────────────
 
@@ -453,10 +455,33 @@
       const rangeSelect = document.getElementById('periodRangeSelect');
       if (rangeSelect && ['7days', '30days', 'custom'].includes(currentPeriod)) {
         rangeSelect.value = currentPeriod;
-      }
+}
     }
 
     // ─── Most Visited Sites Range Controls ────────────────────────────────────────────
+
+    function updateMVRangeButtons() {
+      const ranges = ['today', 'week', 'month', 'all'];
+      ranges.forEach(r => {
+        const btn = document.getElementById('mv' + r.charAt(0).toUpperCase() + r.slice(1) + 'Btn');
+        if (btn) {
+          if (r === mvCurrentRange) {
+            btn.classList.remove('bg-gray-100', 'dark:bg-gray-700', 'text-gray-500', 'dark:text-gray-400');
+            btn.classList.add('bg-indigo-100', 'dark:bg-indigo-900/30', 'text-indigo-700', 'dark:text-indigo-300');
+            btn.setAttribute('aria-pressed', 'true');
+          } else {
+            btn.classList.remove('bg-indigo-100', 'dark:bg-indigo-900/30', 'text-indigo-700', 'dark:text-indigo-300');
+            btn.classList.add('bg-gray-100', 'dark:bg-gray-700', 'text-gray-500', 'dark:text-gray-400');
+            btn.setAttribute('aria-pressed', 'false');
+          }
+        }
+      });
+      const badge = document.getElementById('mvRangeBadge');
+      if (badge) {
+        const label = { today: 'Today', week: 'This week', month: 'This month', all: 'All time' }[mvCurrentRange];
+        badge.textContent = label;
+      }
+    }
 
     function setMVRange(range) {
       if (range === mvCurrentRange) return;
