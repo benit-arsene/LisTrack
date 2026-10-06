@@ -50,7 +50,6 @@
       ],
       "js": [
         "public/js/tracker.js",
-        "public/js/visit-session.js",
         "public/js/visit-tracker.js"
       ],
       "run_at": "document_end"

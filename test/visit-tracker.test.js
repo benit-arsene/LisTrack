@@ -5,8 +5,7 @@
  * turns real DOM interactions into exactly ONE engaged visit per document.
  *
  * The browser APIs are stubbed with a minimal fake event target — no
- * automation framework and no new dependency. The state machine under test
- * (public/js/visit-session.js) is the real one.
+ * automation framework and no new dependency.
  *
  * Run: node --test test/visit-tracker.test.js
  */
@@ -27,7 +26,6 @@ const VISIT_TRACKER_PATH = path.join(
 const {
   QUALIFYING_EVENTS,
   VISIT_MESSAGE_TYPE,
-  generateVisitId,
   createVisitTracker,
 } = require(VISIT_TRACKER_PATH);
 
@@ -179,144 +177,172 @@ test("listeners are passive and capture-phase so pages cannot suppress them", ()
 // ─── Detection behaviour ──────────────────────────────────────────────────
 
 test("a page with no interaction records no visit", () => {
-  const { target, tracker } = setup();
-  assert.equal(tracker.hasEngaged(), false);
-  assert.equal(tracker.getVisitCount(), 0);
-  // Time passing and unrelated events change nothing.
-  for (const other of ["focus", "blur", "load", "resize", "visibilitychange"]) {
-    target.dispatch(event(other));
-  }
-  assert.equal(tracker.getVisitCount(), 0);
-  assert.equal(tracker.hasEngaged(), false);
+  withFakeChrome((sent) => {
+    const { target, tracker } = setup();
+    assert.equal(tracker.hasEngaged(), false);
+    assert.equal(tracker.getVisitCount(), 0);
+    // Time passing and unrelated events change nothing.
+    for (const other of ["focus", "blur", "load", "resize", "visibilitychange"]) {
+      target.dispatch(event(other));
+    }
+    assert.equal(tracker.getVisitCount(), 0);
+    assert.equal(tracker.hasEngaged(), false);
+  });
 });
 
 test("scroll records exactly one visit", () => {
-  const { target, tracker } = setup();
-  target.dispatch(strictEvent("scroll"));
-  assert.equal(tracker.getVisitCount(), 1);
-  assert.equal(tracker.hasEngaged(), true);
+  withFakeChrome((sent) => {
+    const { target, tracker } = setup();
+    target.dispatch(strictEvent("scroll"));
+    assert.equal(tracker.getVisitCount(), 1);
+    assert.equal(tracker.hasEngaged(), true);
+  });
 });
 
 test("click records exactly one visit", () => {
-  const { target, tracker } = setup();
-  target.dispatch(strictEvent("click"));
-  assert.equal(tracker.getVisitCount(), 1);
+  withFakeChrome((sent) => {
+    const { target, tracker } = setup();
+    target.dispatch(strictEvent("click"));
+    assert.equal(tracker.getVisitCount(), 1);
+  });
 });
 
 test("keydown records exactly one visit", () => {
-  const { target, tracker } = setup();
-  // strictEvent proves no key value is read — only the event type.
-  target.dispatch(strictEvent("keydown"));
-  assert.equal(tracker.getVisitCount(), 1);
+  withFakeChrome((sent) => {
+    const { target, tracker } = setup();
+    // strictEvent proves no key value is read — only the event type.
+    target.dispatch(strictEvent("keydown"));
+    assert.equal(tracker.getVisitCount(), 1);
+  });
 });
 
 test("touchstart records exactly one visit", () => {
-  const { target, tracker } = setup();
-  target.dispatch(strictEvent("touchstart"));
-  assert.equal(tracker.getVisitCount(), 1);
+  withFakeChrome((sent) => {
+    const { target, tracker } = setup();
+    target.dispatch(strictEvent("touchstart"));
+    assert.equal(tracker.getVisitCount(), 1);
+  });
 });
 
 test("wheel records exactly one visit", () => {
-  const { target, tracker } = setup();
-  target.dispatch(strictEvent("wheel"));
-  assert.equal(tracker.getVisitCount(), 1);
+  withFakeChrome((sent) => {
+    const { target, tracker } = setup();
+    target.dispatch(strictEvent("wheel"));
+    assert.equal(tracker.getVisitCount(), 1);
+  });
 });
 
 test("mousedown records exactly one visit", () => {
-  const { target, tracker } = setup();
-  target.dispatch(strictEvent("mousedown"));
-  assert.equal(tracker.getVisitCount(), 1);
+  withFakeChrome((sent) => {
+    const { target, tracker } = setup();
+    target.dispatch(strictEvent("mousedown"));
+    assert.equal(tracker.getVisitCount(), 1);
+  });
 });
 
 test("mousemove does not record a visit", () => {
-  const { target, tracker } = setup();
-  for (let i = 0; i < 200; i++) target.dispatch(strictEvent("mousemove"));
-  assert.equal(tracker.hasEngaged(), false);
-  assert.equal(tracker.getVisitCount(), 0);
+  withFakeChrome((sent) => {
+    const { target, tracker } = setup();
+    for (let i = 0; i < 200; i++) target.dispatch(strictEvent("mousemove"));
+    assert.equal(tracker.hasEngaged(), false);
+    assert.equal(tracker.getVisitCount(), 0);
+  });
 });
 
 test("touchmove does not record a visit", () => {
-  const { target, tracker } = setup();
-  for (let i = 0; i < 200; i++) target.dispatch(strictEvent("touchmove"));
-  assert.equal(tracker.hasEngaged(), false);
-  assert.equal(tracker.getVisitCount(), 0);
+  withFakeChrome((sent) => {
+    const { target, tracker } = setup();
+    for (let i = 0; i < 200; i++) target.dispatch(strictEvent("touchmove"));
+    assert.equal(tracker.hasEngaged(), false);
+    assert.equal(tracker.getVisitCount(), 0);
+  });
 });
 
 test("multiple qualifying events still produce exactly one visit", () => {
-  const { target, tracker } = setup();
-  for (let round = 0; round < 20; round++) {
-    for (const eventType of QUALIFYING_EVENTS) {
-      target.dispatch(strictEvent(eventType));
+  withFakeChrome((sent) => {
+    const { target, tracker } = setup();
+    for (let round = 0; round < 20; round++) {
+      for (const eventType of QUALIFYING_EVENTS) {
+        target.dispatch(strictEvent(eventType));
+      }
     }
-  }
-  assert.equal(tracker.getVisitCount(), 1);
+    assert.equal(tracker.getVisitCount(), 1);
+  });
 });
 
 test("movement mixed with real interaction still yields exactly one visit", () => {
-  const { target, tracker } = setup();
-  target.dispatch(strictEvent("mousemove"));
-  target.dispatch(strictEvent("touchmove"));
-  assert.equal(tracker.getVisitCount(), 0);
-  target.dispatch(strictEvent("scroll"));
-  for (let i = 0; i < 50; i++) {
+  withFakeChrome((sent) => {
+    const { target, tracker } = setup();
     target.dispatch(strictEvent("mousemove"));
+    target.dispatch(strictEvent("touchmove"));
+    assert.equal(tracker.getVisitCount(), 0);
     target.dispatch(strictEvent("scroll"));
-  }
-  assert.equal(tracker.getVisitCount(), 1);
+    for (let i = 0; i < 50; i++) {
+      target.dispatch(strictEvent("mousemove"));
+      target.dispatch(strictEvent("scroll"));
+    }
+    assert.equal(tracker.getVisitCount(), 1);
+  });
 });
 
 // ─── Session semantics ────────────────────────────────────────────────────
 
 test("reset starts a fresh session so another visit can be recorded", () => {
-  const { target, tracker } = setup();
-  target.dispatch(strictEvent("scroll"));
-  assert.equal(tracker.getVisitCount(), 1);
+  withFakeChrome((sent) => {
+    const { target, tracker } = setup();
+    target.dispatch(strictEvent("scroll"));
+    assert.equal(tracker.getVisitCount(), 1);
 
-  tracker.reset();
-  assert.equal(tracker.getVisitCount(), 0, "reset clears the recorded visit");
-  assert.equal(tracker.hasEngaged(), false);
+    tracker.reset();
+    assert.equal(tracker.getVisitCount(), 0, "reset clears the recorded visit");
+    assert.equal(tracker.hasEngaged(), false);
 
-  target.dispatch(strictEvent("click"));
-  assert.equal(tracker.getVisitCount(), 1, "the new session records its own visit");
+    target.dispatch(strictEvent("click"));
+    assert.equal(tracker.getVisitCount(), 1, "the new session records its own visit");
+  });
 });
 
 test("a new tracker for a new document/session is independent", () => {
-  const first = setup();
-  first.target.dispatch(strictEvent("scroll"));
-  assert.equal(first.tracker.getVisitCount(), 1);
+  withFakeChrome((sent) => {
+    const first = setup();
+    first.target.dispatch(strictEvent("scroll"));
+    assert.equal(first.tracker.getVisitCount(), 1);
 
-  // A page reload produces a brand new tracker with fresh state.
-  const second = setup();
-  assert.equal(second.tracker.getVisitCount(), 0, "a new document starts at 0 visits");
-  assert.equal(second.tracker.hasEngaged(), false);
-  second.target.dispatch(strictEvent("wheel"));
-  assert.equal(second.tracker.getVisitCount(), 1);
+    // A page reload produces a brand new tracker with fresh state.
+    const second = setup();
+    assert.equal(second.tracker.getVisitCount(), 0, "a new document starts at 0 visits");
+    assert.equal(second.tracker.hasEngaged(), false);
+    second.target.dispatch(strictEvent("wheel"));
+    assert.equal(second.tracker.getVisitCount(), 1);
 
-  // Resetting one document must not disturb the other.
-  first.tracker.reset();
-  assert.equal(second.tracker.getVisitCount(), 1);
+    // Resetting one document must not disturb the other.
+    first.tracker.reset();
+    assert.equal(second.tracker.getVisitCount(), 1);
+  });
 });
 
 test("stop detaches the listeners and re-start re-attaches them", () => {
-  const { target, tracker } = setup();
-  assert.equal(tracker.isListening(), true);
-  assert.equal(target.listenerCount(), 6);
+  withFakeChrome((sent) => {
+    const { target, tracker } = setup();
+    assert.equal(tracker.isListening(), true);
+    assert.equal(target.listenerCount(), 6);
 
-  tracker.stop();
-  assert.equal(tracker.isListening(), false);
-  assert.equal(target.listenerCount(), 0);
-  target.dispatch(strictEvent("scroll"));
-  assert.equal(tracker.getVisitCount(), 0, "no listeners, no detection");
+    tracker.stop();
+    assert.equal(tracker.isListening(), false);
+    assert.equal(target.listenerCount(), 0);
+    target.dispatch(strictEvent("scroll"));
+    assert.equal(tracker.getVisitCount(), 0, "no listeners, no detection");
 
-  tracker.start();
-  target.dispatch(strictEvent("scroll"));
-  assert.equal(tracker.getVisitCount(), 1);
+    tracker.start();
+    target.dispatch(strictEvent("scroll"));
+    assert.equal(tracker.getVisitCount(), 1);
 
-  // Starting twice must not double-register the listeners.
-  tracker.start();
-  assert.equal(target.listenerCount(), 6);
-  tracker.stop();
-  assert.equal(target.listenerCount(), 0);
+    // Starting twice must not double-register the listeners.
+    tracker.start();
+    assert.equal(target.listenerCount(), 6);
+    tracker.stop();
+    assert.equal(target.listenerCount(), 0);
+  });
 });
 
 // ─── The outbound visit message ──────────────────────────────────────────
@@ -340,224 +366,29 @@ test("the first qualifying interaction sends exactly one namespaced visit messag
     assert.deepEqual(Object.keys(sent[0]).sort(), [
       "domain",
       "type",
-      "visit_id",
     ]);
     assert.equal(sent[0].type, "lisTrack:siteVisit");
     assert.equal(sent[0].type, VISIT_MESSAGE_TYPE);
     assert.equal(sent[0].domain, "example.com");
-    assert.equal(typeof sent[0].visit_id, "string");
-    assert.ok(sent[0].visit_id.length > 0, "visit_id must not be empty");
   });
-});
-
-// ─── visit_id: one per document session ──────────────────────────────────
-
-const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-
-test("a visit session receives a non-empty visit_id", () => {
-  const { tracker } = setup();
-  const visitId = tracker.getVisitId();
-
-  assert.equal(typeof visitId, "string");
-  assert.ok(visitId.length > 0, "must not be empty");
-  assert.match(visitId, UUID_V4, "expected a v4 UUID from the native generator");
-});
-
-test("the visit_id is generated natively via crypto.randomUUID()", () => {
-  // The native generator is preferred; the value must be exactly what the
-  // platform produced for this call.
-  const { tracker } = setup();
-  const native = globalThis.crypto.randomUUID();
-  assert.notEqual(tracker.getVisitId(), native);
-  assert.match(tracker.getVisitId(), UUID_V4);
-});
-
-test("generateVisitId produces distinct ids", () => {
-  const ids = new Set();
-  for (let i = 0; i < 500; i++) ids.add(generateVisitId());
-  assert.equal(ids.size, 500, "every generated id must be unique");
-  for (const id of ids) assert.match(id, UUID_V4);
-});
-
-test("generateVisitId falls back to a v4 UUID when randomUUID is unavailable", () => {
-  // crypto.randomUUID() only exists in secure contexts, so the fallback must
-  // produce an equally well-formed id. Same convention as tracker.js.
-  const descriptor = Object.getOwnPropertyDescriptor(globalThis.crypto, "randomUUID");
-  Object.defineProperty(globalThis.crypto, "randomUUID", {
-    value: undefined,
-    configurable: true,
-  });
-  try {
-    const fallback = generateVisitId();
-    assert.match(fallback, UUID_V4, "the getRandomValues fallback builds a v4 UUID");
-    assert.notEqual(fallback, generateVisitId());
-  } finally {
-    if (descriptor) Object.defineProperty(globalThis.crypto, "randomUUID", descriptor);
-  }
-});
-
-test("the visit_id is unchanged throughout one document session", () => {
-  withFakeChrome((sent) => {
-    const { target, tracker } = setup();
-    const original = tracker.getVisitId();
-
-    for (const eventType of QUALIFYING_EVENTS) {
-      target.dispatch(strictEvent(eventType));
-    }
-    assert.equal(sent.length, 1);
-    assert.equal(sent[0].visit_id, original, "the message carries the session id");
-
-    // Reading it again — and re-arming the same document — never changes it.
-    assert.equal(tracker.getVisitId(), original);
-    tracker.reset();
-    target.dispatch(strictEvent("scroll"));
-    assert.equal(sent.length, 2);
-    assert.equal(
-      sent[1].visit_id,
-      original,
-      "re-arming the SAME document must not mint a new id",
-    );
-  });
-});
-
-test("a newly created document/session receives a different visit_id", () => {
-  const first = setup();
-  const second = setup();
-
-  const a = first.tracker.getVisitId();
-  const b = second.tracker.getVisitId();
-
-  assert.ok(a && b);
-  assert.notEqual(a, b, "each document session must get its own id");
-  assert.match(b, UUID_V4);
-});
-
-test("many trackers never collide on visit_id", () => {
-  const ids = new Set();
-  for (let i = 0; i < 200; i++) ids.add(setup().tracker.getVisitId());
-  assert.equal(ids.size, 200, "no collisions across document sessions");
-});
-
-test("the visit_id is not persisted anywhere", () => {
-  const src = codeOnly(fs.readFileSync(VISIT_TRACKER_PATH, "utf8"));
-  for (const forbidden of [
-    /chrome\.storage/,
-    /localStorage/,
-    /sessionStorage/,
-    /document\.cookie/,
-    /\bfetch\s*\(/,
-    /sendBeacon/,
-  ]) {
-    assert.ok(
-      !forbidden.test(src),
-      `visit_id must stay in memory — no reference to ${forbidden}`,
-    );
-  }
-});
-
-test("the visit message carries only the type, hostname and visit_id", () => {
-  withFakeChrome((sent) => {
-    const { target } = setup();
-    target.dispatch(strictEvent("click"));
-
-    assert.deepEqual(
-      Object.keys(sent[0]).sort(),
-      ["domain", "type", "visit_id"],
-      "nothing else may travel — no identity, path, query or detail",
-    );
-    for (const forbidden of [
-      "user",
-      "userId",
-      "user_id",
-      "email",
-      "token",
-      "path",
-      "url",
-      "href",
-      "search",
-      "hash",
-      "title",
-      "event",
-      "timestamp",
-      "visited_at",
-      "time",
-      "x",
-      "y",
-    ]) {
-      assert.ok(
-        !(forbidden in sent[0]),
-        `the visit message must not carry "${forbidden}"`,
-      );
-    }
-  });
-});
-
-test("further interactions send no further messages", () => {
-  withFakeChrome((sent) => {
-    const { target } = setup();
-    target.dispatch(strictEvent("scroll"));
-    for (let round = 0; round < 20; round++) {
-      for (const eventType of QUALIFYING_EVENTS) {
-        target.dispatch(strictEvent(eventType));
-      }
-      target.dispatch(strictEvent("mousemove"));
-      target.dispatch(strictEvent("touchmove"));
-    }
-    assert.equal(sent.length, 1, "still exactly one message for the document");
-  });
-});
-
-test("the latch is the single sender: a reset session reports its own visit", () => {
-  withFakeChrome((sent) => {
-    const { target, tracker } = setup();
-    target.dispatch(strictEvent("wheel"));
-    assert.equal(sent.length, 1);
-
-    tracker.reset();
-    target.dispatch(strictEvent("wheel"));
-    assert.equal(sent.length, 2, "a fresh session sends its own single message");
-  });
-});
-
-test("movement alone never sends a visit message", () => {
-  withFakeChrome((sent) => {
-    const { target } = setup();
-    for (let i = 0; i < 200; i++) {
-      target.dispatch(strictEvent("mousemove"));
-      target.dispatch(strictEvent("touchmove"));
-    }
-    assert.deepEqual(sent, []);
-  });
-});
-
-test("no visit message is sent when the hostname is unknown", () => {
-  withFakeChrome((sent) => {
-    const { target } = setup({ hostname: "" });
-    target.dispatch(strictEvent("scroll"));
-    assert.deepEqual(sent, [], "without a hostname there is nothing to report");
-  });
-});
-
-test("no visit message is sent when the extension runtime is unavailable", () => {
-  // No globalThis.chrome installed — the reporter must stay silent.
-  const { target } = setup();
-  assert.doesNotThrow(() => target.dispatch(strictEvent("scroll")));
 });
 
 // ─── Privacy and isolation (static guards) ────────────────────────────────
 
 test("the handler needs nothing but the event type", () => {
-  const { tracker } = setup();
+  withFakeChrome((sent) => {
+    const { tracker } = setup();
 
-  // Unknown / non-qualifying types are ignored outright.
-  for (const unknown of ["mousemove", "touchmove", "focus", "", undefined]) {
-    tracker.handleInteraction({ type: unknown });
-  }
-  assert.equal(tracker.getVisitCount(), 0, "no detail beyond the type is required");
+    // Unknown / non-qualifying types are ignored outright.
+    for (const unknown of ["mousemove", "touchmove", "focus", "", undefined]) {
+      tracker.handleInteraction({ type: unknown });
+    }
+    assert.equal(tracker.getVisitCount(), 0, "no detail beyond the type is required");
 
-  // A bare { type } object is sufficient to record the visit.
-  tracker.handleInteraction({ type: "scroll" });
-  assert.equal(tracker.getVisitCount(), 1);
+    // A bare { type } object is sufficient to record the visit.
+    tracker.handleInteraction({ type: "scroll" });
+    assert.equal(tracker.getVisitCount(), 1);
+  });
 });
 
 test("the tracker exposes no captured interaction data", () => {
@@ -565,7 +396,6 @@ test("the tracker exposes no captured interaction data", () => {
   const surface = Object.keys(tracker).sort();
   assert.deepEqual(surface, [
     "getVisitCount",
-    "getVisitId",
     "handleInteraction",
     "hasEngaged",
     "isListening",
@@ -576,6 +406,8 @@ test("the tracker exposes no captured interaction data", () => {
   for (const value of Object.values(tracker)) {
     assert.equal(typeof value, "function", "only behaviour is exposed, never data");
   }
+  // Explicitly confirm getVisitId is absent
+  assert.ok(!("getVisitId" in tracker), "getVisitId must not be exposed");
 });
 
 test("the content script performs no network, storage or credential access", () => {
@@ -644,4 +476,94 @@ test("the tracker requires an event target it can listen on", () => {
   assert.throws(() => createVisitTracker({}), /an event target is required/);
   assert.throws(() => createVisitTracker({ target: null }), /an event target is required/);
   assert.throws(() => createVisitTracker({ target: {} }), /an event target is required/);
+});
+
+test("the visit message carries only the type and hostname", () => {
+  withFakeChrome((sent) => {
+    const { target } = setup();
+    target.dispatch(strictEvent("click"));
+
+    assert.deepEqual(
+      Object.keys(sent[0]).sort(),
+      ["domain", "type"],
+      "nothing else may travel — no identity, path, query or detail",
+    );
+    for (const forbidden of [
+      "user",
+      "userId",
+      "user_id",
+      "email",
+      "token",
+      "path",
+      "url",
+      "href",
+      "search",
+      "hash",
+      "title",
+      "event",
+      "timestamp",
+      "visited_at",
+      "time",
+      "x",
+      "y",
+      "visit_id",
+    ]) {
+      assert.ok(
+        !(forbidden in sent[0]),
+        `the visit message must not carry "${forbidden}"`,
+      );
+    }
+  });
+});
+
+test("further interactions send no further messages", () => {
+  withFakeChrome((sent) => {
+    const { target } = setup();
+    target.dispatch(strictEvent("scroll"));
+    for (let round = 0; round < 20; round++) {
+      for (const eventType of QUALIFYING_EVENTS) {
+        target.dispatch(strictEvent(eventType));
+      }
+      target.dispatch(strictEvent("mousemove"));
+      target.dispatch(strictEvent("touchmove"));
+    }
+    assert.equal(sent.length, 1, "still exactly one message for the document");
+  });
+});
+
+test("the latch is the single sender: a reset session reports its own visit", () => {
+  withFakeChrome((sent) => {
+    const { target, tracker } = setup();
+    target.dispatch(strictEvent("wheel"));
+    assert.equal(sent.length, 1);
+
+    tracker.reset();
+    target.dispatch(strictEvent("wheel"));
+    assert.equal(sent.length, 2, "a fresh session sends its own single message");
+  });
+});
+
+test("movement alone never sends a visit message", () => {
+  withFakeChrome((sent) => {
+    const { target } = setup();
+    for (let i = 0; i < 200; i++) {
+      target.dispatch(strictEvent("mousemove"));
+      target.dispatch(strictEvent("touchmove"));
+    }
+    assert.deepEqual(sent, []);
+  });
+});
+
+test("no visit message is sent when the hostname is unknown", () => {
+  withFakeChrome((sent) => {
+    const { target } = setup({ hostname: "" });
+    target.dispatch(strictEvent("scroll"));
+    assert.deepEqual(sent, [], "without a hostname there is nothing to report");
+  });
+});
+
+test("no visit message is sent when the extension runtime is unavailable", () => {
+  // No globalThis.chrome installed — the reporter must stay silent.
+  const { target } = setup();
+  assert.doesNotThrow(() => target.dispatch(strictEvent("scroll")));
 });

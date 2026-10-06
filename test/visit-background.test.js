@@ -685,7 +685,7 @@ test("the content script builds a three-field message and nothing more", () => {
   const match = src.match(/sendMessage\(\s*\{([^}]*)\}/);
   assert.ok(match, "the content script must send an inline object literal");
   const fields = [...match[1].matchAll(/([A-Za-z_$][\w$]*)\s*:/g)].map((m) => m[1]);
-  assert.deepEqual(fields.sort(), ["domain", "type", "visit_id"]);
+  assert.deepEqual(fields.sort(), ["domain", "type"]);
 
   for (const forbidden of [
     "user",
