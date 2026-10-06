@@ -1436,8 +1436,30 @@ test("the server accepts visits and exposes visit aggregation", () => {
     path.join(ROOT, "public", "js", "dashboard.js"),
     "utf8",
   );
+
+  // Dashboard MAY now consume GET /api/site-visits for Most Visited Sites
   assert.ok(
-    !/site-visits|lisTrack:siteVisit/.test(dashboardSrc),
-    "the dashboard must not consume visits yet",
+    /apiUrl\(['"]\/site-visits/.test(dashboardSrc) || /fetch\(.*['"]\/api\/site-visits/.test(dashboardSrc),
+    "dashboard must call /api/site-visits for Most Visited Sites",
+  );
+
+  // Dashboard MUST NOT use /api/screen-time for visit tracking
+  assert.ok(
+    !/screen-time.*visit|visit.*screen-time/i.test(dashboardSrc),
+    "dashboard must not mix screen-time and visit tracking",
+  );
+
+  // Background worker must still POST visits to /api/site-visits (not screen-time)
+  const backgroundSrc = fs.readFileSync(
+    path.join(ROOT, "public", "js", "background.js"),
+    "utf8",
+  );
+  assert.ok(
+    /fetch.*api\/site-visits/.test(backgroundSrc),
+    "background worker must POST visits to /api/site-visits",
+  );
+  assert.ok(
+    !/fetch.*api\/screen-time.*siteVisit|visit.*POST.*screen-time/i.test(backgroundSrc),
+    "background worker must not POST visits to /api/screen-time",
   );
 });
