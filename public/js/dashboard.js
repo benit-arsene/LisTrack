@@ -433,6 +433,9 @@
     let customEndDate = null;
     let visibleDomainCount = 10;
 
+    // Most Visited Sites state
+    let mvCurrentRange = 'today';
+
     // ─── Period Button Styling ──────────────────────────────────────────────
 
     function updatePeriodButtons() {
@@ -451,6 +454,49 @@
       if (rangeSelect && ['7days', '30days', 'custom'].includes(currentPeriod)) {
         rangeSelect.value = currentPeriod;
       }
+    }
+
+    // ─── Most Visited Sites Range Controls ────────────────────────────────────
+
+    function setMVRange(range) {
+      if (range === mvCurrentRange) return;
+      mvCurrentRange = range;
+      updateMVRangeButtons();
+      renderMVDomainList();
+    }
+
+    function updateMVRangeButtons() {
+      const ranges = ['today', 'week', 'month', 'all'];
+      ranges.forEach(r => {
+        const btn = document.getElementById('mv' + r.charAt(0).toUpperCase() + r.slice(1) + 'Btn');
+        if (btn) {
+          if (r === mvCurrentRange) {
+            btn.classList.remove('bg-gray-100', 'dark:bg-gray-700', 'text-gray-500', 'dark:text-gray-400');
+            btn.classList.add('bg-indigo-100', 'dark:bg-indigo-900/30', 'text-indigo-700', 'dark:text-indigo-300');
+            btn.setAttribute('aria-pressed', 'true');
+          } else {
+            btn.classList.remove('bg-indigo-100', 'dark:bg-indigo-900/30', 'text-indigo-700', 'dark:text-indigo-300');
+            btn.classList.add('bg-gray-100', 'dark:bg-gray-700', 'text-gray-500', 'dark:text-gray-400');
+            btn.setAttribute('aria-pressed', 'false');
+          }
+        }
+      });
+      const badge = document.getElementById('mvRangeBadge');
+      if (badge) {
+        const label = { today: 'Today', week: 'This week', month: 'This month', all: 'All time' }[mvCurrentRange];
+        badge.textContent = label;
+      }
+    }
+
+    function renderMVDomainList() {
+      const list = document.getElementById('mvDomainList');
+      const emptyState = document.getElementById('mvEmptyState');
+      if (!list) return;
+
+      // Placeholder: will be replaced when API integration is added
+      list.innerHTML = '';
+      emptyState.classList.remove('hidden');
+      list.classList.add('hidden');
     }
 
     // ─── Period Helpers ─────────────────────────────────────────────────────
@@ -580,7 +626,8 @@
     function goToCurrent() {
       if (currentPeriod === 'custom') {
         currentPeriod = 'day';
-        updatePeriodButtons();
+updatePeriodButtons();
+      updateMVRangeButtons();
         const customRange = document.getElementById('customRangeContainer');
         if (customRange) { customRange.classList.add('hidden'); customRange.classList.remove('flex'); }
       }
