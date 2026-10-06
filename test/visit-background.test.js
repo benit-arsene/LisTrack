@@ -278,7 +278,7 @@ async function dispatch(message) {
 
 test.beforeEach(reset);
 
-const SITE_VISIT_WINDOW_MS = 30 * 60 * 1000;
+const SITE_VISIT_WINDOW_MS = 3 * 60 * 1000;
 
 // ─── 1. The message is recognised by its dedicated type ───────────────────
 
@@ -441,14 +441,14 @@ test("a visit message containing a domain is never POSTed to /api/screen-time", 
     .filter((url) => url.includes("/api/screen-time"));
   assert.deepEqual(screenTimeUrls, [], "/api/screen-time must never be hit by a visit");
   // Both messages normalize to the same domain (example.com), so only ONE visit POST
-  // occurs due to the 30-minute visit window. The second message reuses the visit.
+   // occurs due to the 3-minute visit window. The second message reuses the visit.
   assert.equal(siteVisitCalls().length, 1, "both messages share the same visit window");
 });
 
-test("repeated visit messages for same domain within 30 minutes produce only one visit", async () => {
-  for (let i = 0; i < 5; i++) await dispatch(visitMessage({ visit_id: `vid-${i}` }));
+test("repeated visit messages for same domain within 3 minutes produce only one visit", async () => {
+   for (let i = 0; i < 5; i++) await dispatch(visitMessage({ visit_id: `vid-${i}` }));
 
-  // All 5 messages are for the same domain within the 30-minute window,
+   // All 5 messages are for the same domain within the 3-minute window,
   // so only ONE visit POST should occur.
   assert.equal(siteVisitCalls().length, 1, "one submission for all messages in the visit window");
   assert.deepEqual(screenTimeCalls(), [], "still never screen time");
@@ -1389,7 +1389,26 @@ test("the screen-time drain still never submits a visit", async () => {
   assert.deepEqual(visitQueue(), [], "the visit queue drained independently");
 });
 
-// ─── 30-Minute Visit Window Behavior ────────────────────────────────────────
+// ─── Helpers for deterministic visit-window boundary tests ─────────────────
+// The window logic keys off Date.now() inside the worker. To make the "exactly
+// 3 minutes" boundary deterministic (rather than relying on real elapsed ms),
+// these tests pin Date.now() to a fixed instant. chrome.storage.local is the
+// existing fake storage, so lastInteractionAt is manipulated through it.
+
+/** Run an async `fn` with Date.now() pinned to `now` (real timers unaffected).
+ *  Awaited before restoring, so the pinned value actually reaches the async
+ *  handler whose `const now = Date.now()` runs on later microtasks. */
+async function withFakeNow(now, fn) {
+  const realNow = Date.now;
+  Date.now = () => now;
+  try {
+    return await fn();
+  } finally {
+    Date.now = realNow;
+  }
+}
+
+// ─── 3-Minute Visit Window Behavior ────────────────────────────────────────
 // Focused tests for the new domain visit-window logic.
 
 test("A. First interaction on domain → exactly 1 new visit POST", async () => {
@@ -1404,7 +1423,7 @@ test("A. First interaction on domain → exactly 1 new visit POST", async () => 
   assert.equal(r.visitStatus, "ok");
 });
 
-test("B. Same domain after short interval (<30 min) → no second POST", async () => {
+test("B. Same domain after short interval (<3 min) → no second POST", async () => {
   scriptFetch(VISIT_URL, { ok: true, status: 201, body: { status: "ok", id: 1 } });
   await dispatch(visitMessage({ domain: "example.com", visit_id: "vid-1" }));
 
@@ -1418,49 +1437,57 @@ test("B. Same domain after short interval (<30 min) → no second POST", async (
   assert.ok(typeof r.visitId === "string" && r.visitId.length > 0);
 });
 
-test("C. Same domain at boundary (exactly 30 min elapsed) → new visit", async () => {
-  // First visit
-  scriptFetch(VISIT_URL, { ok: true, status: 201, body: { status: "ok", id: 1 } });
-  const [r1] = await dispatch(visitMessage({ domain: "boundary.com", visit_id: "vid-1" }));
-  assert.equal(r1.isNewVisit, true);
+test("C. Same domain at boundary (exactly 3 min elapsed) → new visit", async () => {
+   // Pin time so "exactly 3 minutes" is deterministic: diff === SITE_VISIT_WINDOW_MS.
+   const now = 1_000_000_0000;
+   const [r1] = await withFakeNow(now, async () => {
+     scriptFetch(VISIT_URL, { ok: true, status: 201, body: { status: "ok", id: 1 } });
+     return await dispatch(visitMessage({ domain: "boundary.com", visit_id: "vid-1" }));
+   });
+   assert.equal(r1.isNewVisit, true);
 
-  // Manually advance the visit window's lastInteractionAt by exactly 30 minutes
-  // by directly manipulating the persisted state
-  const windows = await getSiteVisitWindowsFromStorage(SIGNED_IN_USER);
-  if (windows["boundary.com"]) {
-    windows["boundary.com"].lastInteractionAt -= SITE_VISIT_WINDOW_MS;
-  }
-  await setSiteVisitWindowsInStorage(SIGNED_IN_USER, windows);
+   // Retract the persisted window by exactly 3 minutes so the next interaction
+   // lands precisely on the boundary.
+   const windows = await getSiteVisitWindowsFromStorage(SIGNED_IN_USER);
+   assert.ok(windows["boundary.com"], "first visit persisted a window");
+   windows["boundary.com"].lastInteractionAt = now - SITE_VISIT_WINDOW_MS;
+   await setSiteVisitWindowsInStorage(SIGNED_IN_USER, windows);
 
-  // Now send another message - should create a new visit
-  scriptFetch(VISIT_URL, { ok: true, status: 201, body: { status: "ok", id: 2 } });
-  const [r2] = await dispatch(visitMessage({ domain: "boundary.com", visit_id: "vid-2" }));
+   // Dispatch again at the SAME pinned instant → diff === SITE_VISIT_WINDOW_MS.
+   const [r2] = await withFakeNow(now, async () => {
+     scriptFetch(VISIT_URL, { ok: true, status: 201, body: { status: "ok", id: 2 } });
+     return await dispatch(visitMessage({ domain: "boundary.com", visit_id: "vid-2" }));
+   });
 
-  assert.equal(siteVisitCalls().length, 2, "new POST when exactly 30 min elapsed");
-  assert.equal(r2.isNewVisit, true);
-  assert.notEqual(r2.visitId, r1.visitId, "different visitId for new visit");
+   assert.equal(siteVisitCalls().length, 2, "new POST when exactly 3 min elapsed");
+   assert.equal(r2.isNewVisit, true, "the boundary itself opens a new visit");
+   assert.notEqual(r2.visitId, r1.visitId, "different visitId for new visit");
 });
 
-test("D. Same domain after >30 min → second POST with DIFFERENT visitId", async () => {
-  // First visit
-  scriptFetch(VISIT_URL, { ok: true, status: 201, body: { status: "ok", id: 1 } });
-  const [r1] = await dispatch(visitMessage({ domain: "oldsite.com", visit_id: "vid-1" }));
-  assert.equal(r1.isNewVisit, true);
+test("D. Same domain after >3 min → second POST with DIFFERENT visitId", async () => {
+   // Pin time so ">3 minutes" is deterministic: diff = 3 min + 1s past the boundary.
+   const now = 1_000_000_001;
+   const [r1] = await withFakeNow(now, async () => {
+     scriptFetch(VISIT_URL, { ok: true, status: 201, body: { status: "ok", id: 1 } });
+     return await dispatch(visitMessage({ domain: "oldsite.com", visit_id: "vid-1" }));
+   });
+   assert.equal(r1.isNewVisit, true);
 
-  // Advance lastInteractionAt by >30 minutes
-  const windows = await getSiteVisitWindowsFromStorage(SIGNED_IN_USER);
-  if (windows["oldsite.com"]) {
-    windows["oldsite.com"].lastInteractionAt -= SITE_VISIT_WINDOW_MS + 1000; // 30 min + 1 sec
-  }
-  await setSiteVisitWindowsInStorage(SIGNED_IN_USER, windows);
+   // Push lastInteractionAt back by MORE than the window (3 min + 1 sec).
+   const windows = await getSiteVisitWindowsFromStorage(SIGNED_IN_USER);
+   assert.ok(windows["oldsite.com"]);
+   windows["oldsite.com"].lastInteractionAt =
+     now - (SITE_VISIT_WINDOW_MS + 1000); // 3 min + 1 sec
+   await setSiteVisitWindowsInStorage(SIGNED_IN_USER, windows);
 
-  // Second message - should create a new visit with different visitId
-  scriptFetch(VISIT_URL, { ok: true, status: 201, body: { status: "ok", id: 2 } });
-  const [r2] = await dispatch(visitMessage({ domain: "oldsite.com", visit_id: "vid-2" }));
+   const [r2] = await withFakeNow(now, async () => {
+     scriptFetch(VISIT_URL, { ok: true, status: 201, body: { status: "ok", id: 2 } });
+     return await dispatch(visitMessage({ domain: "oldsite.com", visit_id: "vid-2" }));
+   });
 
-  assert.equal(siteVisitCalls().length, 2, "second POST after window expired");
-  assert.equal(r2.isNewVisit, true);
-  assert.notEqual(r2.visitId, r1.visitId, "different visitId for new visit window");
+   assert.equal(siteVisitCalls().length, 2, "second POST after window expired");
+   assert.equal(r2.isNewVisit, true);
+   assert.notEqual(r2.visitId, r1.visitId, "different visitId for new visit window");
 });
 
 test("E. Different domains → independent visit windows", async () => {

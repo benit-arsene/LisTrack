@@ -50,7 +50,7 @@ const OFFLINE_QUEUE_KEY = "lisTrackOfflineQueue";
 // parked in it would be replayed to the wrong endpoint.
 const SITE_VISIT_QUEUE_KEY = "lisTrackSiteVisitQueue";
 const SITE_VISIT_WINDOW_KEY = "lisTrackSiteVisitWindow";
-const SITE_VISIT_WINDOW_MS = 30 * 60 * 1000; // 30 minutes
+const SITE_VISIT_WINDOW_MS = 3 * 60 * 1000; // 3 minutes
 
 // ─── Namespaced Message Types ─────────────────────────────────────────────
 // Every message this extension sends carries an explicit `type`. Messages
@@ -804,7 +804,9 @@ function generateVisitId() {
 
 /**
  * Handle one engaged-visit message: record it and submit once.
- * Uses a 30-minute domain visit window to deduplicate visits.
+ * Uses a 3-minute domain visit window to disambiguate visits: an interaction
+ * at or past the 3-minute mark starts a NEW visit, while one inside it reuses
+ * the existing visit and only advances lastInteractionAt.
  * Never throws.
  * @returns {Promise<{received: boolean, requiresAuth?: boolean, isNewVisit?: boolean, visitId?: string, visitStatus?: string, status?: number, reason?: string}>}
  */
@@ -858,8 +860,8 @@ async function handleSiteVisitMessage(message) {
     visitId = generateVisitId();
     windows[domain] = { visitId, lastInteractionAt: now };
     isNewVisit = true;
-  } else if (now - window.lastInteractionAt > SITE_VISIT_WINDOW_MS) {
-    // Window expired — start a new visit
+   } else if (now - window.lastInteractionAt >= SITE_VISIT_WINDOW_MS) {
+    // At or past the 3-minute boundary — the window has expired; start a new visit
     visitId = generateVisitId();
     windows[domain] = { visitId, lastInteractionAt: now };
     isNewVisit = true;
