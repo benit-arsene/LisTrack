@@ -120,6 +120,15 @@ function loadBackground() {
     },
   };
 
+  // Debug: wrap the sync get to see what's happening
+  const originalSyncGet = chromeMock.storage.sync.get;
+  chromeMock.storage.sync.get = function(keys, callback) {
+    console.log("[MOCK SYNC GET] keys:", keys, "store:", syncStore);
+    const result = originalSyncGet(keys, callback);
+    console.log("[MOCK SYNC GET] result:", result);
+    return result;
+  };
+
   const previousChrome = globalThis.chrome;
   const previousFetch = globalThis.fetch;
   const previousImportScripts = globalThis.importScripts;
@@ -180,8 +189,11 @@ const harness = loadBackground();
 
 test.after(() => harness.restore());
 
+const SITE_VISIT_WINDOW_KEY = "lisTrackSiteVisitWindow";
+
 /** Reset per-test state. */
 function reset() {
+  console.log("[TEST RESET] Setting user_id to:", SIGNED_IN_USER);
   harness.calls.fetch.length = 0;
   harness.calls.storageGet.length = 0;
   harness.calls.storageSet.length = 0;
@@ -189,8 +201,10 @@ function reset() {
   harness.localStore.lisTrackOfflineQueue = undefined;
   delete harness.localStore.lisTrackOfflineQueue;
   delete harness.localStore.lisTrackSiteVisitQueue;
+  delete harness.localStore[SITE_VISIT_WINDOW_KEY];
   harness.syncStore.user_id = SIGNED_IN_USER;
   harness.fetchScript.clear();
+  console.log("[TEST RESET] syncStore after reset:", harness.syncStore);
 }
 
 const VISIT_URL = "https://listrack-2.onrender.com/api/site-visits";
@@ -264,12 +278,18 @@ async function dispatch(message) {
 
 test.beforeEach(reset);
 
+const SITE_VISIT_WINDOW_MS = 30 * 60 * 1000;
+
 // ─── 1. The message is recognised by its dedicated type ───────────────────
 
 test("a visit message is recognised by its dedicated type", async () => {
   const responses = await dispatch(visitMessage());
   assert.equal(responses.length, 1, "exactly one listener answers");
-  assert.deepEqual(responses[0], { received: true, visitStatus: "ok" });
+  const r = responses[0];
+  assert.equal(r.received, true);
+  assert.equal(r.isNewVisit, true);
+  assert.ok(typeof r.visitId === "string" && r.visitId.length > 0);
+  assert.equal(r.visitStatus, "ok");
 });
 
 test("the worker recognises the exact namespaced type constant", () => {
@@ -297,9 +317,10 @@ test("a visit message is submitted to POST /api/site-visits", async () => {
   assert.ok(call.url.endsWith("/api/site-visits"));
   assert.equal(call.options.method, "POST");
 
-  // Exactly the two intended fields — nothing else.
+  // The background generates its own visit_id for the visit window.
   const body = JSON.parse(call.options.body);
-  assert.deepEqual(body, { domain: "youtube.com", visit_id: "vid-123" });
+  assert.equal(body.domain, "youtube.com");
+  assert.ok(typeof body.visit_id === "string" && body.visit_id.length > 0);
   assert.deepEqual(Object.keys(body).sort(), ["domain", "visit_id"]);
   assert.ok(!("type" in body), "the internal routing type is not sent to the server");
 });
@@ -368,11 +389,11 @@ test("a duplicate response is handled as success and is not retried", async () =
   scriptFetch(VISIT_URL, { ok: true, status: 200, body: { status: "duplicate" } });
   const responses = await dispatch(visitMessage());
 
-  assert.deepEqual(
-    responses[0],
-    { received: true, visitStatus: "duplicate" },
-    "a duplicate is a handled visit, not an error",
-  );
+  const r = responses[0];
+  assert.equal(r.received, true);
+  assert.equal(r.isNewVisit, true);
+  assert.ok(typeof r.visitId === "string" && r.visitId.length > 0);
+  assert.equal(r.visitStatus, "duplicate");
   assert.equal(siteVisitCalls().length, 1, "a duplicate must not be retried");
   assert.equal(offlineQueueWrites().length, 0, "and must not be queued");
   assert.equal(screenTimeCalls().length, 0);
@@ -382,7 +403,11 @@ test("an ignored response is handled as success", async () => {
   scriptFetch(VISIT_URL, { ok: true, status: 200, body: { status: "ignored", reason: "localhost" } });
   const responses = await dispatch(visitMessage());
 
-  assert.deepEqual(responses[0], { received: true, visitStatus: "ignored" });
+  const r = responses[0];
+  assert.equal(r.received, true);
+  assert.equal(r.isNewVisit, true);
+  assert.ok(typeof r.visitId === "string" && r.visitId.length > 0);
+  assert.equal(r.visitStatus, "ignored");
   assert.equal(siteVisitCalls().length, 1, "an ignored visit is not retried");
   assert.equal(offlineQueueWrites().length, 0);
 });
@@ -390,7 +415,11 @@ test("an ignored response is handled as success", async () => {
 test("a successful 201 response is reported as ok", async () => {
   scriptFetch(VISIT_URL, { ok: true, status: 201, body: { status: "ok", id: 42 } });
   const responses = await dispatch(visitMessage());
-  assert.deepEqual(responses[0], { received: true, visitStatus: "ok" });
+  const r = responses[0];
+  assert.equal(r.received, true);
+  assert.equal(r.isNewVisit, true);
+  assert.ok(typeof r.visitId === "string" && r.visitId.length > 0);
+  assert.equal(r.visitStatus, "ok");
 });
 
 // ─── 2 & 3. No fallthrough into the screen-time path ─────────────────────
@@ -411,13 +440,17 @@ test("a visit message containing a domain is never POSTed to /api/screen-time", 
     .map((call) => call.url)
     .filter((url) => url.includes("/api/screen-time"));
   assert.deepEqual(screenTimeUrls, [], "/api/screen-time must never be hit by a visit");
-  assert.equal(siteVisitCalls().length, 2, "both messages used the visit endpoint");
+  // Both messages normalize to the same domain (example.com), so only ONE visit POST
+  // occurs due to the 30-minute visit window. The second message reuses the visit.
+  assert.equal(siteVisitCalls().length, 1, "both messages share the same visit window");
 });
 
-test("repeated visit messages each submit exactly once, never to screen time", async () => {
+test("repeated visit messages for same domain within 30 minutes produce only one visit", async () => {
   for (let i = 0; i < 5; i++) await dispatch(visitMessage({ visit_id: `vid-${i}` }));
 
-  assert.equal(siteVisitCalls().length, 5, "one submission per message, no more");
+  // All 5 messages are for the same domain within the 30-minute window,
+  // so only ONE visit POST should occur.
+  assert.equal(siteVisitCalls().length, 1, "one submission for all messages in the visit window");
   assert.deepEqual(screenTimeCalls(), [], "still never screen time");
   assert.equal(offlineQueueWrites().length, 0, "nothing queued");
 });
@@ -434,7 +467,12 @@ test("a FAILED visit request buffers in the VISIT queue, never the screen-time o
   scriptFetch(VISIT_URL, { ok: false, status: 500 });
   const responses = await dispatch(visitMessage());
 
-  assert.deepEqual(responses[0], { received: false, status: 500, queued: true });
+  const r = responses[0];
+  assert.equal(r.received, false);
+  assert.equal(r.status, 500);
+  assert.equal(r.queued, true);
+  assert.equal(r.isNewVisit, true);
+  assert.ok(typeof r.visitId === "string" && r.visitId.length > 0);
   assert.equal(siteVisitCalls().length, 1, "attempted once, not retried");
   assert.equal(visitQueue().length, 1, "buffered in the dedicated visit queue");
   assert.deepEqual(offlineQueueWrites(), [], "never the screen-time queue");
@@ -446,11 +484,12 @@ test("a TRANSPORT failure on a visit never touches the screen-time queue", async
   scriptFetch(VISIT_URL, { throw: "Failed to fetch" });
   const responses = await dispatch(visitMessage());
 
-  assert.deepEqual(responses[0], {
-    received: false,
-    error: "visit-not-sent",
-    queued: true,
-  });
+  const r = responses[0];
+  assert.equal(r.received, false);
+  assert.equal(r.error, "visit-not-sent");
+  assert.equal(r.queued, true);
+  assert.equal(r.isNewVisit, true);
+  assert.ok(typeof r.visitId === "string" && r.visitId.length > 0);
   assert.equal(visitQueue().length, 1, "buffered for a later retry");
   assert.deepEqual(offlineQueueWrites(), []);
   assert.deepEqual(screenTimeQueue(), []);
@@ -460,7 +499,12 @@ test("a 4xx rejection on a visit does not write to lisTrackOfflineQueue", async 
   scriptFetch(VISIT_URL, { ok: false, status: 400 });
   const responses = await dispatch(visitMessage());
 
-  assert.deepEqual(responses[0], { received: false, status: 400, queued: false });
+  const r = responses[0];
+  assert.equal(r.received, false);
+  assert.equal(r.status, 400);
+  assert.equal(r.queued, false);
+  assert.equal(r.isNewVisit, true);
+  assert.ok(typeof r.visitId === "string" && r.visitId.length > 0);
   assert.deepEqual(offlineQueueWrites(), []);
   assert.deepEqual(visitQueue(), [], "a permanent error is never retried");
 });
@@ -469,7 +513,12 @@ test("a 401 rejection is not queued", async () => {
   scriptFetch(VISIT_URL, { ok: false, status: 401 });
   const responses = await dispatch(visitMessage());
 
-  assert.deepEqual(responses[0], { received: false, status: 401, queued: false });
+  const r = responses[0];
+  assert.equal(r.received, false);
+  assert.equal(r.status, 401);
+  assert.equal(r.queued, false);
+  assert.equal(r.isNewVisit, true);
+  assert.ok(typeof r.visitId === "string" && r.visitId.length > 0);
   assert.deepEqual(visitQueue(), [], "an unauthorized visit is not retried blindly");
   assert.deepEqual(screenTimeQueue(), []);
 });
@@ -493,7 +542,8 @@ test("the signed-in user is resolved through the existing getUserId() gate", asy
 });
 
 test("signing out mid-session changes the outcome for subsequent visits", async () => {
-  assert.equal((await dispatch(visitMessage()))[0].received, true);
+  const r1 = await dispatch(visitMessage());
+  assert.equal(r1[0].received, true);
   harness.syncStore.user_id = undefined;
   const after = await dispatch(visitMessage());
   assert.deepEqual(after[0], { received: false, requiresAuth: true });
@@ -613,7 +663,7 @@ function visitHandlerBody() {
   return codeOnly(src.slice(start, end));
 }
 
-test("the visit handler reads only the domain and visit_id from the message", async () => {
+test("the visit handler reads only the domain from the message (visitId is generated by background)", async () => {
   const responses = await dispatch(
     visitMessage({ path: "/secret", search: "?token=abc", hash: "#x", title: "Secret Page" }),
   );
@@ -626,7 +676,8 @@ test("the visit handler reads only the domain and visit_id from the message", as
       [...body.matchAll(/message\s*\??\s*\.\s*([A-Za-z_$][\w$]*)/g)].map((m) => m[1]),
     ),
   ];
-  assert.deepEqual(reads.sort(), ["domain", "visit_id"], "nothing else may be read");
+  // Background generates its own visitId, so it only reads 'domain' from the message
+  assert.deepEqual(reads.sort(), ["domain"], "nothing else may be read");
 });
 
 test("the content script builds a three-field message and nothing more", () => {
@@ -655,12 +706,14 @@ test("the content script builds a three-field message and nothing more", () => {
 });
 
 test("a visit_id in the message does not change the worker's handling", async () => {
-  // The worker keeps deriving ownership itself and keeps reading only the
-  // domain and visit_id — a client visit_id is an opaque string here.
+  // The worker generates its own visit_id for the visit window.
+  // The client visit_id is not used for the POST, but the message is still accepted.
   const signedIn = await dispatch(visitMessage({ visit_id: "uuid-a" }));
   assert.equal(signedIn[0].received, true);
   assert.equal(siteVisitCalls().length, 1);
-  assert.equal(JSON.parse(siteVisitCalls()[0].options.body).visit_id, "uuid-a");
+  // The background uses its own generated visit_id, not the one from the message
+  const body = JSON.parse(siteVisitCalls()[0].options.body);
+  assert.ok(typeof body.visit_id === "string" && body.visit_id.length > 0);
   assert.deepEqual(offlineQueueWrites(), []);
 
   harness.syncStore.user_id = undefined;
@@ -669,12 +722,15 @@ test("a visit_id in the message does not change the worker's handling", async ()
   assert.equal(siteVisitCalls().length, 1, "a signed-out visit is never submitted");
 });
 
-test("a visit without a usable visit_id is never submitted", async () => {
+test("a visit without a usable visit_id is still submitted (background generates its own)", async () => {
   for (const bad of [undefined, "", "   ", 42]) {
     reset();
     const responses = await dispatch(visitMessage({ visit_id: bad }));
-    assert.deepEqual(responses[0], { received: false, reason: "invalid visit_id" });
-    assert.deepEqual(harness.calls.fetch, [], "nothing is sent without a visit_id");
+    // Background generates its own visit_id, so it still submits
+    assert.equal(responses[0].received, true);
+    assert.equal(responses[0].isNewVisit, true);
+    assert.ok(typeof responses[0].visitId === "string" && responses[0].visitId.length > 0);
+    assert.equal(siteVisitCalls().length, 1, "visit is submitted with background-generated visit_id");
   }
 });
 
@@ -804,12 +860,15 @@ test("a normal non-excluded domain still submits normally", async () => {
     visitMessage({ domain: "youtube.com", visit_id: "vid-ok" }),
   );
 
-  assert.deepEqual(responses[0], { received: true, visitStatus: "ok" });
+  const r = responses[0];
+  assert.equal(r.received, true);
+  assert.equal(r.isNewVisit, true);
+  assert.ok(typeof r.visitId === "string" && r.visitId.length > 0);
+  assert.equal(r.visitStatus, "ok");
   assert.equal(siteVisitCalls().length, 1, "one submission, as before");
-  assert.deepEqual(JSON.parse(siteVisitCalls()[0].options.body), {
-    domain: "youtube.com",
-    visit_id: "vid-ok",
-  });
+  const body = JSON.parse(siteVisitCalls()[0].options.body);
+  assert.equal(body.domain, "youtube.com");
+  assert.ok(typeof body.visit_id === "string" && body.visit_id.length > 0);
   assert.deepEqual(visitQueue(), [], "a delivered visit is not queued");
 });
 
@@ -887,7 +946,11 @@ test("screen-time exclusion behaviour is unchanged for both paths", async () => 
 test("the visit queue behaviour is unchanged for non-excluded domains", async () => {
   scriptFetch(VISIT_URL, { ok: false, status: 503 });
   await dispatch(visitMessage({ domain: "github.com", visit_id: "vid-retry" }));
-  assert.deepEqual(visitQueue(), [{ domain: "github.com", visit_id: "vid-retry" }]);
+  const queue = visitQueue();
+  assert.equal(queue.length, 1);
+  assert.equal(queue[0].domain, "github.com");
+  // Background generates its own visit_id
+  assert.ok(typeof queue[0].visit_id === "string" && queue[0].visit_id.length > 0);
 
   // And it still drains normally.
   reset();
@@ -913,13 +976,15 @@ test("a network failure queues the visit in chrome.storage.local", async () => {
 
   const queue = visitQueue();
   assert.equal(queue.length, 1);
-  assert.deepEqual(queue[0], { domain: "youtube.com", visit_id: "vid-q" });
+  assert.equal(queue[0].domain, "youtube.com");
+  assert.ok(typeof queue[0].visit_id === "string" && queue[0].visit_id.length > 0);
 });
 
 test("a 5xx queues the visit", async () => {
   scriptFetch(VISIT_URL, { ok: false, status: 503 });
   await dispatch(visitMessage({ visit_id: "vid-q" }));
   assert.equal(visitQueue().length, 1, "a server error is worth retrying");
+  assert.ok(typeof visitQueue()[0].visit_id === "string" && visitQueue()[0].visit_id.length > 0);
 });
 
 test("a queued record contains only domain and visit_id", async () => {
@@ -1010,10 +1075,12 @@ test("queued records are readable back from chrome.storage.local", async () => {
   await dispatch(visitMessage({ domain: "b.com", visit_id: "id-b" }));
 
   const read = await chrome.storage.local.get([SITE_VISIT_QUEUE_KEY]);
-  assert.deepEqual(read[SITE_VISIT_QUEUE_KEY], [
-    { domain: "a.com", visit_id: "id-a" },
-    { domain: "b.com", visit_id: "id-b" },
-  ]);
+  const queue = read[SITE_VISIT_QUEUE_KEY];
+  assert.equal(queue.length, 2);
+  assert.equal(queue[0].domain, "a.com");
+  assert.ok(typeof queue[0].visit_id === "string" && queue[0].visit_id.length > 0);
+  assert.equal(queue[1].domain, "b.com");
+  assert.ok(typeof queue[1].visit_id === "string" && queue[1].visit_id.length > 0);
 });
 
 test("the queue survives a simulated service-worker restart", async () => {
@@ -1024,38 +1091,35 @@ test("the queue survives a simulated service-worker restart", async () => {
   harness.reloadWorker();
   await settle();
 
-  assert.deepEqual(visitQueue(), [
-    { domain: "youtube.com", visit_id: "vid-restart" },
-  ]);
+  const queue = visitQueue();
+  assert.equal(queue.length, 1);
+  assert.equal(queue[0].domain, "youtube.com");
+  assert.ok(typeof queue[0].visit_id === "string" && queue[0].visit_id.length > 0);
 
   // …and the fresh worker can still deliver it.
   scriptFetch(VISIT_URL, { ok: true, status: 201, body: { status: "ok" } });
   await triggerDrainAlarm();
   assert.deepEqual(visitQueue(), [], "the restarted worker drained the queue");
   const call = siteVisitCalls().slice(-1)[0];
-  assert.deepEqual(JSON.parse(call.options.body), {
-    domain: "youtube.com",
-    visit_id: "vid-restart",
-  });
+  const body = JSON.parse(call.options.body);
+  assert.equal(body.domain, "youtube.com");
+  assert.ok(typeof body.visit_id === "string" && body.visit_id.length > 0);
 });
 
 test("the queue is bounded and drops the oldest record on overflow", async () => {
   // Fill past the documented maximum (100). Every attempt fails.
+  // Use DIFFERENT domains so each message creates a NEW visit window.
   scriptFetch(VISIT_URL, ...Array.from({ length: 106 }, () => ({ ok: false, status: 500 })));
   for (let i = 0; i < 106; i++) {
-    await dispatch(visitMessage({ visit_id: `bulk-${i}` }));
+    await dispatch(visitMessage({ domain: `site${i}.com`, visit_id: `bulk-${i}` }));
   }
 
   const queue = visitQueue();
   assert.equal(queue.length, 100, "storage must not grow without bound");
-  assert.ok(
-    queue.some((e) => e.visit_id === "bulk-105"),
-    "the newest record is kept",
-  );
-  assert.ok(
-    !queue.some((e) => e.visit_id === "bulk-0"),
-    "the oldest record is dropped first",
-  );
+  // Background generates its own visit_ids, so we can't check for specific IDs
+  // Just verify it's bounded and keeps the newest (site105.com should be kept, site0.com dropped)
+  assert.ok(queue.some((e) => e.domain === "site105.com"), "the newest record is kept");
+  assert.ok(!queue.some((e) => e.domain === "site0.com"), "the oldest record is dropped first");
 });
 
 // ─── Draining ────────────────────────────────────────────────────────────
@@ -1081,10 +1145,9 @@ test("a queued visit is submitted and removed on success", async () => {
 
   const calls = siteVisitCalls();
   const drained = calls[calls.length - 1];
-  assert.deepEqual(JSON.parse(drained.options.body), {
-    domain: "youtube.com",
-    visit_id: "vid-q",
-  });
+  const body = JSON.parse(drained.options.body);
+  assert.equal(body.domain, "youtube.com");
+  assert.ok(typeof body.visit_id === "string" && body.visit_id.length > 0);
   assert.deepEqual(visitQueue(), [], "a delivered record is removed");
 });
 
@@ -1150,7 +1213,10 @@ test("multiple queued visits are all drained, and partial failure is per-record"
   );
   await triggerDrainAlarm();
 
-  assert.deepEqual(visitQueue(), [{ domain: "b.com", visit_id: "id-b" }]);
+  const queue = visitQueue();
+  assert.equal(queue.length, 1);
+  assert.equal(queue[0].domain, "b.com");
+  assert.ok(typeof queue[0].visit_id === "string" && queue[0].visit_id.length > 0);
 });
 
 test("the drain is a no-op when the queue is empty", async () => {
@@ -1198,10 +1264,9 @@ test("a drain authenticates with the existing mechanism, not a stored identity",
 
   const drained = siteVisitCalls().slice(-1)[0];
   assert.match(drained.options.headers.Authorization, /^Bearer /);
-  assert.deepEqual(JSON.parse(drained.options.body), {
-    domain: "example.com",
-    visit_id: "vid-q",
-  });
+  const body = JSON.parse(drained.options.body);
+  assert.equal(body.domain, "example.com");
+  assert.ok(typeof body.visit_id === "string" && body.visit_id.length > 0);
 });
 
 test("signing out clears buffered visits so another account cannot inherit them", async () => {
@@ -1219,17 +1284,30 @@ test("an account switch between queueing and draining discards, never re-attribu
   await queueVisit({ domain: "private-a.com", visit_id: "id-a" });
   assert.equal(harness.syncStore.user_id, USER_A);
 
+  // Record the call count BEFORE switching accounts (the initial failed POST)
+  const initialCallCount = siteVisitCalls().length;
+
   // Account B is now signed in (without a local signOut, e.g. sync changed).
   harness.syncStore.user_id = USER_B;
   scriptFetch(VISIT_URL, { ok: true, status: 201, body: { status: "ok" } });
 
   await triggerDrainAlarm();
 
-  const submitted = siteVisitCalls()
-    .filter((c) => JSON.parse(c.options.body).visit_id === "id-a")
-    .map((c) => JSON.parse(c.options.body));
-  assert.equal(submitted.length, 1, "only the original attempt under account A");
+  // The queue should be discarded, not submitted as B's
   assert.deepEqual(visitQueue(), [], "the record is discarded rather than sent as B's");
+  // No new visit should be submitted for the old queued visit under account B
+  // (only the initial failed attempt under account A should exist)
+  const queuedDomainCalls = siteVisitCalls().filter((c) => {
+    try {
+      const body = JSON.parse(c.options.body);
+      return body.domain === "private-a.com";
+    } catch {
+      return false;
+    }
+  });
+  // Should only have the original failed attempt, not a successful drained submission
+  assert.equal(queuedDomainCalls.length, 1, "only the original failed attempt under account A");
+  assert.equal(siteVisitCalls().length, initialCallCount, "no additional requests during drain");
 });
 
 test("a fresh worker adopts a pre-existing queue and says so", async () => {
@@ -1310,6 +1388,210 @@ test("the screen-time drain still never submits a visit", async () => {
   }
   assert.deepEqual(visitQueue(), [], "the visit queue drained independently");
 });
+
+// ─── 30-Minute Visit Window Behavior ────────────────────────────────────────
+// Focused tests for the new domain visit-window logic.
+
+test("A. First interaction on domain → exactly 1 new visit POST", async () => {
+  scriptFetch(VISIT_URL, { ok: true, status: 201, body: { status: "ok", id: 1 } });
+  const responses = await dispatch(visitMessage({ domain: "newsite.com", visit_id: "vid-1" }));
+
+  assert.equal(siteVisitCalls().length, 1, "exactly one POST for first interaction");
+  const r = responses[0];
+  assert.equal(r.received, true);
+  assert.equal(r.isNewVisit, true);
+  assert.ok(typeof r.visitId === "string" && r.visitId.length > 0);
+  assert.equal(r.visitStatus, "ok");
+});
+
+test("B. Same domain after short interval (<30 min) → no second POST", async () => {
+  scriptFetch(VISIT_URL, { ok: true, status: 201, body: { status: "ok", id: 1 } });
+  await dispatch(visitMessage({ domain: "example.com", visit_id: "vid-1" }));
+
+  // Second message for same domain within the window - should NOT create a new POST
+  const responses = await dispatch(visitMessage({ domain: "example.com", visit_id: "vid-2" }));
+
+  assert.equal(siteVisitCalls().length, 1, "no second POST for same domain within window");
+  const r = responses[0];
+  assert.equal(r.received, true);
+  assert.equal(r.isNewVisit, false, "reuses existing visit window");
+  assert.ok(typeof r.visitId === "string" && r.visitId.length > 0);
+});
+
+test("C. Same domain at boundary (exactly 30 min elapsed) → new visit", async () => {
+  // First visit
+  scriptFetch(VISIT_URL, { ok: true, status: 201, body: { status: "ok", id: 1 } });
+  const [r1] = await dispatch(visitMessage({ domain: "boundary.com", visit_id: "vid-1" }));
+  assert.equal(r1.isNewVisit, true);
+
+  // Manually advance the visit window's lastInteractionAt by exactly 30 minutes
+  // by directly manipulating the persisted state
+  const windows = await getSiteVisitWindowsFromStorage(SIGNED_IN_USER);
+  if (windows["boundary.com"]) {
+    windows["boundary.com"].lastInteractionAt -= SITE_VISIT_WINDOW_MS;
+  }
+  await setSiteVisitWindowsInStorage(SIGNED_IN_USER, windows);
+
+  // Now send another message - should create a new visit
+  scriptFetch(VISIT_URL, { ok: true, status: 201, body: { status: "ok", id: 2 } });
+  const [r2] = await dispatch(visitMessage({ domain: "boundary.com", visit_id: "vid-2" }));
+
+  assert.equal(siteVisitCalls().length, 2, "new POST when exactly 30 min elapsed");
+  assert.equal(r2.isNewVisit, true);
+  assert.notEqual(r2.visitId, r1.visitId, "different visitId for new visit");
+});
+
+test("D. Same domain after >30 min → second POST with DIFFERENT visitId", async () => {
+  // First visit
+  scriptFetch(VISIT_URL, { ok: true, status: 201, body: { status: "ok", id: 1 } });
+  const [r1] = await dispatch(visitMessage({ domain: "oldsite.com", visit_id: "vid-1" }));
+  assert.equal(r1.isNewVisit, true);
+
+  // Advance lastInteractionAt by >30 minutes
+  const windows = await getSiteVisitWindowsFromStorage(SIGNED_IN_USER);
+  if (windows["oldsite.com"]) {
+    windows["oldsite.com"].lastInteractionAt -= SITE_VISIT_WINDOW_MS + 1000; // 30 min + 1 sec
+  }
+  await setSiteVisitWindowsInStorage(SIGNED_IN_USER, windows);
+
+  // Second message - should create a new visit with different visitId
+  scriptFetch(VISIT_URL, { ok: true, status: 201, body: { status: "ok", id: 2 } });
+  const [r2] = await dispatch(visitMessage({ domain: "oldsite.com", visit_id: "vid-2" }));
+
+  assert.equal(siteVisitCalls().length, 2, "second POST after window expired");
+  assert.equal(r2.isNewVisit, true);
+  assert.notEqual(r2.visitId, r1.visitId, "different visitId for new visit window");
+});
+
+test("E. Different domains → independent visit windows", async () => {
+  scriptFetch(VISIT_URL, { ok: true, status: 201, body: { status: "ok", id: 1 } });
+  scriptFetch(VISIT_URL, { ok: true, status: 201, body: { status: "ok", id: 2 } });
+  scriptFetch(VISIT_URL, { ok: true, status: 201, body: { status: "ok", id: 3 } });
+
+  await dispatch(visitMessage({ domain: "site-a.com", visit_id: "vid-a" }));
+  await dispatch(visitMessage({ domain: "site-b.com", visit_id: "vid-b" }));
+  await dispatch(visitMessage({ domain: "site-c.com", visit_id: "vid-c" }));
+
+  assert.equal(siteVisitCalls().length, 3, "three independent visits for three domains");
+  // Each should be a new visit
+  for (const call of siteVisitCalls()) {
+    const body = JSON.parse(call.options.body);
+    assert.ok(typeof body.visit_id === "string" && body.visit_id.length > 0);
+  }
+});
+
+test("F. Two tabs/messages for same domain → only one visit", async () => {
+  scriptFetch(VISIT_URL, { ok: true, status: 201, body: { status: "ok", id: 1 } });
+  const [r1] = await dispatch(visitMessage({ domain: "tabs.com", visit_id: "tab-1" }));
+  const [r2] = await dispatch(visitMessage({ domain: "tabs.com", visit_id: "tab-2" }));
+
+  assert.equal(siteVisitCalls().length, 1, "only one POST for same domain from multiple tabs");
+  assert.equal(r1.visitId, r2.visitId, "same visitId for both messages");
+  assert.equal(r1.isNewVisit, true);
+  assert.equal(r2.isNewVisit, false);
+});
+
+test("G. Simulated background reset → persisted visit window reused, no duplicate visit", async () => {
+  // Create initial visit
+  scriptFetch(VISIT_URL, { ok: true, status: 201, body: { status: "ok", id: 1 } });
+  const [r1] = await dispatch(visitMessage({ domain: "persist.com", visit_id: "vid-1" }));
+  assert.equal(r1.isNewVisit, true);
+
+  // Simulate service worker restart (reloads module, keeps storage)
+  harness.reloadWorker();
+  await settle();
+
+  // Send another message for same domain - should reuse persisted window
+  const [r2] = await dispatch(visitMessage({ domain: "persist.com", visit_id: "vid-2" }));
+
+  assert.equal(siteVisitCalls().length, 1, "no new POST after restart - window persisted");
+  assert.equal(r2.isNewVisit, false);
+  assert.equal(r2.visitId, r1.visitId, "same visitId from persisted window");
+});
+
+test("H. Sign-out → visit-window state is cleared", async () => {
+  // Create a visit
+  scriptFetch(VISIT_URL, { ok: true, status: 201, body: { status: "ok", id: 1 } });
+  await dispatch(visitMessage({ domain: "signout.com", visit_id: "vid-1" }));
+
+  // Verify window exists in storage
+  let windows = await getSiteVisitWindowsFromStorage(SIGNED_IN_USER);
+  assert.ok(windows["signout.com"], "visit window exists before sign-out");
+
+  // Sign out
+  await dispatch({ type: "signOut" });
+
+  // Verify window is cleared
+  windows = await getSiteVisitWindowsFromStorage(SIGNED_IN_USER);
+  assert.ok(!windows["signout.com"], "visit window cleared after sign-out");
+});
+
+test("I. Different users → visit windows are isolated", async () => {
+  // User A creates a visit
+  scriptFetch(VISIT_URL, { ok: true, status: 201, body: { status: "ok", id: 1 } });
+  await dispatch(visitMessage({ domain: "user-a.com", visit_id: "vid-a" }));
+
+  // Switch to User B
+  harness.syncStore.user_id = USER_B;
+  scriptFetch(VISIT_URL, { ok: true, status: 201, body: { status: "ok", id: 2 } });
+  await dispatch(visitMessage({ domain: "user-b.com", visit_id: "vid-b" }));
+
+  // Both should have their own visit windows (both new visits)
+  assert.equal(siteVisitCalls().length, 2, "both users get their own visits");
+
+  // Verify User A's window doesn't affect User B
+  const windowsA = await getSiteVisitWindowsFromStorage(USER_A);
+  const windowsB = await getSiteVisitWindowsFromStorage(USER_B);
+  assert.ok(windowsA["user-a.com"], "User A has their window");
+  assert.ok(windowsB["user-b.com"], "User B has their window");
+  assert.ok(!windowsA["user-b.com"], "User A does not see User B's window");
+  assert.ok(!windowsB["user-a.com"], "User B does not see User A's window");
+});
+
+test("J. Excluded domains → existing behavior remains unchanged", async () => {
+  for (const domain of EXISTING_BLOCKED_DOMAINS) {
+    reset();
+    const responses = await dispatch(
+      visitMessage({ domain, visit_id: `vid-excluded-${domain}` }),
+    );
+    assert.deepEqual(
+      siteVisitCalls(),
+      [],
+      `${domain} must never reach POST /api/site-visits`,
+    );
+    assert.equal(responses[0].received, false, `${domain} is not recorded`);
+    assert.equal(responses[0].reason, "excluded domain");
+  }
+});
+
+test("K. Failed new-visit POST → existing retry queue still receives the visit", async () => {
+  scriptFetch(VISIT_URL, { ok: false, status: 500 });
+  const responses = await dispatch(visitMessage({ domain: "retry.com", visit_id: "vid-1" }));
+
+  const r = responses[0];
+  assert.equal(r.received, false);
+  assert.equal(r.status, 500);
+  assert.equal(r.queued, true);
+  assert.equal(r.isNewVisit, true);
+  assert.ok(typeof r.visitId === "string" && r.visitId.length > 0);
+  assert.equal(visitQueue().length, 1, "visit buffered in dedicated queue");
+  assert.deepEqual(offlineQueueWrites(), [], "never the screen-time queue");
+  assert.deepEqual(screenTimeQueue(), [], "screen-time queue stays empty");
+});
+
+// Helper functions to access the visit window storage from tests
+async function getSiteVisitWindowsFromStorage(userId) {
+  const result = await chrome.storage.local.get([SITE_VISIT_WINDOW_KEY]);
+  const allWindows = result[SITE_VISIT_WINDOW_KEY] || {};
+  return allWindows[userId] || {};
+}
+
+async function setSiteVisitWindowsInStorage(userId, windows) {
+  const result = await chrome.storage.local.get([SITE_VISIT_WINDOW_KEY]);
+  const allWindows = result[SITE_VISIT_WINDOW_KEY] || {};
+  allWindows[userId] = windows;
+  await chrome.storage.local.set({ [SITE_VISIT_WINDOW_KEY]: allWindows });
+}
 
 // ─── Performance guards ──────────────────────────────────────────────────
 

@@ -49,6 +49,8 @@ const OFFLINE_QUEUE_KEY = "lisTrackOfflineQueue";
 // screen-time queue is drained exclusively to /api/screen-time, so a visit
 // parked in it would be replayed to the wrong endpoint.
 const SITE_VISIT_QUEUE_KEY = "lisTrackSiteVisitQueue";
+const SITE_VISIT_WINDOW_KEY = "lisTrackSiteVisitWindow";
+const SITE_VISIT_WINDOW_MS = 30 * 60 * 1000; // 30 minutes
 
 // ─── Namespaced Message Types ─────────────────────────────────────────────
 // Every message this extension sends carries an explicit `type`. Messages
@@ -723,14 +725,95 @@ function isValidHostname(domain) {
 }
 
 /**
- * Handle one engaged-visit message: record it and submit it once.
+ * Get the persisted visit-window state for a user.
+ * @param {string} userId
+ * @returns {Promise<Object>} map of domain -> { visitId, lastInteractionAt }
+ */
+async function getSiteVisitWindows(userId) {
+  try {
+    const result = await chrome.storage.local.get([SITE_VISIT_WINDOW_KEY]);
+    const allWindows = result[SITE_VISIT_WINDOW_KEY] || {};
+    return allWindows[userId] || {};
+  } catch (_) {
+    return {};
+  }
+}
+
+/**
+ * Save the visit-window state for a user.
+ * @param {string} userId
+ * @param {Object} windows map of domain -> { visitId, lastInteractionAt }
+ */
+async function setSiteVisitWindows(userId, windows) {
+  try {
+    const result = await chrome.storage.local.get([SITE_VISIT_WINDOW_KEY]);
+    const allWindows = result[SITE_VISIT_WINDOW_KEY] || {};
+    allWindows[userId] = windows;
+    await chrome.storage.local.set({ [SITE_VISIT_WINDOW_KEY]: allWindows });
+  } catch (_) {
+    // Ignore storage errors
+  }
+}
+
+/**
+ * Clear visit-window state for a user (e.g., on sign-out).
+ * @param {string} userId
+ */
+async function clearSiteVisitWindows(userId) {
+  try {
+    const result = await chrome.storage.local.get([SITE_VISIT_WINDOW_KEY]);
+    const allWindows = result[SITE_VISIT_WINDOW_KEY] || {};
+    if (allWindows[userId]) {
+      delete allWindows[userId];
+      await chrome.storage.local.set({ [SITE_VISIT_WINDOW_KEY]: allWindows });
+    }
+  } catch (_) {
+    // Ignore storage errors
+  }
+}
+
+/**
+ * Generate a visit ID. Uses crypto.randomUUID() when available, falls back to
+ * a hand-built v4 UUID via crypto.getRandomValues(), and finally to a
+ * timestamp+random string. Must work on insecure origins (content script
+ * also runs on plain HTTP pages).
+ */
+function generateVisitId() {
+  try {
+    if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+      return crypto.randomUUID();
+    }
+  } catch (_) {}
+
+  try {
+    if (typeof crypto !== "undefined" && crypto.getRandomValues) {
+      const bytes = new Uint8Array(16);
+      crypto.getRandomValues(bytes);
+      bytes[6] = (bytes[6] & 0x0f) | 0x40; // version 4
+      bytes[8] = (bytes[8] & 0x3f) | 0x80; // variant 10
+      const hex = Array.from(bytes, (b) =>
+        b.toString(16).padStart(2, "0")
+      ).join("");
+      return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+    }
+  } catch (_) {}
+
+  // Last resort: timestamp + random suffix (same convention as tracker.js).
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
+}
+
+/**
+ * Handle one engaged-visit message: record it and submit once.
+ * Uses a 30-minute domain visit window to deduplicate visits.
  * Never throws.
- * @returns {Promise<{received: boolean, requiresAuth?: boolean, visitStatus?: string, status?: number, reason?: string}>}
+ * @returns {Promise<{received: boolean, requiresAuth?: boolean, isNewVisit?: boolean, visitId?: string, visitStatus?: string, status?: number, reason?: string}>}
  */
 async function handleSiteVisitMessage(message) {
+  console.log("[DEBUG handleSiteVisitMessage] called with:", message);
   // Resolve the authenticated account ourselves. Anything identity-shaped in
   // the message body is ignored by construction — it is never read.
   const userId = await getUserId();
+  console.log("[DEBUG handleSiteVisitMessage] userId:", userId);
   if (!userId) {
     console.log("[background] Ignoring site visit — user not signed in");
     return { received: false, requiresAuth: true };
@@ -738,6 +821,7 @@ async function handleSiteVisitMessage(message) {
 
   // Bare hostname only; normalizeDomain lowercases and strips a leading www.
   const domain = LisTrackBlocker.normalizeDomain(message && message.domain);
+  console.log("[DEBUG handleSiteVisitMessage] domain:", domain);
   if (!isValidHostname(domain)) {
     console.warn(
       "[background] Ignoring site visit with invalid domain:",
@@ -760,44 +844,64 @@ async function handleSiteVisitMessage(message) {
     return { received: false, reason: "excluded domain" };
   }
 
-  const visitId =
-    message && typeof message.visit_id === "string" ? message.visit_id.trim() : "";
-  if (!visitId) {
-    console.warn("[background] Ignoring site visit without a visit_id");
-    return { received: false, reason: "invalid visit_id" };
+  // Look up the current user's visit window for this domain
+  const windows = await getSiteVisitWindows(userId);
+  console.log("[DEBUG handleSiteVisitMessage] windows:", windows);
+  const window = windows[domain];
+  const now = Date.now();
+
+  let visitId;
+  let isNewVisit = false;
+
+  if (!window) {
+    // No active window — create a new visit
+    visitId = generateVisitId();
+    windows[domain] = { visitId, lastInteractionAt: now };
+    isNewVisit = true;
+  } else if (now - window.lastInteractionAt > SITE_VISIT_WINDOW_MS) {
+    // Window expired — start a new visit
+    visitId = generateVisitId();
+    windows[domain] = { visitId, lastInteractionAt: now };
+    isNewVisit = true;
+  } else {
+    // Active window — reuse existing visitId, update timestamp
+    visitId = window.visitId;
+    window.lastInteractionAt = now;
+    isNewVisit = false;
   }
 
-  _recentVisits.push({ userId, domain, at: Date.now() });
+  console.log("[DEBUG handleSiteVisitMessage] visitId:", visitId, "isNewVisit:", isNewVisit);
+
+  // Persist the updated window
+  await setSiteVisitWindows(userId, windows);
+
+  _recentVisits.push({ userId, domain, at: now });
   if (_recentVisits.length > VISIT_MEMORY_LIMIT) _recentVisits.shift();
 
-  // Exactly two fields travel. `type` is an internal extension routing field
-  // and is deliberately NOT sent: no identity, no path, query, title, event
-  // detail or timestamp.
+  // If not a new visit, we're done — no POST needed
+  if (!isNewVisit) {
+    console.log(`[background] Site visit for ${domain}: existing visit (window active)`);
+    return { received: true, isNewVisit: false, visitId };
+  }
+
+  // New visit — POST to server
   const payload = { domain, visit_id: visitId };
 
   let response;
   try {
-    // Same authenticated request mechanism the screen-time collector uses.
     response = await fetch(`${SERVER_URL}/api/site-visits`, {
       method: "POST",
       headers: await authedFetchHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify(payload),
     });
   } catch (err) {
-    // authedFetchHeaders throws when no access token is available; a network
-    // failure throws here. Both are transient from the queue's point of view:
-    // remember who the visit belongs to, buffer it, and retry on a drain.
     console.warn("[background] Site visit not submitted:", err && err.message);
     _siteVisitQueueOwnerId = userId;
     const queued = await pushSiteVisitToQueue(domain, visitId);
-    return { received: false, error: "visit-not-sent", queued };
+    return { received: false, error: "visit-not-sent", queued, isNewVisit: true, visitId };
   }
 
   if (response.ok) {
-    // 201 {status:"ok"}, 200 {status:"duplicate"} and 200 {status:"ignored"}
-    // are ALL successful outcomes. A duplicate means the server's
-    // (user_id, visit_id) uniqueness worked — it is not an error and is
-    // never retried.
     let visitStatus = "ok";
     try {
       const data = await response.json();
@@ -806,7 +910,9 @@ async function handleSiteVisitMessage(message) {
       }
     } catch (_) {}
     console.log(`[background] Site visit handled for ${domain}: ${visitStatus}`);
-    return { received: true, visitStatus };
+    const result = { received: true, isNewVisit: true, visitId, visitStatus };
+    console.log("[DEBUG handleSiteVisitMessage] returning:", result);
+    return result;
   }
 
   // Non-OK. Only a server-side/transient failure is worth retrying; a
@@ -819,14 +925,14 @@ async function handleSiteVisitMessage(message) {
     console.warn(
       `[background] Site visit failed with ${response.status} — ${queued ? "queued for retry" : "could not be queued"}`,
     );
-    return { received: false, status: response.status, queued };
+    return { received: false, status: response.status, queued, isNewVisit: true, visitId };
   }
 
   console.warn(
     "[background] Site visit rejected permanently:",
     response.status,
   );
-  return { received: false, status: response.status, queued: false };
+  return { received: false, status: response.status, queued: false, isNewVisit: true, visitId };
 }
 
 // ─── Site Visit Queue (durable retry) ───────────────────────────────────
@@ -1036,6 +1142,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   // Handle sign-out: clear cached Google auth tokens + user_id
   if (message && message.type === 'signOut') {
     (async () => {
+      // Get the current user_id BEFORE removing it, so we can clear their visit windows.
+      const result = await chrome.storage.sync.get([USER_ID_KEY]);
+      const signingOutUserId = result[USER_ID_KEY];
+
       // Drop the in-memory token cache so the revoked token isn't reused.
       _cachedAccessToken = null;
       _cachedAccessTokenAt = 0;
@@ -1051,6 +1161,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       // screen-time queue is deliberately left untouched by this handler.)
       try {
         await chrome.storage.local.set({ [SITE_VISIT_QUEUE_KEY]: [] });
+      } catch (_) {}
+      // Clear the user's visit-window state so the next account doesn't inherit it
+      try {
+        if (signingOutUserId) {
+          await clearSiteVisitWindows(signingOutUserId);
+        }
       } catch (_) {}
       _siteVisitQueueOwnerId = null;
       chrome.action.setBadgeText({ text: '' });
@@ -1133,7 +1249,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             sendResponse(result);
           } catch (_) {}
         },
-        () => {
+        (err) => {
+          console.error("[DEBUG handleSiteVisitMessage ERROR]", err);
           try {
             sendResponse({ received: false });
           } catch (_) {}
