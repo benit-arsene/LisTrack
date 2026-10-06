@@ -37,6 +37,7 @@ const sessionStore = require("../session");
 let server;
 let baseUrl;
 let getSiteVisitsForUser;
+let getSiteVisitCountsForUser;
 
 const USER_A = "alice@example.com";
 const USER_B = "bob@example.com";
@@ -47,6 +48,7 @@ test.before(async () => {
   server = await mod.start();
   baseUrl = `http://127.0.0.1:${server.address().port}`;
   getSiteVisitsForUser = mod.getSiteVisitsForUser;
+  getSiteVisitCountsForUser = mod.getSiteVisitCountsForUser;
 });
 
 test.after(async () => {
@@ -503,4 +505,218 @@ test("the visit route does not appear on any existing dashboard response", async
   assert.equal(data.visits, undefined);
   assert.equal(data.siteVisits, undefined);
   assert.equal(data.mostVisited, undefined);
+});
+
+// ─── GET /api/site-visits (aggregation) ──────────────────────────────────────
+
+/** GET /api/site-visits as the given user. */
+async function getVisits(user) {
+  const id = sessionStore.createSession(user).id;
+  const res = await fetch(`${baseUrl}/api/site-visits`, {
+    headers: { Cookie: cookieHeader(id) },
+  });
+  let data = null;
+  const text = await res.text();
+  if (text) {
+    try {
+      data = JSON.parse(text);
+    } catch (_) {
+      data = text;
+    }
+  }
+  return { status: res.status, data };
+}
+
+/** GET /api/site-visits without auth (for 401 test). */
+async function getVisitsUnauth() {
+  const res = await fetch(`${baseUrl}/api/site-visits`, {
+    headers: { "Content-Type": "application/json" },
+  });
+  let data = null;
+  const text = await res.text();
+  if (text) {
+    try {
+      data = JSON.parse(text);
+    } catch (_) {
+      data = text;
+    }
+  }
+  return { status: res.status, data };
+}
+
+test("GET /api/site-visits requires authentication", async () => {
+  const res = await getVisitsUnauth();
+  assert.equal(res.status, 401);
+});
+
+test("authenticated user gets their own grouped visit counts", async () => {
+  // Fresh user to avoid test pollution from earlier tests
+  const USER_FRESH = "fresh@example.com";
+  const visits = [
+    { domain: "youtube.com", visit_id: nextVisitId() },
+    { domain: "youtube.com", visit_id: nextVisitId() },
+    { domain: "youtube.com", visit_id: nextVisitId() },
+    { domain: "github.com", visit_id: nextVisitId() },
+    { domain: "github.com", visit_id: nextVisitId() },
+    { domain: "example.com", visit_id: nextVisitId() },
+  ];
+  for (const v of visits) {
+    const res = await postVisit(USER_FRESH, v);
+    assert.equal(res.status, 201);
+  }
+
+  const res = await getVisits(USER_FRESH);
+  assert.equal(res.status, 200);
+  assert.ok(res.data.domains, "response must have domains array");
+  assert.equal(res.data.domains.length, 3, "three distinct domains");
+
+  // Ordered by count descending
+  assert.equal(res.data.domains[0].domain, "youtube.com");
+  assert.equal(res.data.domains[0].visitCount, 3);
+  assert.equal(res.data.domains[1].domain, "github.com");
+  assert.equal(res.data.domains[1].visitCount, 2);
+  assert.equal(res.data.domains[2].domain, "example.com");
+  assert.equal(res.data.domains[2].visitCount, 1);
+});
+
+test("multiple visits to same domain aggregate correctly", async () => {
+  // Fresh user to avoid test pollution
+  const USER_C = "carol@example.com";
+  const visitIds = [];
+  for (let i = 0; i < 5; i++) {
+    visitIds.push(nextVisitId());
+  }
+  for (const visitId of visitIds) {
+    const res = await postVisit(USER_C, { domain: "repeated.example.com", visit_id: visitId });
+    assert.equal(res.status, 201);
+  }
+
+  const res = await getVisits(USER_C);
+  assert.equal(res.status, 200);
+  assert.equal(res.data.domains.length, 1);
+  assert.equal(res.data.domains[0].domain, "repeated.example.com");
+  assert.equal(res.data.domains[0].visitCount, 5);
+});
+
+test("domains are ordered by visit count descending", async () => {
+  const USER_D = "dave@example.com";
+  await postVisit(USER_D, { domain: "low.example.com", visit_id: nextVisitId() }); // 1
+  await postVisit(USER_D, { domain: "mid.example.com", visit_id: nextVisitId() }); // 1
+  await postVisit(USER_D, { domain: "mid.example.com", visit_id: nextVisitId() }); // 2
+  await postVisit(USER_D, { domain: "high.example.com", visit_id: nextVisitId() }); // 1
+  await postVisit(USER_D, { domain: "high.example.com", visit_id: nextVisitId() }); // 2
+  await postVisit(USER_D, { domain: "high.example.com", visit_id: nextVisitId() }); // 3
+
+  const res = await getVisits(USER_D);
+  assert.equal(res.status, 200);
+  assert.equal(res.data.domains[0].domain, "high.example.com");
+  assert.equal(res.data.domains[0].visitCount, 3);
+  assert.equal(res.data.domains[1].domain, "mid.example.com");
+  assert.equal(res.data.domains[1].visitCount, 2);
+  assert.equal(res.data.domains[2].domain, "low.example.com");
+  assert.equal(res.data.domains[2].visitCount, 1);
+});
+
+test("zero visits returns an empty result", async () => {
+  const USER_E = "eve@example.com";
+  // USER_E has no visits yet
+  const res = await getVisits(USER_E);
+  assert.equal(res.status, 200);
+  assert.ok(Array.isArray(res.data.domains));
+  assert.equal(res.data.domains.length, 0);
+});
+
+test("another user's visits are not included in the response", async () => {
+  // USER_A already has visits from earlier tests
+  // Create visits for USER_B
+  await postVisit(USER_B, { domain: "private.example.com", visit_id: nextVisitId() });
+  await postVisit(USER_B, { domain: "private.example.com", visit_id: nextVisitId() });
+
+  // USER_A should not see USER_B's visits
+  const res = await getVisits(USER_A);
+  assert.equal(res.status, 200);
+  for (const domain of res.data.domains) {
+    assert.notEqual(domain.domain, "private.example.com", "no cross-user leakage");
+  }
+
+  // USER_B should see only their own
+  const resB = await getVisits(USER_B);
+  assert.equal(resB.status, 200);
+  const privateDomain = resB.data.domains.find((d) => d.domain === "private.example.com");
+  assert.ok(privateDomain, "USER_B must see their own domain");
+  assert.equal(privateDomain.visitCount, 2);
+});
+
+test("visit IDs are not exposed in the aggregation response", async () => {
+  const USER_F = "frank@example.com";
+  await postVisit(USER_F, { domain: "exposed.example.com", visit_id: nextVisitId() });
+  await postVisit(USER_F, { domain: "exposed.example.com", visit_id: nextVisitId() });
+
+  const res = await getVisits(USER_F);
+  assert.equal(res.status, 200);
+  const serialized = JSON.stringify(res.data);
+  assert.ok(!serialized.includes("visit_id"), "visit_id must not appear in response");
+  assert.ok(!serialized.includes("id"), "internal id must not appear in response");
+  // Only domain and visitCount should be present
+  for (const d of res.data.domains) {
+    assert.deepEqual(
+      Object.keys(d).sort(),
+      ["domain", "visitCount"],
+      "each entry must only have domain and visitCount",
+    );
+  }
+});
+
+test("POST /api/site-visits behavior remains intact after adding GET", async () => {
+  const USER_G = "grace@example.com";
+  const visitId = nextVisitId();
+  const res = await postVisit(USER_G, { domain: "post-still-works.example.com", visit_id: visitId });
+  assert.equal(res.status, 201);
+  assert.equal(res.data.status, "ok");
+
+  const rows = await getSiteVisitsForUser(USER_G);
+  const row = rows.find((r) => r.visit_id === visitId);
+  assert.ok(row, "POST must still store the visit");
+  assert.equal(row.domain, "post-still-works.example.com");
+  assert.equal(row.user_id, USER_G);
+
+  // Duplicate still returns 200 with duplicate status
+  const dup = await postVisit(USER_G, { domain: "post-still-works.example.com", visit_id: visitId });
+  assert.equal(dup.status, 200);
+  assert.equal(dup.data.status, "duplicate");
+});
+
+test("getSiteVisitCountsForUser helper works directly", async () => {
+  const USER_H = "helen@example.com";
+  await postVisit(USER_H, { domain: "helper.example.com", visit_id: nextVisitId() });
+  await postVisit(USER_H, { domain: "helper.example.com", visit_id: nextVisitId() });
+  await postVisit(USER_H, { domain: "other.example.com", visit_id: nextVisitId() });
+
+  const counts = await getSiteVisitCountsForUser(USER_H);
+  assert.equal(counts.length, 2);
+  assert.equal(counts[0].domain, "helper.example.com");
+  assert.equal(counts[0].visitCount, 2);
+  assert.equal(counts[1].domain, "other.example.com");
+  assert.equal(counts[1].visitCount, 1);
+});
+
+test("getSiteVisitCountsForUser returns empty for user with no visits", async () => {
+  const counts = await getSiteVisitCountsForUser("nobody@example.com");
+  assert.ok(Array.isArray(counts));
+  assert.equal(counts.length, 0);
+});
+
+test("getSiteVisitCountsForUser does not leak across users", async () => {
+  await postVisit(USER_A, { domain: "leak-check.example.com", visit_id: nextVisitId() });
+  await postVisit(USER_B, { domain: "leak-check.example.com", visit_id: nextVisitId() });
+  await postVisit(USER_B, { domain: "leak-check.example.com", visit_id: nextVisitId() });
+
+  const countsA = await getSiteVisitCountsForUser(USER_A);
+  const countsB = await getSiteVisitCountsForUser(USER_B);
+
+  const aDomain = countsA.find((d) => d.domain === "leak-check.example.com");
+  const bDomain = countsB.find((d) => d.domain === "leak-check.example.com");
+
+  assert.equal(aDomain?.visitCount, 1);
+  assert.equal(bDomain?.visitCount, 2);
 });

@@ -1672,6 +1672,26 @@ async function getSiteVisitsForUser(userId) {
   );
 }
 
+/**
+ * Get visit counts grouped by domain for a user.
+ * Returns domains with their visit counts, ordered by count descending.
+ */
+async function getSiteVisitCountsForUser(userId) {
+  if (!userId) return [];
+  const rows = await driver.all(
+    `SELECT domain, COUNT(*) AS visit_count
+     FROM site_visits
+     WHERE user_id = ?
+     GROUP BY domain
+     ORDER BY visit_count DESC`,
+    [userId],
+  );
+  return rows.map((row) => ({
+    domain: row.domain,
+    visitCount: Number(row.visit_count) || 0,
+  }));
+}
+
 // ─── Daily Goals Helper Functions ───────────────────────────────────────────
 
 /**
@@ -2001,6 +2021,24 @@ app.post("/api/site-visits", requireAuth, async (req, res) => {
     return res.status(201).json({ status: "ok", id: result.id });
   } catch (err) {
     console.error("[site-visits] Error processing request:", err);
+    return res
+      .status(500)
+      .json({ status: "error", message: "Internal server error" });
+  }
+});
+
+/**
+ * GET /api/site-visits
+ * Returns visit counts grouped by domain for the authenticated user.
+ * Ordered by visit count descending (most visited first).
+ */
+app.get("/api/site-visits", requireAuth, async (req, res) => {
+  try {
+    const userId = req.authenticatedUser;
+    const counts = await getSiteVisitCountsForUser(userId);
+    return res.json({ domains: counts });
+  } catch (err) {
+    console.error("[site-visits] Error fetching visit counts:", err);
     return res
       .status(500)
       .json({ status: "error", message: "Internal server error" });
@@ -2812,10 +2850,12 @@ process.on("SIGTERM", async () => {
 // Exported for tests: drive the app in-process without binding a fixed port.
 // getSiteVisitsForUser is exported so the visit tests can assert on stored
 // rows without adding an HTTP read route for visits (none exists by design).
+// getSiteVisitCountsForUser is exported for the aggregation tests.
 module.exports = {
   app,
   start,
   requireAuth,
   SESSION_COOKIE,
   getSiteVisitsForUser,
+  getSiteVisitCountsForUser,
 };

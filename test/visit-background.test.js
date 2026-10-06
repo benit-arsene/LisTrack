@@ -1395,7 +1395,7 @@ test("the worker keeps the existing screen-time forwarder untouched", () => {
   assert.match(src, /sendResponse\(\{ received: true, status: response\.status \}\);/);
 });
 
-test("the server accepts visits but exposes no visit aggregation yet", () => {
+test("the server accepts visits and exposes visit aggregation", () => {
   const serverSrc = fs.readFileSync(path.join(ROOT, "server.js"), "utf8");
 
   // Ingestion exists…
@@ -1405,21 +1405,31 @@ test("the server accepts visits but exposes no visit aggregation yet", () => {
     "the authenticated visit endpoint must exist",
   );
 
-  // …but nothing beyond ingestion: no read route, no ranking, no aggregation.
-  // Comments are stripped so prose (e.g. this feature's own section header)
-  // cannot satisfy or trip the guard.
+  // Read/aggregation route now exists
+  assert.match(
+    serverSrc,
+    /app\.get\("\/api\/site-visits", requireAuth/,
+    "the GET /api/site-visits aggregation endpoint must exist",
+  );
+
+  // Helper function for aggregation exists
+  assert.match(
+    serverSrc,
+    /getSiteVisitCountsForUser/,
+    "the getSiteVisitCountsForUser helper must exist",
+  );
+
+  // Aggregation uses GROUP BY on site_visits
   const serverCode = codeOnly(serverSrc);
   assert.ok(
-    !/app\.get\("\/api\/site-visits"/.test(serverCode),
-    "there must be no visit READ route yet",
+    /GROUP BY[\s\S]{0,120}domain/.test(serverCode),
+    "site_visits must be aggregated with GROUP BY domain",
   );
+
+  // No "most visited" ranking logic in server (that's for the dashboard/UI)
   assert.ok(
     !/most[_ ]?visited/i.test(serverCode),
-    "no Most Visited ranking may exist yet",
-  );
-  assert.ok(
-    !/GROUP BY[\s\S]{0,120}site_visits/.test(serverCode),
-    "site_visits must not be aggregated yet",
+    "no Most Visited ranking logic may exist in server",
   );
 
   const dashboardSrc = fs.readFileSync(
