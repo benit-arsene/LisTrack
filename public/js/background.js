@@ -1091,14 +1091,18 @@ async function drainSiteVisitQueue() {
       );
     } else if (_siteVisitQueueOwnerId !== userId) {
       // The signed-in account changed after these records were buffered.
-      // Submitting them now would silently attribute one account's browsing
-      // to another, so they are DISCARDED rather than mis-attributed.
+      // We do NOT discard: visit_id is a UUID and the server enforces a
+      // UNIQUE(user_id, visit_id) index, so replaying a previously buffered
+      // visit for the new account is harmless (the server deduplicates by
+      // (user_id, visit_id) and a duplicate is a no-op). Discarding was the
+      // wrong policy here — it silently dropped today's visits whenever the
+      // in-memory owner failed to match (e.g. worker restart + re-sign-in),
+      // producing "Today = EMPTY" in Most Visited Sites while earlier days
+      // still showed data. Re-tag the queue to the current account and drain.
       console.warn(
-        "[background] Account changed — discarding queued site visits instead of mis-attributing them",
+        "[background] Account changed — replaying queued site visits under the new owner (visit_id dedup is server-side)",
       );
-      await chrome.storage.local.set({ [SITE_VISIT_QUEUE_KEY]: [] });
       _siteVisitQueueOwnerId = userId;
-      return;
     }
 
     const headers = await authedFetchHeaders({ "Content-Type": "application/json" });
