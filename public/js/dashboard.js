@@ -1846,9 +1846,9 @@ updatePeriodButtons();
       });
 
       fetchData({ silent: false });
-      setInterval(() => fetchData({ silent: true }), 15_000);
+      setInterval(() => { fetchData({ silent: true }); fetchMVData(); }, 15_000);
       document.addEventListener('visibilitychange', () => {
-        if (!document.hidden) fetchData({ silent: true });
+        if (!document.hidden) { fetchData({ silent: true }); fetchMVData(); }
       });
     });
   
