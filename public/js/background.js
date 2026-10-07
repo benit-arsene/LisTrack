@@ -50,7 +50,7 @@ const OFFLINE_QUEUE_KEY = "lisTrackOfflineQueue";
 // parked in it would be replayed to the wrong endpoint.
 const SITE_VISIT_QUEUE_KEY = "lisTrackSiteVisitQueue";
 const SITE_VISIT_WINDOW_KEY = "lisTrackSiteVisitWindow";
-const SITE_VISIT_WINDOW_MS = 3 * 60 * 1000; // 3 minutes
+const SITE_VISIT_WINDOW_MS = 60 * 1000; // 60 seconds
 
 // ─── Namespaced Message Types ─────────────────────────────────────────────
 // Every message this extension sends carries an explicit `type`. Messages
