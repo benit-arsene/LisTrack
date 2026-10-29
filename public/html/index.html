@@ -1,479 +1,966 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>LisTrack — Personal Screen Time Tracker</title>
-  <link rel="icon" href="/icon.png" type="image/png" />
-  <script src="https://cdn.tailwindcss.com"></script>
-  <script>
-    tailwind.config = { darkMode: 'class' }
-  </script>
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/css/index.css" />
-</head>
-<body class="min-h-screen bg-gradient-to-br from-gray-50 to-gray-100 dark:from-gray-900 dark:to-gray-950">
-
-  <div class="max-w-4xl mx-auto px-4 py-8 sm:px-6 lg:px-8">
-
-    <!-- Header -->
-    <header class="mb-12 fade-in">
-      <div class="flex items-center justify-between">
-        <div class="flex items-center gap-3">
-          <img src="/icon.png" alt="LisTrack" class="w-10 h-10 rounded-xl" />
-          <div>
-            <h1 class="text-2xl font-bold text-gray-900 dark:text-gray-100 tracking-tight">LisTrack</h1>
-            <p class="text-xs text-gray-500 dark:text-gray-400">Personal Screen Time Tracker</p>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>LisTrack — Personal Screen Time Tracker</title>
+    <link rel="icon" href="/icon.png" type="image/png" />
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      tailwind.config = { darkMode: "class" };
+    </script>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/css/index.css" />
+  </head>
+  <body
+    class="min-h-screen bg-gradient-to-br from-gray-50 to-gray-100 dark:from-gray-900 dark:to-gray-950"
+  >
+    <div class="max-w-4xl mx-auto px-4 py-8 sm:px-6 lg:px-8">
+      <!-- Header -->
+      <header class="mb-12 fade-in">
+        <div class="flex items-center justify-between">
+          <div class="flex items-center gap-3">
+            <img src="/icon.png" alt="LisTrack" class="w-10 h-10 rounded-xl" />
+            <div>
+              <h1
+                class="text-2xl font-bold text-gray-900 dark:text-gray-100 tracking-tight"
+              >
+                LisTrack
+              </h1>
+              <p class="text-xs text-gray-500 dark:text-gray-400">
+                Personal Screen Time Tracker
+              </p>
+            </div>
+          </div>
+          <div class="flex items-center gap-3">
+            <button
+              onclick="toggleTheme()"
+              class="inline-flex items-center justify-center w-9 h-9 text-gray-500 dark:text-gray-400 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl hover:bg-gray-50 dark:hover:bg-gray-700 transition-all duration-150 shadow-sm"
+              title="Toggle dark mode"
+              aria-label="Toggle dark mode"
+            >
+              <svg
+                id="sunIcon"
+                class="w-4 h-4"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                stroke-width="2"
+              >
+                <path
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z"
+                />
+              </svg>
+              <svg
+                id="moonIcon"
+                class="w-4 h-4 hidden"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                stroke-width="2"
+              >
+                <path
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z"
+                />
+              </svg>
+            </button>
+            <button
+              onclick="openDashboard()"
+              class="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-white bg-indigo-600 rounded-xl hover:bg-indigo-700 transition-all duration-150 shadow-sm"
+            >
+              <svg
+                class="w-4 h-4"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                stroke-width="2"
+              >
+                <path
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  d="M13.5 6H5.25A2.25 2.25 0 003 8.25v10.5A2.25 2.25 0 005.25 21h10.5A2.25 2.25 0 0018 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25"
+                />
+              </svg>
+              Dashboard
+            </button>
           </div>
         </div>
-        <div class="flex items-center gap-3">
+      </header>
+
+      <!-- Hero -->
+      <section class="text-center mb-16 fade-in" style="animation-delay: 0.1s">
+        <h2
+          class="text-4xl sm:text-5xl font-extrabold text-gray-900 dark:text-gray-100 tracking-tight mb-4"
+        >
+          Know where your<br />time goes
+        </h2>
+        <p
+          class="text-lg text-gray-500 dark:text-gray-400 max-w-2xl mx-auto mb-8"
+        >
+          LisTrack is a lightweight Chrome extension that automatically tracks
+          your active screen time on every website you visit. See your browsing
+          habits on a beautiful dashboard.
+        </p>
+        <div
+          class="flex flex-col sm:flex-row items-center justify-center gap-4"
+        >
           <button
-            onclick="toggleTheme()"
-            class="inline-flex items-center justify-center w-9 h-9 text-gray-500 dark:text-gray-400 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl hover:bg-gray-50 dark:hover:bg-gray-700 transition-all duration-150 shadow-sm"
-            title="Toggle dark mode"
-            aria-label="Toggle dark mode"
+            type="button"
+            onclick="handleDownloadExtension(this)"
+            class="inline-flex items-center gap-2 px-6 py-3 text-base font-semibold text-white bg-indigo-600 rounded-xl hover:bg-indigo-700 transition-all duration-150 shadow-md hover:shadow-lg"
           >
-            <svg id="sunIcon" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-              <path stroke-linecap="round" stroke-linejoin="round" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z" />
+            <svg
+              class="w-5 h-5"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+              stroke-width="2"
+            >
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3"
+              />
             </svg>
-            <svg id="moonIcon" class="w-4 h-4 hidden" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-              <path stroke-linecap="round" stroke-linejoin="round" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" />
-            </svg>
+            Download Extension
           </button>
           <button
             onclick="openDashboard()"
-            class="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-white bg-indigo-600 rounded-xl hover:bg-indigo-700 transition-all duration-150 shadow-sm"
+            class="inline-flex items-center gap-2 px-6 py-3 text-base font-semibold text-gray-700 dark:text-gray-300 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl hover:bg-gray-50 dark:hover:bg-gray-700 transition-all duration-150 shadow-sm"
           >
-            <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-              <path stroke-linecap="round" stroke-linejoin="round" d="M13.5 6H5.25A2.25 2.25 0 003 8.25v10.5A2.25 2.25 0 005.25 21h10.5A2.25 2.25 0 0018 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25" />
+            <svg
+              class="w-5 h-5"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+              stroke-width="2"
+            >
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                d="M13.5 6H5.25A2.25 2.25 0 003 8.25v10.5A2.25 2.25 0 005.25 21h10.5A2.25 2.25 0 0018 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25"
+              />
             </svg>
-            Dashboard
+            Open Dashboard
+          </button>
+        </div>
+      </section>
+
+      <!-- Features -->
+      <section
+        class="grid grid-cols-1 sm:grid-cols-3 gap-6 mb-16 slide-up"
+        style="animation-delay: 0.2s"
+      >
+        <div
+          class="bg-white dark:bg-gray-800 rounded-2xl p-6 shadow-sm border border-gray-100 dark:border-gray-700 text-center"
+        >
+          <div
+            class="inline-flex items-center justify-center w-12 h-12 bg-indigo-50 dark:bg-indigo-900/40 rounded-xl mb-4"
+          >
+            <svg
+              class="w-6 h-6 text-indigo-600 dark:text-indigo-400"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+              stroke-width="1.5"
+            >
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                d="M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z"
+              />
+            </svg>
+          </div>
+          <h3
+            class="text-sm font-semibold text-gray-900 dark:text-gray-100 mb-1"
+          >
+            Automatic Tracking
+          </h3>
+          <p class="text-xs text-gray-500 dark:text-gray-400">
+            Tracks active time per site. Pauses when you're idle or switch tabs.
+          </p>
+        </div>
+        <div
+          class="bg-white dark:bg-gray-800 rounded-2xl p-6 shadow-sm border border-gray-100 dark:border-gray-700 text-center"
+        >
+          <div
+            class="inline-flex items-center justify-center w-12 h-12 bg-emerald-50 dark:bg-emerald-900/40 rounded-xl mb-4"
+          >
+            <svg
+              class="w-6 h-6 text-emerald-600 dark:text-emerald-400"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+              stroke-width="1.5"
+            >
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                d="M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 013 19.875v-6.75zM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V8.625zM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v15.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V4.125z"
+              />
+            </svg>
+          </div>
+          <h3
+            class="text-sm font-semibold text-gray-900 dark:text-gray-100 mb-1"
+          >
+            Beautiful Dashboard
+          </h3>
+          <p class="text-xs text-gray-500 dark:text-gray-400">
+            View your time by day, week, month, or the last 7 days. Dark mode
+            included.
+          </p>
+        </div>
+        <div
+          class="bg-white dark:bg-gray-800 rounded-2xl p-6 shadow-sm border border-gray-100 dark:border-gray-700 text-center"
+        >
+          <div
+            class="inline-flex items-center justify-center w-12 h-12 bg-amber-50 dark:bg-amber-900/40 rounded-xl mb-4"
+          >
+            <svg
+              class="w-6 h-6 text-amber-600 dark:text-amber-400"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+              stroke-width="1.5"
+            >
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z"
+              />
+            </svg>
+          </div>
+          <h3
+            class="text-sm font-semibold text-gray-900 dark:text-gray-100 mb-1"
+          >
+            Daily Goals
+          </h3>
+          <p class="text-xs text-gray-500 dark:text-gray-400">
+            Set screen-time budgets for specific sites. Get notified when you're
+            close to the limit.
+          </p>
+        </div>
+      </section>
+
+      <!-- Installation Instructions -->
+      <section
+        class="bg-white dark:bg-gray-800 rounded-2xl shadow-sm border border-gray-100 dark:border-gray-700 overflow-hidden slide-up mb-8"
+        style="animation-delay: 0.3s"
+      >
+        <div class="px-6 py-5 border-b border-gray-100 dark:border-gray-700">
+          <h2 class="text-lg font-semibold text-gray-900 dark:text-gray-100">
+            Installation Guide
+          </h2>
+          <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+            Follow these steps to install LisTrack in Chrome.
+          </p>
+        </div>
+        <div class="divide-y divide-gray-50 dark:divide-gray-700/50">
+          <!-- Step 1 -->
+          <div class="step-card px-6 py-5 flex items-start gap-4">
+            <span
+              class="flex-shrink-0 w-8 h-8 bg-indigo-100 dark:bg-indigo-900/50 text-indigo-600 dark:text-indigo-400 rounded-xl flex items-center justify-center text-sm font-bold"
+              >1</span
+            >
+            <div>
+              <h3
+                class="text-sm font-semibold text-gray-900 dark:text-gray-100 mb-1"
+              >
+                Download the extension
+              </h3>
+              <p class="text-xs text-gray-500 dark:text-gray-400">
+                Click the download button above to get
+                <code
+                  class="text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-900/30 px-1 rounded"
+                  >lisTrack-extension.zip</code
+                >.
+              </p>
+            </div>
+          </div>
+          <!-- Step 2 -->
+          <div class="step-card px-6 py-5 flex items-start gap-4">
+            <span
+              class="flex-shrink-0 w-8 h-8 bg-indigo-100 dark:bg-indigo-900/50 text-indigo-600 dark:text-indigo-400 rounded-xl flex items-center justify-center text-sm font-bold"
+              >2</span
+            >
+            <div>
+              <h3
+                class="text-sm font-semibold text-gray-900 dark:text-gray-100 mb-1"
+              >
+                Unzip the file
+              </h3>
+              <p class="text-xs text-gray-500 dark:text-gray-400">
+                Extract the contents to a folder on your computer. Make sure you
+                remember where you saved it — you'll need it in the next step.
+              </p>
+            </div>
+          </div>
+          <!-- Step 3 -->
+          <div class="step-card px-6 py-5 flex items-start gap-4">
+            <span
+              class="flex-shrink-0 w-8 h-8 bg-indigo-100 dark:bg-indigo-900/50 text-indigo-600 dark:text-indigo-400 rounded-xl flex items-center justify-center text-sm font-bold"
+              >3</span
+            >
+            <div>
+              <h3
+                class="text-sm font-semibold text-gray-900 dark:text-gray-100 mb-1"
+              >
+                Open Chrome Extensions page
+              </h3>
+              <p class="text-xs text-gray-500 dark:text-gray-400">
+                Open a new tab and go to
+                <code
+                  class="text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-900/30 px-1 rounded"
+                  >chrome://extensions/</code
+                >
+                — or click
+                <span class="text-gray-500 dark:text-gray-400">
+                  ⋮ Menu → Extensions → Manage Extensions</span
+                >.
+              </p>
+            </div>
+          </div>
+          <!-- Step 4 -->
+          <div class="step-card px-6 py-5 flex items-start gap-4">
+            <span
+              class="flex-shrink-0 w-8 h-8 bg-indigo-100 dark:bg-indigo-900/50 text-indigo-600 dark:text-indigo-400 rounded-xl flex items-center justify-center text-sm font-bold"
+              >4</span
+            >
+            <div>
+              <h3
+                class="text-sm font-semibold text-gray-900 dark:text-gray-100 mb-1"
+              >
+                Enable Developer Mode
+              </h3>
+              <p class="text-xs text-gray-500 dark:text-gray-400">
+                Toggle on <strong>Developer mode</strong> in the top-right
+                corner of the extensions page.
+              </p>
+            </div>
+          </div>
+          <!-- Step 5 -->
+          <div class="step-card px-6 py-5 flex items-start gap-4">
+            <span
+              class="flex-shrink-0 w-8 h-8 bg-indigo-100 dark:bg-indigo-900/50 text-indigo-600 dark:text-indigo-400 rounded-xl flex items-center justify-center text-sm font-bold"
+              >5</span
+            >
+            <div>
+              <h3
+                class="text-sm font-semibold text-gray-900 dark:text-gray-100 mb-1"
+              >
+                Load the extension
+              </h3>
+              <p class="text-xs text-gray-500 dark:text-gray-400">
+                Click <strong>Load unpacked</strong> and select the folder you
+                extracted in step 2. The LisTrack icon will appear in your
+                toolbar.
+              </p>
+            </div>
+          </div>
+          <!-- Step 6 -->
+          <div class="step-card px-6 py-5 flex items-start gap-4 border-b-0">
+            <span
+              class="flex-shrink-0 w-8 h-8 bg-emerald-100 dark:bg-emerald-900/50 text-emerald-600 dark:text-emerald-400 rounded-xl flex items-center justify-center text-sm font-bold"
+              >6</span
+            >
+            <div>
+              <h3
+                class="text-sm font-semibold text-gray-900 dark:text-gray-100 mb-1"
+              >
+                Open the dashboard
+              </h3>
+              <p class="text-xs text-gray-500 dark:text-gray-400">
+                Click the LisTrack icon in your toolbar, then click
+                <strong>Open Dashboard</strong> to view your screen time data.
+                Start browsing — the tracker works automatically!
+              </p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Support Section (Kaazi.me + Direct USSD) -->
+      <section
+        class="bg-gradient-to-br from-amber-50 to-orange-50 dark:from-amber-950/30 dark:to-orange-950/20 rounded-2xl shadow-sm border border-amber-100 dark:border-amber-900/50 overflow-hidden slide-up mb-8"
+        style="animation-delay: 0.35s"
+      >
+        <div class="px-6 py-6 sm:px-8 sm:py-8 text-center">
+          <div
+            class="inline-flex items-center justify-center w-14 h-14 bg-amber-100 dark:bg-amber-900/40 rounded-2xl mb-4"
+          >
+            <svg
+              class="w-7 h-7 text-amber-600 dark:text-amber-400"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+              stroke-width="1.5"
+            >
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z"
+              />
+            </svg>
+          </div>
+          <h2 class="text-2xl font-bold text-gray-900 dark:text-gray-100 mb-2">
+            Support LisTrack
+          </h2>
+          <p
+            class="text-sm text-gray-500 dark:text-gray-400 max-w-lg mx-auto mb-6"
+          >
+            LisTrack is free and open-source. If you find it useful, buy me a
+            coffee! Choose how you'd like to donate below.
+          </p>
+
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 max-w-lg mx-auto">
+            <!-- Option 1: Kaazi.me -->
+            <div
+              class="bg-white dark:bg-gray-800 rounded-xl p-5 border border-amber-200 dark:border-amber-800 shadow-sm hover:shadow-md transition-all duration-200"
+            >
+              <div
+                class="inline-flex items-center justify-center w-10 h-10 bg-purple-100 dark:bg-purple-900/40 rounded-xl mb-3"
+              >
+                <svg
+                  class="w-5 h-5 text-purple-600 dark:text-purple-400"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                  stroke-width="1.5"
+                >
+                  <path
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    d="M3 3h2l.4 2M7 13h10l4-8H5.4M7 13L5.4 5M7 13l-2.293 2.293c-.63.63-.184 1.707.707 1.707H17m0 0a2 2 0 100 4 2 2 0 000-4zm-8 2a2 2 0 100 4 2 2 0 000-4z"
+                  />
+                </svg>
+              </div>
+              <h3
+                class="text-sm font-bold text-gray-900 dark:text-gray-100 mb-1"
+              >
+                Pay via Kaazi
+              </h3>
+              <p class="text-[11px] text-gray-500 dark:text-gray-400 mb-3">
+                Pay with MTN MoMo or Airtel Money via Kaazi platform
+              </p>
+              <a
+                href="https://kaazi.me/loddyrb"
+                target="_blank"
+                rel="noopener noreferrer"
+                class="inline-flex items-center justify-center gap-1.5 w-full px-4 py-2.5 text-sm font-semibold text-white bg-purple-600 hover:bg-purple-700 rounded-xl transition-all duration-150 shadow-sm"
+              >
+                <svg
+                  class="w-4 h-4"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                  stroke-width="2"
+                >
+                  <path
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"
+                  />
+                </svg>
+                Support on Kaazi
+              </a>
+            </div>
+
+            <!-- Option 2: Direct MoMo with USSD Push -->
+            <div
+              class="bg-white dark:bg-gray-800 rounded-xl p-5 border border-amber-200 dark:border-amber-800 shadow-sm hover:shadow-md transition-all duration-200"
+            >
+              <div
+                class="inline-flex items-center justify-center w-10 h-10 bg-emerald-100 dark:bg-emerald-900/40 rounded-xl mb-3"
+              >
+                <svg
+                  class="w-5 h-5 text-emerald-600 dark:text-emerald-400"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                  stroke-width="1.5"
+                >
+                  <path
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z"
+                  />
+                </svg>
+              </div>
+              <h3
+                class="text-sm font-bold text-gray-900 dark:text-gray-100 mb-1"
+              >
+                Direct MoMo
+              </h3>
+              <p class="text-[11px] text-gray-500 dark:text-gray-400 mb-3">
+                Send via MTN MoMo — enter amount &amp; your phone number
+              </p>
+
+              <!-- Amount presets -->
+              <div class="flex flex-wrap gap-1.5 mb-3" id="ussdAmounts">
+                <button
+                  onclick="selectUssdAmount(500, this)"
+                  class="ussd-amt-btn px-3 py-1.5 text-[10px] font-semibold rounded-lg border border-emerald-200 dark:border-emerald-800 text-emerald-700 dark:text-emerald-300 bg-white dark:bg-gray-800 hover:bg-emerald-50 dark:hover:bg-emerald-900/20 transition-all"
+                >
+                  500 RWF
+                </button>
+                <button
+                  onclick="selectUssdAmount(1000, this)"
+                  class="ussd-amt-btn px-3 py-1.5 text-[10px] font-semibold rounded-lg border border-emerald-200 dark:border-emerald-800 text-emerald-700 dark:text-emerald-300 bg-white dark:bg-gray-800 hover:bg-emerald-50 dark:hover:bg-emerald-900/20 transition-all"
+                >
+                  1,000
+                </button>
+                <button
+                  onclick="selectUssdAmount(2000, this)"
+                  class="ussd-amt-btn px-3 py-1.5 text-[10px] font-semibold rounded-lg border-2 border-emerald-400 text-white bg-emerald-500 transition-all shadow-sm"
+                  data-selected
+                >
+                  2,000
+                </button>
+                <button
+                  onclick="selectUssdAmount(5000, this)"
+                  class="ussd-amt-btn px-3 py-1.5 text-[10px] font-semibold rounded-lg border border-emerald-200 dark:border-emerald-800 text-emerald-700 dark:text-emerald-300 bg-white dark:bg-gray-800 hover:bg-emerald-50 dark:hover:bg-emerald-900/20 transition-all"
+                >
+                  5,000
+                </button>
+                <input
+                  type="number"
+                  id="ussdCustomAmount"
+                  placeholder="Custom"
+                  min="100"
+                  class="w-16 px-2 py-1.5 text-[10px] font-semibold border border-gray-200 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 placeholder-gray-400 focus:ring-1 focus:ring-emerald-500 outline-none transition-all"
+                  oninput="clearUssdAmounts()"
+                />
+              </div>
+
+              <!-- Phone input -->
+              <div class="relative mb-3">
+                <span
+                  class="absolute left-2.5 top-1/2 -translate-y-1/2 text-[10px] text-gray-400 dark:text-gray-500"
+                >
+                  <svg
+                    class="w-3.5 h-3.5"
+                    aria-hidden="true"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    stroke="currentColor"
+                    stroke-width="2"
+                  >
+                    <path
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z"
+                    />
+                  </svg>
+                </span>
+                <input
+                  type="tel"
+                  id="ussdPhoneInput"
+                  placeholder="Your MoMo number"
+                  class="w-full pl-8 pr-3 py-2 text-xs border border-gray-200 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 focus:ring-2 focus:ring-emerald-500 focus:border-transparent outline-none transition-all"
+                />
+              </div>
+
+              <!-- Pay button -->
+              <button
+                onclick="payWithUssd()"
+                id="ussdPayBtn"
+                class="w-full inline-flex items-center justify-center gap-1.5 px-4 py-2.5 text-sm font-semibold text-white bg-emerald-600 hover:bg-emerald-700 rounded-xl transition-all duration-150 shadow-sm"
+              >
+                <svg
+                  class="w-4 h-4"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                  stroke-width="2"
+                >
+                  <path
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z"
+                  />
+                </svg>
+                Pay via MoMo
+              </button>
+
+              <!-- Result box (hidden until triggered) -->
+              <div
+                id="ussdResult"
+                class="hidden mt-3 bg-gray-50 dark:bg-gray-900/50 rounded-lg p-3 text-left"
+              >
+                <p class="text-[10px] text-gray-400 dark:text-gray-500 mb-1.5">
+                  <span
+                    id="ussdDeviceMsg"
+                    class="inline-flex items-center gap-1"
+                  >
+                    <svg
+                      class="w-3.5 h-3.5"
+                      aria-hidden="true"
+                      fill="none"
+                      viewBox="0 0 24 24"
+                      stroke="currentColor"
+                      stroke-width="2"
+                    >
+                      <path
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                        d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z"
+                      />
+                    </svg>
+                    Dial this code on your phone:
+                  </span>
+                </p>
+                <div class="flex items-center gap-2">
+                  <code
+                    id="ussdGeneratedCode"
+                    class="flex-1 text-center font-mono text-sm font-bold text-emerald-600 dark:text-emerald-400 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg py-2 select-all"
+                    >*182#</code
+                  >
+                  <button
+                    id="copyGeneratedUssdBtn"
+                    class="flex-shrink-0 px-2.5 py-2 text-[10px] font-semibold text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-900/30 border border-emerald-200 dark:border-emerald-800 rounded-lg hover:bg-emerald-100 dark:hover:bg-emerald-900/50 transition-all"
+                  >
+                    Copy
+                  </button>
+                </div>
+                <p class="text-[9px] text-gray-400 dark:text-gray-500 mt-1.5">
+                  Press
+                  <strong class="text-gray-600 dark:text-gray-300">Call</strong>
+                  → enter your
+                  <strong class="text-gray-600 dark:text-gray-300"
+                    >MoMo PIN</strong
+                  >
+                  → done
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <p class="mt-4 text-xs text-gray-400 dark:text-gray-500">
+            <span class="inline-flex items-center gap-1">
+              <svg
+                class="w-3 h-3"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                stroke-width="2"
+              >
+                <path
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"
+                />
+              </svg>
+              Secure &middot; Powered by MTN MoMo &amp; Airtel Money
+            </span>
+          </p>
+        </div>
+      </section>
+
+      <!-- Footer -->
+      <p class="mt-8 text-xs text-gray-400 dark:text-gray-600 text-center">
+        Made by LODD YRB &middot; Data is stored securely on the server.
+      </p>
+    </div>
+
+    <!-- Install Prompt Modal (hidden by default) -->
+    <div
+      id="installModal"
+      class="hidden fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm fade-in"
+    >
+      <div
+        class="bg-white dark:bg-gray-800 rounded-2xl shadow-xl border border-gray-200 dark:border-gray-700 max-w-sm mx-4 p-6 text-center"
+      >
+        <div
+          class="inline-flex items-center justify-center w-14 h-14 bg-amber-100 dark:bg-amber-900/40 rounded-2xl mb-4"
+        >
+          <svg
+            class="w-7 h-7 text-amber-600 dark:text-amber-400"
+            fill="none"
+            viewBox="0 0 24 24"
+            stroke="currentColor"
+            stroke-width="1.5"
+          >
+            <path
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z"
+            />
+          </svg>
+        </div>
+        <h3 class="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-2">
+          Extension Required
+        </h3>
+        <p class="text-sm text-gray-500 dark:text-gray-400 mb-6">
+          The LisTrack Chrome extension is not installed. Please download and
+          install it first to view your dashboard.
+        </p>
+        <div class="flex flex-col gap-3">
+          <button
+            type="button"
+            onclick="handleDownloadExtension(this)"
+            class="inline-flex items-center justify-center gap-2 px-5 py-2.5 text-sm font-semibold text-white bg-indigo-600 rounded-xl hover:bg-indigo-700 transition-all duration-150 shadow-sm"
+          >
+            <svg
+              class="w-4 h-4"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+              stroke-width="2"
+            >
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3"
+              />
+            </svg>
+            Download Extension
+          </button>
+          <button
+            onclick="closeInstallModal()"
+            class="text-sm font-medium text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 transition-colors"
+          >
+            I'll do this later
           </button>
         </div>
       </div>
-    </header>
-
-    <!-- Hero -->
-    <section class="text-center mb-16 fade-in" style="animation-delay: 0.1s;">
-
-      <h2 class="text-4xl sm:text-5xl font-extrabold text-gray-900 dark:text-gray-100 tracking-tight mb-4">
-        Know where your<br/>time goes
-      </h2>
-      <p class="text-lg text-gray-500 dark:text-gray-400 max-w-2xl mx-auto mb-8">
-        LisTrack is a lightweight Chrome extension that automatically tracks your active screen time
-        on every website you visit. See your browsing habits on a beautiful dashboard.
-      </p>
-      <div class="flex flex-col sm:flex-row items-center justify-center gap-4">
-        <button
-          type="button"
-          onclick="handleDownloadExtension(this)"
-          class="inline-flex items-center gap-2 px-6 py-3 text-base font-semibold text-white bg-indigo-600 rounded-xl hover:bg-indigo-700 transition-all duration-150 shadow-md hover:shadow-lg"
-        >
-          <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-            <path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
-          </svg>
-          Download Extension
-        </button>
-        <button
-          onclick="openDashboard()"
-          class="inline-flex items-center gap-2 px-6 py-3 text-base font-semibold text-gray-700 dark:text-gray-300 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl hover:bg-gray-50 dark:hover:bg-gray-700 transition-all duration-150 shadow-sm"
-        >
-          <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-            <path stroke-linecap="round" stroke-linejoin="round" d="M13.5 6H5.25A2.25 2.25 0 003 8.25v10.5A2.25 2.25 0 005.25 21h10.5A2.25 2.25 0 0018 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25" />
-          </svg>
-          Open Dashboard
-        </button>
-      </div>
-    </section>
-
-    <!-- Features -->
-    <section class="grid grid-cols-1 sm:grid-cols-3 gap-6 mb-16 slide-up" style="animation-delay: 0.2s;">
-      <div class="bg-white dark:bg-gray-800 rounded-2xl p-6 shadow-sm border border-gray-100 dark:border-gray-700 text-center">
-        <div class="inline-flex items-center justify-center w-12 h-12 bg-indigo-50 dark:bg-indigo-900/40 rounded-xl mb-4">
-          <svg class="w-6 h-6 text-indigo-600 dark:text-indigo-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
-            <path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z" />
-          </svg>
-        </div>
-        <h3 class="text-sm font-semibold text-gray-900 dark:text-gray-100 mb-1">Automatic Tracking</h3>
-        <p class="text-xs text-gray-500 dark:text-gray-400">Tracks active time per site. Pauses when you're idle or switch tabs.</p>
-      </div>
-      <div class="bg-white dark:bg-gray-800 rounded-2xl p-6 shadow-sm border border-gray-100 dark:border-gray-700 text-center">
-        <div class="inline-flex items-center justify-center w-12 h-12 bg-emerald-50 dark:bg-emerald-900/40 rounded-xl mb-4">
-          <svg class="w-6 h-6 text-emerald-600 dark:text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
-            <path stroke-linecap="round" stroke-linejoin="round" d="M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 013 19.875v-6.75zM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V8.625zM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v15.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V4.125z" />
-          </svg>
-        </div>
-        <h3 class="text-sm font-semibold text-gray-900 dark:text-gray-100 mb-1">Beautiful Dashboard</h3>
-        <p class="text-xs text-gray-500 dark:text-gray-400">View your time by day, week, month, or the last 7 days. Dark mode included.</p>
-      </div>
-      <div class="bg-white dark:bg-gray-800 rounded-2xl p-6 shadow-sm border border-gray-100 dark:border-gray-700 text-center">
-        <div class="inline-flex items-center justify-center w-12 h-12 bg-amber-50 dark:bg-amber-900/40 rounded-xl mb-4">
-          <svg class="w-6 h-6 text-amber-600 dark:text-amber-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
-            <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z" />
-          </svg>
-        </div>
-        <h3 class="text-sm font-semibold text-gray-900 dark:text-gray-100 mb-1">Daily Goals</h3>
-        <p class="text-xs text-gray-500 dark:text-gray-400">Set screen-time budgets for specific sites. Get notified when you're close to the limit.</p>
-      </div>
-    </section>
-
-    <!-- Installation Instructions -->
-    <section class="bg-white dark:bg-gray-800 rounded-2xl shadow-sm border border-gray-100 dark:border-gray-700 overflow-hidden slide-up mb-8" style="animation-delay: 0.3s;">
-      <div class="px-6 py-5 border-b border-gray-100 dark:border-gray-700">
-        <h2 class="text-lg font-semibold text-gray-900 dark:text-gray-100">Installation Guide</h2>
-        <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">Follow these steps to install LisTrack in Chrome.</p>
-      </div>
-      <div class="divide-y divide-gray-50 dark:divide-gray-700/50">
-        <!-- Step 1 -->
-        <div class="step-card px-6 py-5 flex items-start gap-4">
-          <span class="flex-shrink-0 w-8 h-8 bg-indigo-100 dark:bg-indigo-900/50 text-indigo-600 dark:text-indigo-400 rounded-xl flex items-center justify-center text-sm font-bold">1</span>
-          <div>
-            <h3 class="text-sm font-semibold text-gray-900 dark:text-gray-100 mb-1">Download the extension</h3>
-            <p class="text-xs text-gray-500 dark:text-gray-400">Click the download button above to get <code class="text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-900/30 px-1 rounded">lisTrack-extension.zip</code>.</p>
-          </div>
-        </div>
-        <!-- Step 2 -->
-        <div class="step-card px-6 py-5 flex items-start gap-4">
-          <span class="flex-shrink-0 w-8 h-8 bg-indigo-100 dark:bg-indigo-900/50 text-indigo-600 dark:text-indigo-400 rounded-xl flex items-center justify-center text-sm font-bold">2</span>
-          <div>
-            <h3 class="text-sm font-semibold text-gray-900 dark:text-gray-100 mb-1">Unzip the file</h3>
-            <p class="text-xs text-gray-500 dark:text-gray-400">Extract the contents to a folder on your computer. Make sure you remember where you saved it — you'll need it in the next step.</p>
-          </div>
-        </div>
-        <!-- Step 3 -->
-        <div class="step-card px-6 py-5 flex items-start gap-4">
-          <span class="flex-shrink-0 w-8 h-8 bg-indigo-100 dark:bg-indigo-900/50 text-indigo-600 dark:text-indigo-400 rounded-xl flex items-center justify-center text-sm font-bold">3</span>
-          <div>
-            <h3 class="text-sm font-semibold text-gray-900 dark:text-gray-100 mb-1">Open Chrome Extensions page</h3>
-            <p class="text-xs text-gray-500 dark:text-gray-400">
-              Open a new tab and go to
-              <code class="text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-900/30 px-1 rounded">chrome://extensions/</code>
-              — or click
-              <span class="text-gray-500 dark:text-gray-400"> ⋮ Menu → Extensions → Manage Extensions</span>.
-            </p>
-          </div>
-        </div>
-        <!-- Step 4 -->
-        <div class="step-card px-6 py-5 flex items-start gap-4">
-          <span class="flex-shrink-0 w-8 h-8 bg-indigo-100 dark:bg-indigo-900/50 text-indigo-600 dark:text-indigo-400 rounded-xl flex items-center justify-center text-sm font-bold">4</span>
-          <div>
-            <h3 class="text-sm font-semibold text-gray-900 dark:text-gray-100 mb-1">Enable Developer Mode</h3>
-            <p class="text-xs text-gray-500 dark:text-gray-400">Toggle on <strong>Developer mode</strong> in the top-right corner of the extensions page.</p>
-          </div>
-        </div>
-        <!-- Step 5 -->
-        <div class="step-card px-6 py-5 flex items-start gap-4">
-          <span class="flex-shrink-0 w-8 h-8 bg-indigo-100 dark:bg-indigo-900/50 text-indigo-600 dark:text-indigo-400 rounded-xl flex items-center justify-center text-sm font-bold">5</span>
-          <div>
-            <h3 class="text-sm font-semibold text-gray-900 dark:text-gray-100 mb-1">Load the extension</h3>
-            <p class="text-xs text-gray-500 dark:text-gray-400">Click <strong>Load unpacked</strong> and select the folder you extracted in step 2. The LisTrack icon will appear in your toolbar.</p>
-          </div>
-        </div>
-        <!-- Step 6 -->
-        <div class="step-card px-6 py-5 flex items-start gap-4 border-b-0">
-          <span class="flex-shrink-0 w-8 h-8 bg-emerald-100 dark:bg-emerald-900/50 text-emerald-600 dark:text-emerald-400 rounded-xl flex items-center justify-center text-sm font-bold">6</span>
-          <div>
-            <h3 class="text-sm font-semibold text-gray-900 dark:text-gray-100 mb-1">Open the dashboard</h3>
-            <p class="text-xs text-gray-500 dark:text-gray-400">
-              Click the LisTrack icon in your toolbar, then click <strong>Open Dashboard</strong> to view your screen time data. Start browsing — the tracker works automatically!
-            </p>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <!-- Support Section (Kaazi.me + Direct USSD) -->
-    <section class="bg-gradient-to-br from-amber-50 to-orange-50 dark:from-amber-950/30 dark:to-orange-950/20 rounded-2xl shadow-sm border border-amber-100 dark:border-amber-900/50 overflow-hidden slide-up mb-8" style="animation-delay: 0.35s;">
-      <div class="px-6 py-6 sm:px-8 sm:py-8 text-center">
-        <div class="inline-flex items-center justify-center w-14 h-14 bg-amber-100 dark:bg-amber-900/40 rounded-2xl mb-4">
-          <svg class="w-7 h-7 text-amber-600 dark:text-amber-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
-            <path stroke-linecap="round" stroke-linejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z" />
-          </svg>
-        </div>
-        <h2 class="text-2xl font-bold text-gray-900 dark:text-gray-100 mb-2">Support LisTrack</h2>
-        <p class="text-sm text-gray-500 dark:text-gray-400 max-w-lg mx-auto mb-6">
-          LisTrack is free and open-source. If you find it useful, buy me a coffee!
-          Choose how you'd like to donate below.
-        </p>
-
-        <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 max-w-lg mx-auto">
-
-          <!-- Option 1: Kaazi.me -->
-          <div class="bg-white dark:bg-gray-800 rounded-xl p-5 border border-amber-200 dark:border-amber-800 shadow-sm hover:shadow-md transition-all duration-200">
-            <div class="inline-flex items-center justify-center w-10 h-10 bg-purple-100 dark:bg-purple-900/40 rounded-xl mb-3">
-              <svg class="w-5 h-5 text-purple-600 dark:text-purple-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
-                <path stroke-linecap="round" stroke-linejoin="round" d="M3 3h2l.4 2M7 13h10l4-8H5.4M7 13L5.4 5M7 13l-2.293 2.293c-.63.63-.184 1.707.707 1.707H17m0 0a2 2 0 100 4 2 2 0 000-4zm-8 2a2 2 0 100 4 2 2 0 000-4z" />
-              </svg>
-            </div>
-            <h3 class="text-sm font-bold text-gray-900 dark:text-gray-100 mb-1">Pay via Kaazi</h3>
-            <p class="text-[11px] text-gray-500 dark:text-gray-400 mb-3">Pay with MTN MoMo or Airtel Money via Kaazi platform</p>
-            <a href="https://kaazi.me/loddyrb" target="_blank" rel="noopener noreferrer" class="inline-flex items-center justify-center gap-1.5 w-full px-4 py-2.5 text-sm font-semibold text-white bg-purple-600 hover:bg-purple-700 rounded-xl transition-all duration-150 shadow-sm">
-              <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" /></svg>
-              Support on Kaazi
-            </a>
-          </div>
-
-          <!-- Option 2: Direct MoMo with USSD Push -->
-          <div class="bg-white dark:bg-gray-800 rounded-xl p-5 border border-amber-200 dark:border-amber-800 shadow-sm hover:shadow-md transition-all duration-200">
-            <div class="inline-flex items-center justify-center w-10 h-10 bg-emerald-100 dark:bg-emerald-900/40 rounded-xl mb-3">
-              <svg class="w-5 h-5 text-emerald-600 dark:text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
-                <path stroke-linecap="round" stroke-linejoin="round" d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z" />
-              </svg>
-            </div>
-            <h3 class="text-sm font-bold text-gray-900 dark:text-gray-100 mb-1">Direct MoMo</h3>
-            <p class="text-[11px] text-gray-500 dark:text-gray-400 mb-3">Send via MTN MoMo — enter amount &amp; your phone number</p>
-
-            <!-- Amount presets -->
-            <div class="flex flex-wrap gap-1.5 mb-3" id="ussdAmounts">
-              <button onclick="selectUssdAmount(500, this)" class="ussd-amt-btn px-3 py-1.5 text-[10px] font-semibold rounded-lg border border-emerald-200 dark:border-emerald-800 text-emerald-700 dark:text-emerald-300 bg-white dark:bg-gray-800 hover:bg-emerald-50 dark:hover:bg-emerald-900/20 transition-all">500 RWF</button>
-              <button onclick="selectUssdAmount(1000, this)" class="ussd-amt-btn px-3 py-1.5 text-[10px] font-semibold rounded-lg border border-emerald-200 dark:border-emerald-800 text-emerald-700 dark:text-emerald-300 bg-white dark:bg-gray-800 hover:bg-emerald-50 dark:hover:bg-emerald-900/20 transition-all">1,000</button>
-              <button onclick="selectUssdAmount(2000, this)" class="ussd-amt-btn px-3 py-1.5 text-[10px] font-semibold rounded-lg border-2 border-emerald-400 text-white bg-emerald-500 transition-all shadow-sm" data-selected>2,000</button>
-              <button onclick="selectUssdAmount(5000, this)" class="ussd-amt-btn px-3 py-1.5 text-[10px] font-semibold rounded-lg border border-emerald-200 dark:border-emerald-800 text-emerald-700 dark:text-emerald-300 bg-white dark:bg-gray-800 hover:bg-emerald-50 dark:hover:bg-emerald-900/20 transition-all">5,000</button>
-              <input type="number" id="ussdCustomAmount" placeholder="Custom" min="100" class="w-16 px-2 py-1.5 text-[10px] font-semibold border border-gray-200 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 placeholder-gray-400 focus:ring-1 focus:ring-emerald-500 outline-none transition-all" oninput="clearUssdAmounts()" />
-            </div>
-
-            <!-- Phone input -->
-            <div class="relative mb-3">
-              <span class="absolute left-2.5 top-1/2 -translate-y-1/2 text-[10px] text-gray-400 dark:text-gray-500">
-                <svg class="w-3.5 h-3.5" aria-hidden="true" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z" /></svg>
-              </span>
-              <input type="tel" id="ussdPhoneInput" placeholder="Your MoMo number" class="w-full pl-8 pr-3 py-2 text-xs border border-gray-200 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 focus:ring-2 focus:ring-emerald-500 focus:border-transparent outline-none transition-all" />
-            </div>
-
-            <!-- Pay button -->
-            <button onclick="payWithUssd()" id="ussdPayBtn" class="w-full inline-flex items-center justify-center gap-1.5 px-4 py-2.5 text-sm font-semibold text-white bg-emerald-600 hover:bg-emerald-700 rounded-xl transition-all duration-150 shadow-sm">
-              <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z" /></svg>
-              Pay via MoMo
-            </button>
-
-            <!-- Result box (hidden until triggered) -->
-            <div id="ussdResult" class="hidden mt-3 bg-gray-50 dark:bg-gray-900/50 rounded-lg p-3 text-left">
-              <p class="text-[10px] text-gray-400 dark:text-gray-500 mb-1.5">
-                <span id="ussdDeviceMsg" class="inline-flex items-center gap-1">
-                  <svg class="w-3.5 h-3.5" aria-hidden="true" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z"/></svg>
-                  Dial this code on your phone:
-                </span>
-              </p>
-              <div class="flex items-center gap-2">
-                <code id="ussdGeneratedCode" class="flex-1 text-center font-mono text-sm font-bold text-emerald-600 dark:text-emerald-400 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg py-2 select-all">*182#</code>
-                <button id="copyGeneratedUssdBtn" class="flex-shrink-0 px-2.5 py-2 text-[10px] font-semibold text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-900/30 border border-emerald-200 dark:border-emerald-800 rounded-lg hover:bg-emerald-100 dark:hover:bg-emerald-900/50 transition-all">Copy</button>
-              </div>
-              <p class="text-[9px] text-gray-400 dark:text-gray-500 mt-1.5">Press <strong class="text-gray-600 dark:text-gray-300">Call</strong> → enter your <strong class="text-gray-600 dark:text-gray-300">MoMo PIN</strong> → done</p>
-            </div>
-          </div>
-
-        </div>
-
-        <p class="mt-4 text-xs text-gray-400 dark:text-gray-500">
-          <span class="inline-flex items-center gap-1">
-            <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" /></svg>
-            Secure &middot; Powered by MTN MoMo &amp; Airtel Money
-          </span>
-        </p>
-      </div>
-    </section>
-
-    <!-- Footer -->
-    <p class="mt-8 text-xs text-gray-400 dark:text-gray-600 text-center">
-      Made with
-      <svg class="inline-block w-3 h-3 text-rose-500 dark:text-rose-400 align-[-1px]" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path d="M11.645 20.91l-.007-.003-.022-.012a15.247 15.247 0 01-.383-.218 25.18 25.18 0 01-4.244-3.17C4.688 15.36 2.25 12.174 2.25 8.25 2.25 5.322 4.714 3 7.688 3A5.5 5.5 0 0112 5.052 5.5 5.5 0 0116.313 3c2.973 0 5.437 2.322 5.437 5.25 0 3.925-2.438 7.111-4.739 9.256a25.175 25.175 0 01-4.244 3.17 15.247 15.247 0 01-.383.219l-.022.012-.007.004-.003.001a.752.752 0 01-.704 0l-.003-.001z"/></svg>
-      by LODD YRB &middot; Data is stored securely on the server.
-    </p>
-  </div>
-
-  <!-- Install Prompt Modal (hidden by default) -->
-  <div id="installModal" class="hidden fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm fade-in">
-    <div class="bg-white dark:bg-gray-800 rounded-2xl shadow-xl border border-gray-200 dark:border-gray-700 max-w-sm mx-4 p-6 text-center">
-      <div class="inline-flex items-center justify-center w-14 h-14 bg-amber-100 dark:bg-amber-900/40 rounded-2xl mb-4">
-        <svg class="w-7 h-7 text-amber-600 dark:text-amber-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
-          <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z" />
-        </svg>
-      </div>
-      <h3 class="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-2">Extension Required</h3>
-      <p class="text-sm text-gray-500 dark:text-gray-400 mb-6">
-        The LisTrack Chrome extension is not installed. Please download and install it first to view your dashboard.
-      </p>
-      <div class="flex flex-col gap-3">
-        <button
-          type="button"
-          onclick="handleDownloadExtension(this)"
-          class="inline-flex items-center justify-center gap-2 px-5 py-2.5 text-sm font-semibold text-white bg-indigo-600 rounded-xl hover:bg-indigo-700 transition-all duration-150 shadow-sm"
-        >
-          <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-            <path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
-          </svg>
-          Download Extension
-        </button>
-        <button
-          onclick="closeInstallModal()"
-          class="text-sm font-medium text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 transition-colors"
-        >
-          I'll do this later
-        </button>
-      </div>
     </div>
-  </div>
 
-  <!-- Open-From-Extension Modal (hidden by default) -->
-  <!--
+    <!-- Open-From-Extension Modal (hidden by default) -->
+    <!--
     Shown when the extension IS installed. Dashboard sign-in is completed by
     the extension itself: the service worker opens /dashboard with the Google
     token attached, the server verifies it, and a secure HttpOnly session
     cookie is set. This page is never given the token (see the C2 note on
     openDashboard() below).
   -->
-  <div id="openFromExtensionModal" class="hidden fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm fade-in">
-    <div class="bg-white dark:bg-gray-800 rounded-2xl shadow-xl border border-gray-200 dark:border-gray-700 max-w-sm mx-4 p-6 text-center">
-      <div class="inline-flex items-center justify-center w-14 h-14 bg-indigo-100 dark:bg-indigo-900/40 rounded-2xl mb-4">
-        <svg class="w-7 h-7 text-indigo-600 dark:text-indigo-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
-          <path stroke-linecap="round" stroke-linejoin="round" d="M15.75 5.25a3 3 0 013 3m3 0a6 6 0 01-.75 3M18.75 15.75a3 3 0 01-3 3m0 0a6 6 0 01-3-.75M9.75 18.75a3 3 0 01-3-3m0 0a6 6 0 00.75-3M5.25 8.25a3 3 0 013-3m0 0a6 6 0 013 .75" />
-        </svg>
-      </div>
-      <h3 class="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-2">Open from the Extension</h3>
-      <p class="text-sm text-gray-500 dark:text-gray-400 mb-6">
-        Click the LisTrack icon in your Chrome toolbar, then choose
-        <strong>Open Dashboard</strong>. For security, your Google sign-in is
-        completed inside the extension &mdash; this page never receives your
-        access token.
-      </p>
-      <div class="flex flex-col gap-3">
-        <button
-          onclick="closeOpenFromExtensionModal()"
-          class="inline-flex items-center justify-center gap-2 px-5 py-2.5 text-sm font-semibold text-white bg-indigo-600 rounded-xl hover:bg-indigo-700 transition-all duration-150 shadow-sm"
+    <div
+      id="openFromExtensionModal"
+      class="hidden fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm fade-in"
+    >
+      <div
+        class="bg-white dark:bg-gray-800 rounded-2xl shadow-xl border border-gray-200 dark:border-gray-700 max-w-sm mx-4 p-6 text-center"
+      >
+        <div
+          class="inline-flex items-center justify-center w-14 h-14 bg-indigo-100 dark:bg-indigo-900/40 rounded-2xl mb-4"
         >
-          Got it
-        </button>
-        <button
-          onclick="closeOpenFromExtensionModal()"
-          class="text-sm font-medium text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 transition-colors"
-        >
-          Close
-        </button>
+          <svg
+            class="w-7 h-7 text-indigo-600 dark:text-indigo-400"
+            fill="none"
+            viewBox="0 0 24 24"
+            stroke="currentColor"
+            stroke-width="1.5"
+          >
+            <path
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              d="M15.75 5.25a3 3 0 013 3m3 0a6 6 0 01-.75 3M18.75 15.75a3 3 0 01-3 3m0 0a6 6 0 01-3-.75M9.75 18.75a3 3 0 01-3-3m0 0a6 6 0 00.75-3M5.25 8.25a3 3 0 013-3m0 0a6 6 0 013 .75"
+            />
+          </svg>
+        </div>
+        <h3 class="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-2">
+          Open from the Extension
+        </h3>
+        <p class="text-sm text-gray-500 dark:text-gray-400 mb-6">
+          Click the LisTrack icon in your Chrome toolbar, then choose
+          <strong>Open Dashboard</strong>. For security, your Google sign-in is
+          completed inside the extension &mdash; this page never receives your
+          access token.
+        </p>
+        <div class="flex flex-col gap-3">
+          <button
+            onclick="closeOpenFromExtensionModal()"
+            class="inline-flex items-center justify-center gap-2 px-5 py-2.5 text-sm font-semibold text-white bg-indigo-600 rounded-xl hover:bg-indigo-700 transition-all duration-150 shadow-sm"
+          >
+            Got it
+          </button>
+          <button
+            onclick="closeOpenFromExtensionModal()"
+            class="text-sm font-medium text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 transition-colors"
+          >
+            Close
+          </button>
+        </div>
       </div>
     </div>
-  </div>
 
-  <script>
-    // ─── Download Extension (with loading state) ───────────────────────────
-    // The buttons fetch the zip, show a spinner while it's being prepared,
-    // then trigger the download via a blob URL. On failure the button shows
-    // an error state and re-enables so the user can retry.
+    <script>
+      // ─── Download Extension (with loading state) ───────────────────────────
+      // The buttons fetch the zip, show a spinner while it's being prepared,
+      // then trigger the download via a blob URL. On failure the button shows
+      // an error state and re-enables so the user can retry.
 
-    const DOWNLOAD_SPINNER_SVG =
-      '<svg class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24" aria-hidden="true">' +
-      '<circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>' +
-      '<path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>' +
-      '</svg>';
+      const DOWNLOAD_SPINNER_SVG =
+        '<svg class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24" aria-hidden="true">' +
+        '<circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>' +
+        '<path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>' +
+        "</svg>";
 
-    function restoreDownloadBtn(btn, originalHtml, delayMs) {
-      setTimeout(function () {
-        btn.dataset.loading = '';
-        btn.disabled = false;
-        btn.classList.remove('opacity-70', 'cursor-wait');
-        btn.innerHTML = originalHtml;
-      }, delayMs || 0);
-    }
+      function restoreDownloadBtn(btn, originalHtml, delayMs) {
+        setTimeout(function () {
+          btn.dataset.loading = "";
+          btn.disabled = false;
+          btn.classList.remove("opacity-70", "cursor-wait");
+          btn.innerHTML = originalHtml;
+        }, delayMs || 0);
+      }
 
-    function handleDownloadExtension(btn) {
-      if (!btn || btn.dataset.loading === 'true') return;
-      var originalHtml = btn.innerHTML;
+      function handleDownloadExtension(btn) {
+        if (!btn || btn.dataset.loading === "true") return;
+        var originalHtml = btn.innerHTML;
 
-      btn.dataset.loading = 'true';
-      btn.disabled = true;
-      btn.classList.add('opacity-70', 'cursor-wait');
-      btn.innerHTML = DOWNLOAD_SPINNER_SVG + '<span>Downloading…</span>';
+        btn.dataset.loading = "true";
+        btn.disabled = true;
+        btn.classList.add("opacity-70", "cursor-wait");
+        btn.innerHTML = DOWNLOAD_SPINNER_SVG + "<span>Downloading…</span>";
 
-      // Keep the spinner visible for at least 700ms so the state is noticeable
-      var minDelay = new Promise(function (resolve) { setTimeout(resolve, 700); });
-
-      fetch('/lisTrack-extension.zip')
-        .then(function (res) {
-          if (!res.ok) throw new Error('HTTP ' + res.status);
-          return res.blob();
-        })
-        .then(function (blob) {
-          return minDelay.then(function () { return blob; });
-        })
-        .then(function (blob) {
-          var url = URL.createObjectURL(blob);
-          var a = document.createElement('a');
-          a.href = url;
-          a.download = 'lisTrack-extension.zip';
-          document.body.appendChild(a);
-          a.click();
-          a.remove();
-          setTimeout(function () { URL.revokeObjectURL(url); }, 5000);
-          restoreDownloadBtn(btn, originalHtml, 500);
-          closeInstallModal();
-        })
-        .catch(function () {
-          btn.innerHTML = '<span>Download failed — try again</span>';
-          restoreDownloadBtn(btn, originalHtml, 2200);
+        // Keep the spinner visible for at least 700ms so the state is noticeable
+        var minDelay = new Promise(function (resolve) {
+          setTimeout(resolve, 700);
         });
-    }
 
-    // ─── Donation — USSD Push (Direct MoMo) ────────────────────────────────
-    const USSD_MERCHANT_CODE = '657174'; // Your MTN MoMo merchant code
-    let selectedUssdAmount = 2000;
-
-    function selectUssdAmount(amount, btn) {
-      selectedUssdAmount = amount;
-      document.getElementById('ussdCustomAmount').value = '';
-      document.querySelectorAll('#ussdAmounts .ussd-amt-btn').forEach(b => {
-        b.classList.remove('bg-emerald-500', 'text-white', 'border-emerald-400', 'shadow-sm');
-        b.classList.add('text-emerald-700', 'dark:text-emerald-300', 'bg-white', 'dark:bg-gray-800', 'border-emerald-200', 'dark:border-emerald-800', 'hover:bg-emerald-50', 'dark:hover:bg-emerald-900/20');
-        b.removeAttribute('data-selected');
-      });
-      btn.classList.remove('text-emerald-700', 'dark:text-emerald-300', 'bg-white', 'dark:bg-gray-800', 'border-emerald-200', 'dark:border-emerald-800', 'hover:bg-emerald-50', 'dark:hover:bg-emerald-900/20');
-      btn.classList.add('bg-emerald-500', 'text-white', 'border-emerald-400', 'shadow-sm');
-      btn.setAttribute('data-selected', '');
-      document.getElementById('ussdResult').classList.add('hidden');
-    }
-
-    function clearUssdAmounts() {
-      document.querySelectorAll('#ussdAmounts .ussd-amt-btn').forEach(b => {
-        b.classList.remove('bg-emerald-500', 'text-white', 'border-emerald-400', 'shadow-sm');
-        b.classList.add('text-emerald-700', 'dark:text-emerald-300', 'bg-white', 'dark:bg-gray-800', 'border-emerald-200', 'dark:border-emerald-800', 'hover:bg-emerald-50', 'dark:hover:bg-emerald-900/20');
-        b.removeAttribute('data-selected');
-      });
-      selectedUssdAmount = null;
-      document.getElementById('ussdResult').classList.add('hidden');
-    }
-
-    function payWithUssd() {
-      const resultEl = document.getElementById('ussdResult');
-      const phoneInput = document.getElementById('ussdPhoneInput');
-      const customInput = document.getElementById('ussdCustomAmount');
-
-      // Determine amount
-      let amount = selectedUssdAmount;
-      const customVal = parseInt(customInput.value, 10);
-      if (customVal && customVal >= 100) {
-        amount = customVal;
+        fetch("/lisTrack-extension.zip")
+          .then(function (res) {
+            if (!res.ok) throw new Error("HTTP " + res.status);
+            return res.blob();
+          })
+          .then(function (blob) {
+            return minDelay.then(function () {
+              return blob;
+            });
+          })
+          .then(function (blob) {
+            var url = URL.createObjectURL(blob);
+            var a = document.createElement("a");
+            a.href = url;
+            a.download = "lisTrack-extension.zip";
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            setTimeout(function () {
+              URL.revokeObjectURL(url);
+            }, 5000);
+            restoreDownloadBtn(btn, originalHtml, 500);
+            closeInstallModal();
+          })
+          .catch(function () {
+            btn.innerHTML = "<span>Download failed — try again</span>";
+            restoreDownloadBtn(btn, originalHtml, 2200);
+          });
       }
 
-      if (!amount || amount < 100) {
-        alert('Please select or enter an amount (min 100 RWF).');
-        return;
+      // ─── Donation — USSD Push (Direct MoMo) ────────────────────────────────
+      const USSD_MERCHANT_CODE = "657174"; // Your MTN MoMo merchant code
+      let selectedUssdAmount = 2000;
+
+      function selectUssdAmount(amount, btn) {
+        selectedUssdAmount = amount;
+        document.getElementById("ussdCustomAmount").value = "";
+        document.querySelectorAll("#ussdAmounts .ussd-amt-btn").forEach((b) => {
+          b.classList.remove(
+            "bg-emerald-500",
+            "text-white",
+            "border-emerald-400",
+            "shadow-sm",
+          );
+          b.classList.add(
+            "text-emerald-700",
+            "dark:text-emerald-300",
+            "bg-white",
+            "dark:bg-gray-800",
+            "border-emerald-200",
+            "dark:border-emerald-800",
+            "hover:bg-emerald-50",
+            "dark:hover:bg-emerald-900/20",
+          );
+          b.removeAttribute("data-selected");
+        });
+        btn.classList.remove(
+          "text-emerald-700",
+          "dark:text-emerald-300",
+          "bg-white",
+          "dark:bg-gray-800",
+          "border-emerald-200",
+          "dark:border-emerald-800",
+          "hover:bg-emerald-50",
+          "dark:hover:bg-emerald-900/20",
+        );
+        btn.classList.add(
+          "bg-emerald-500",
+          "text-white",
+          "border-emerald-400",
+          "shadow-sm",
+        );
+        btn.setAttribute("data-selected", "");
+        document.getElementById("ussdResult").classList.add("hidden");
       }
 
-      if (!phoneInput) return;
-      if (!phoneInput.value.trim()) {
-        alert('Please enter your MoMo phone number.');
-        phoneInput.focus();
-        return;
+      function clearUssdAmounts() {
+        document.querySelectorAll("#ussdAmounts .ussd-amt-btn").forEach((b) => {
+          b.classList.remove(
+            "bg-emerald-500",
+            "text-white",
+            "border-emerald-400",
+            "shadow-sm",
+          );
+          b.classList.add(
+            "text-emerald-700",
+            "dark:text-emerald-300",
+            "bg-white",
+            "dark:bg-gray-800",
+            "border-emerald-200",
+            "dark:border-emerald-800",
+            "hover:bg-emerald-50",
+            "dark:hover:bg-emerald-900/20",
+          );
+          b.removeAttribute("data-selected");
+        });
+        selectedUssdAmount = null;
+        document.getElementById("ussdResult").classList.add("hidden");
       }
 
-      // Generate the USSD code: *182*8*1*MERCHANT*AMOUNT#
-      const ussdCode = `*182*8*1*${USSD_MERCHANT_CODE}*${amount}#`;
+      function payWithUssd() {
+        const resultEl = document.getElementById("ussdResult");
+        const phoneInput = document.getElementById("ussdPhoneInput");
+        const customInput = document.getElementById("ussdCustomAmount");
 
-      // Check if on mobile
-      const isMobile = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+        // Determine amount
+        let amount = selectedUssdAmount;
+        const customVal = parseInt(customInput.value, 10);
+        if (customVal && customVal >= 100) {
+          amount = customVal;
+        }
 
-      if (isMobile) {
-        resultEl.innerHTML = `
+        if (!amount || amount < 100) {
+          alert("Please select or enter an amount (min 100 RWF).");
+          return;
+        }
+
+        if (!phoneInput) return;
+        if (!phoneInput.value.trim()) {
+          alert("Please enter your MoMo phone number.");
+          phoneInput.focus();
+          return;
+        }
+
+        // Generate the USSD code: *182*8*1*MERCHANT*AMOUNT#
+        const ussdCode = `*182*8*1*${USSD_MERCHANT_CODE}*${amount}#`;
+
+        // Check if on mobile
+        const isMobile = /Mobi|Android|iPhone|iPad|iPod/i.test(
+          navigator.userAgent,
+        );
+
+        if (isMobile) {
+          resultEl.innerHTML = `
           <p class="text-[10px] text-gray-400 dark:text-gray-500 mb-1.5">
             <svg class="w-3.5 h-3.5 inline-block align-[-1px]" aria-hidden="true" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z"/></svg>
             Tap to open dialer:
@@ -483,8 +970,8 @@
           </a>
           <p class="text-[9px] text-gray-400 dark:text-gray-500">Press <strong class="text-gray-600 dark:text-gray-300">Call</strong> → enter your <strong class="text-gray-600 dark:text-gray-300">MoMo PIN</strong> → Done!</p>
         `;
-      } else {
-        resultEl.innerHTML = `
+        } else {
+          resultEl.innerHTML = `
           <p class="text-[10px] text-gray-400 dark:text-gray-500 mb-1.5">
             <svg class="w-3.5 h-3.5 inline-block align-[-1px]" aria-hidden="true" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z"/></svg>
             Dial this code on your phone:
@@ -495,113 +982,124 @@
           </div>
           <p class="text-[9px] text-gray-400 dark:text-gray-500 mt-1.5">Open phone dialer → paste code → press <strong class="text-gray-600 dark:text-gray-300">Call</strong> → enter <strong class="text-gray-600 dark:text-gray-300">PIN</strong></p>
         `;
+        }
+
+        resultEl.classList.remove("hidden");
       }
 
-      resultEl.classList.remove('hidden');
-    }
+      // ─── Dashboard Access with Extension Detection ──────────────────────────
 
-    // ─── Dashboard Access with Extension Detection ──────────────────────────
+      /**
+       * Open the LisTrack dashboard.
+       *
+       * This page deliberately does NOT request a Google OAuth token from the
+       * extension. A previous version dispatched a `lisTrack:getAccessToken`
+       * DOM event and received the raw access token back, which meant any
+       * website running this same page could harvest the signed-in user's
+       * token. That bridge has been removed.
+       *
+       * Dashboard authentication is now performed entirely inside the
+       * extension: open it from the LisTrack toolbar icon (or the right-click
+       * context menu), and the service worker navigates to /dashboard with the
+       * token attached, the server verifies it, and a secure HttpOnly session
+       * cookie is set.
+       */
+      function openDashboard() {
+        var isInstalled =
+          document.documentElement.dataset.lisTrackInstalled === "true";
 
-    /**
-     * Open the LisTrack dashboard.
-     *
-     * This page deliberately does NOT request a Google OAuth token from the
-     * extension. A previous version dispatched a `lisTrack:getAccessToken`
-     * DOM event and received the raw access token back, which meant any
-     * website running this same page could harvest the signed-in user's
-     * token. That bridge has been removed.
-     *
-     * Dashboard authentication is now performed entirely inside the
-     * extension: open it from the LisTrack toolbar icon (or the right-click
-     * context menu), and the service worker navigates to /dashboard with the
-     * token attached, the server verifies it, and a secure HttpOnly session
-     * cookie is set.
-     */
-    function openDashboard() {
-      var isInstalled = document.documentElement.dataset.lisTrackInstalled === 'true';
+        if (!isInstalled) {
+          document.getElementById("installModal").classList.remove("hidden");
+          return;
+        }
 
-      if (!isInstalled) {
-        document.getElementById('installModal').classList.remove('hidden');
-        return;
+        // Extension is installed — point the user at the extension, which is
+        // the only context allowed to handle the credential.
+        var modal = document.getElementById("openFromExtensionModal");
+        if (modal) {
+          modal.classList.remove("hidden");
+          return;
+        }
+        window.location.href = "/dashboard";
       }
 
-      // Extension is installed — point the user at the extension, which is
-      // the only context allowed to handle the credential.
-      var modal = document.getElementById('openFromExtensionModal');
-      if (modal) {
-        modal.classList.remove('hidden');
-        return;
+      function closeInstallModal() {
+        document.getElementById("installModal").classList.add("hidden");
       }
-      window.location.href = '/dashboard';
-    }
 
-    function closeInstallModal() {
-      document.getElementById('installModal').classList.add('hidden');
-    }
-
-    function closeOpenFromExtensionModal() {
-      var modal = document.getElementById('openFromExtensionModal');
-      if (modal) modal.classList.add('hidden');
-    }
-
-    // Close modal on Escape key
-    document.addEventListener('keydown', function (e) {
-      if (e.key === 'Escape') {
-        closeInstallModal();
-        closeOpenFromExtensionModal();
+      function closeOpenFromExtensionModal() {
+        var modal = document.getElementById("openFromExtensionModal");
+        if (modal) modal.classList.add("hidden");
       }
-    });
 
-    // Close modal on backdrop click
-    document.addEventListener('DOMContentLoaded', function () {
-      var modal = document.getElementById('installModal');
-      if (modal) {
-        modal.addEventListener('click', function (e) {
-          if (e.target === modal) closeInstallModal();
+      // Close modal on Escape key
+      document.addEventListener("keydown", function (e) {
+        if (e.key === "Escape") {
+          closeInstallModal();
+          closeOpenFromExtensionModal();
+        }
+      });
+
+      // Close modal on backdrop click
+      document.addEventListener("DOMContentLoaded", function () {
+        var modal = document.getElementById("installModal");
+        if (modal) {
+          modal.addEventListener("click", function (e) {
+            if (e.target === modal) closeInstallModal();
+          });
+        }
+        var extModal = document.getElementById("openFromExtensionModal");
+        if (extModal) {
+          extModal.addEventListener("click", function (e) {
+            if (e.target === extModal) closeOpenFromExtensionModal();
+          });
+        }
+      });
+
+      // ─── Dark Mode ──────────────────────────────────────────────────────────
+
+      function setTheme(isDark) {
+        const root = document.documentElement;
+        const sunIcon = document.getElementById("sunIcon");
+        const moonIcon = document.getElementById("moonIcon");
+        if (isDark) {
+          root.classList.add("dark");
+          sunIcon?.classList.add("hidden");
+          moonIcon?.classList.remove("hidden");
+        } else {
+          root.classList.remove("dark");
+          sunIcon?.classList.remove("hidden");
+          moonIcon?.classList.add("hidden");
+        }
+        try {
+          localStorage.setItem("lisTrackTheme", isDark ? "dark" : "light");
+        } catch (_) {}
+      }
+
+      function toggleTheme() {
+        setTheme(!document.documentElement.classList.contains("dark"));
+      }
+
+      function initTheme() {
+        const saved = (() => {
+          try {
+            return localStorage.getItem("lisTrackTheme");
+          } catch (_) {
+            return null;
+          }
+        })();
+        if (saved === "dark") setTheme(true);
+        else if (saved === "light") setTheme(false);
+        else
+          setTheme(window.matchMedia("(prefers-color-scheme: dark)").matches);
+      }
+
+      document.addEventListener("DOMContentLoaded", initTheme);
+      window
+        .matchMedia("(prefers-color-scheme: dark)")
+        .addEventListener("change", (e) => {
+          if (!localStorage.getItem("lisTrackTheme")) setTheme(e.matches);
         });
-      }
-      var extModal = document.getElementById('openFromExtensionModal');
-      if (extModal) {
-        extModal.addEventListener('click', function (e) {
-          if (e.target === extModal) closeOpenFromExtensionModal();
-        });
-      }
-    });
-
-    // ─── Dark Mode ──────────────────────────────────────────────────────────
-
-    function setTheme(isDark) {
-      const root = document.documentElement;
-      const sunIcon = document.getElementById('sunIcon');
-      const moonIcon = document.getElementById('moonIcon');
-      if (isDark) {
-        root.classList.add('dark');
-        sunIcon?.classList.add('hidden');
-        moonIcon?.classList.remove('hidden');
-      } else {
-        root.classList.remove('dark');
-        sunIcon?.classList.remove('hidden');
-        moonIcon?.classList.add('hidden');
-      }
-      try { localStorage.setItem('lisTrackTheme', isDark ? 'dark' : 'light'); } catch (_) {}
-    }
-
-    function toggleTheme() {
-      setTheme(!document.documentElement.classList.contains('dark'));
-    }
-
-    function initTheme() {
-      const saved = (() => { try { return localStorage.getItem('lisTrackTheme'); } catch (_) { return null; } })();
-      if (saved === 'dark') setTheme(true);
-      else if (saved === 'light') setTheme(false);
-      else setTheme(window.matchMedia('(prefers-color-scheme: dark)').matches);
-    }
-
-    document.addEventListener('DOMContentLoaded', initTheme);
-    window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', (e) => {
-      if (!localStorage.getItem('lisTrackTheme')) setTheme(e.matches);
-    });
-  </script>
-
-</body>
+    </script>
+  </body>
 </html>
